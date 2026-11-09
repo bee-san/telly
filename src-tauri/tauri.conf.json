@@ -1,0 +1,55 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Telly",
+  "version": "0.1.0",
+  "identifier": "com.telly.player",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../build"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self' 'wasm-unsafe-eval'",
+        "style-src": "'self' 'unsafe-inline' chrome-extension:",
+        "img-src": "'self' data: blob: media: http://media.localhost chrome-extension: https://*.anilist.co",
+        "font-src": "'self' data: chrome-extension:",
+        "media-src": "'self' blob: media: http://media.localhost",
+        "connect-src": "'self' ipc: http://ipc.localhost media: http://media.localhost",
+        "worker-src": "'self' blob:",
+        "frame-src": "'self' chrome-extension:",
+        "object-src": "'none'",
+        "base-uri": "'none'",
+        "form-action": "'none'"
+      },
+      "dangerousDisableAssetCspModification": [
+        "style-src"
+      ]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "shortDescription": "An anime player for learning Japanese",
+    "longDescription": "Telly plays your anime rips with Japanese subtitles from Jimaku, synced for you, Hachidori lookups on every line, and cards with an animated picture and the line's audio.",
+    "category": "Education",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

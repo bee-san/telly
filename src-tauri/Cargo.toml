@@ -1,0 +1,62 @@
+[package]
+name = "telly"
+version = "0.1.0"
+description = "Telly: an anime player for learning Japanese"
+authors = ["bee-san"]
+license = "GPL-3.0-or-later"
+edition = "2024"
+
+[lib]
+# The `_lib` suffix keeps the lib name apart from the bin name on Windows
+# (https://github.com/rust-lang/cargo/issues/8519).
+name = "telly_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1.0.104"
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+zip = { version = "9.4.1", default-features = false, features = ["deflate"] }
+ureq = { version = "3", default-features = false, features = ["rustls", "json", "gzip"] }
+base64 = "0.22"
+tiny_http = "0.12.0"
+tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
+sysinfo = { version = "0.40.1", default-features = false, features = ["system"] }
+regex = "1"
+encoding_rs = "0.8"
+percent-encoding = "2.3.2"
+# Subtitle sync: alass's aligner, and the WebRTC voice detector alass uses.
+alass-core = "2"
+webrtc-vad = "0.4"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
+
+# The aligner and the voice detector are slow unoptimised, and dev builds sync
+# whole episodes.
+[profile.dev.package.alass-core]
+opt-level = 3
+[profile.dev.package.webrtc-vad]
+opt-level = 3
+
+[features]
+# A small HTTP server that answers the frontend's calls with the real backend,
+# so the UI can be driven in a browser (see src/devserver.rs).
+devserver = []
+
+[[bin]]
+name = "telly-devserver"
+path = "src/devserver.rs"
+required-features = ["devserver"]

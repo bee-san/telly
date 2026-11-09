@@ -1,0 +1,5 @@
+{
+  "about": "The public key in Telly's copy of Hachidori's manifest.json. It fixes the extension's ID, which is where Hachidori keeps its data, so never change it.",
+  "id": "njcomogclopfjmdaffnckceegjflageo",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtrxeC3L7sFRZ8cR1TUhw8JDgj5N2VNAASu39upa9dszIa8hYBL+JRUNgYp2Dpj6xxznValB9EQdl5b6t96caN7AK+3Axe0ok1ptIkXsDpJdnzvmxTl2Wo6ec0ESrIQfl7kCDvS6n8sSfbZISYFOqcy0kQmfftJF8Edc5s5qZlf2YbImqhDQ/Skiqzvn0hitYw2AxPNP5w6eCRWg9h4XfkHt+hYfTPhOJeBLHXLqpHm5HWC6Hp79daQOwSj2fBQ+w5Cm/mwHG88FHm0SEEOmt/rkwC2v2/12J64Pc3L40EAxCMFJ72SOeoDtYP4QwxOcYs0oOP/Zby2dCNqnb8ollWwIDAQAB"
+}

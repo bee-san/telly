@@ -280,6 +280,10 @@ impl Backend {
         self.tools.read().map(|t| t.clone()).unwrap_or_default()
     }
 
+    pub fn refresh_tools(&self) {
+        self.refind_tools();
+    }
+
     fn refind_tools(&self) {
         let found = tools::find(&self.dirs.tools(), &self.dirs.models(), &self.db.setting_str("tools.ffmpeg"));
         if let Ok(mut t) = self.tools.write() {
@@ -370,7 +374,7 @@ impl Backend {
 
     fn activity(&self) -> Activity {
         let mut tasks = Vec::new();
-        for slot in [&self.jobs.media, &self.jobs.subs] {
+        for slot in [&self.jobs.media, &self.jobs.subs, &self.jobs.download] {
             if let Some(t) = slot.lock().ok().and_then(|t| t.clone()) {
                 tasks.push(t);
             }
@@ -421,7 +425,9 @@ impl Backend {
             })
             .collect();
         let card = self.card(show, &cards_by_show)?;
-        Ok(json!({ "card": card, "episodes": rows, "activity": self.activity() }))
+        let tools = self.tools();
+        let whisper = json!({ "cli": tools.whisper.is_some(), "model": tools.whisper_model.is_some() });
+        Ok(json!({ "card": card, "episodes": rows, "activity": self.activity(), "whisper": whisper }))
     }
 
     fn scan(&self, folder: &str) -> Result<Value> {
@@ -848,6 +854,15 @@ impl Backend {
                 Ok(json!({}))
             }
             "freeSpace" => self.free_space(arg(&args, "show")?),
+            "whisperSubs" => {
+                let n = self.db.queue_whisper(arg(&args, "show")?, arg(&args, "id")?)?;
+                self.jobs.poke();
+                Ok(json!({ "queued": n }))
+            }
+            "getWhisperModel" => {
+                jobs::get_whisper_model(self.clone());
+                Ok(json!({}))
+            }
             "mineLine" => {
                 let job = cards::add_line_to_last_card(self, arg(&args, "id")?, arg(&args, "start")?, arg(&args, "end")?, &arg::<String>(&args, "text")?)?;
                 Ok(json!({ "job": job }))

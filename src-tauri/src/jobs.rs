@@ -52,6 +52,8 @@ pub struct Jobs {
     signal: Condvar,
     pub media: Mutex<Option<Task>>,
     pub subs: Mutex<Option<Task>>,
+    /// A download (Whisper's model).
+    pub download: Mutex<Option<Task>>,
     /// Stops the running conversion (the show was removed, or Telly is closing).
     cancel_media: AtomicBool,
     /// Jimaku's files per entry, so each episode doesn't ask again.
@@ -65,6 +67,7 @@ impl Default for Jobs {
             signal: Condvar::new(),
             media: Mutex::new(None),
             subs: Mutex::new(None),
+            download: Mutex::new(None),
             cancel_media: AtomicBool::new(false),
             jimaku_files: Mutex::new(HashMap::new()),
         }
@@ -151,6 +154,7 @@ fn pick(backend: &Backend, kind: &str) -> Option<(Show, Episode, usize)> {
         for e in episodes {
             let waiting = match kind {
                 "media" => e.media_state == "pending",
+                "whisper" => e.subs_state == "whisper",
                 _ => e.subs_state == "pending",
             };
             if !waiting {
@@ -325,7 +329,155 @@ fn subs_worker(backend: &Backend) {
                 let _ = backend.db.set_subs_state(episode.id, "failed", &format!("{e:#}"));
             }
         }
+        // Then episodes you asked Whisper to make subtitles for, one at a time.
+        if let (Some(whisper), Some(model)) = (tools.whisper.clone(), tools.whisper_model.clone()) {
+            if let Some((show, episode, _)) = pick(backend, "whisper") {
+                if backend.db.claim_whisper(episode.id).unwrap_or(false) {
+                    set_task(
+                        &backend.jobs.subs,
+                        Some(Task {
+                            show_id: show.id,
+                            episode_id: episode.id,
+                            number: episode.number,
+                            title: show.title.clone(),
+                            label: format!("Whisper is listening to {} {}", show.title, episode.number),
+                            progress: 0.0,
+                        }),
+                    );
+                    let result = whisper_subtitles(backend, &ffmpeg, &ffprobe, &whisper, &model, &episode);
+                    set_task(&backend.jobs.subs, None);
+                    if let Err(e) = result {
+                        let _ = backend.db.set_subs_state(episode.id, "failed", &format!("Whisper: {e:#}"));
+                    }
+                    backend.jobs.poke();
+                }
+            }
+        }
     }
+}
+
+/// Where Whisper's Japanese model comes from: whisper.cpp's own models on Hugging Face.
+pub const WHISPER_MODEL_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin";
+pub const WHISPER_MODEL_NAME: &str = "ggml-small-q5_1.bin";
+
+/// Makes subtitles from the episode's Japanese audio with whisper.cpp,
+/// marked as machine-made. Whisper times them itself, so they need no sync.
+fn whisper_subtitles(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, whisper: &Path, model: &Path, episode: &Episode) -> Result<()> {
+    let source = Path::new(&episode.path);
+    std::fs::create_dir_all(backend.dirs.subs())?;
+    let subs_dir = std::path::absolute(backend.dirs.subs()).unwrap_or_else(|_| backend.dirs.subs());
+    let wav = subs_dir.join(format!("{}.whisper.wav", episode.id));
+    // whisper.cpp adds ".srt" to this.
+    let out = subs_dir.join(format!("{}.whisper", episode.id));
+    let srt = subs_dir.join(format!("{}.whisper.srt", episode.id));
+    // A transcript newer than the model and the rip is still good (a retry after an error).
+    let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    let fresh = matches!((modified(&srt), modified(model), modified(source)), (Some(s), Some(m), Some(r)) if s > m && s > r);
+    if !fresh {
+        let probe = media::probe(ffprobe, source)?;
+        let status = crate::util::command(ffmpeg)
+            .args(["-nostdin", "-hide_banner", "-v", "error", "-y", "-i"])
+            .arg(source)
+            .args(["-map", &format!("0:a:{}", media::japanese_audio(&probe)), "-vn", "-sn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le"])
+            .arg(&wav)
+            .status()
+            .context("starting ffmpeg")?;
+        if !status.success() {
+            return Err(anyhow!("ffmpeg couldn't read the audio"));
+        }
+        let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(2, 12);
+        // -mc 0: no text carried from one window to the next, which stops
+        // Whisper repeating itself over music. -ml 60: lines of about 20
+        // characters (it counts bytes), timed from the words in them.
+        let output = crate::util::command(whisper)
+            .arg("-m")
+            .arg(model)
+            .args(["-l", "ja", "-t", &threads.to_string(), "-mc", "0", "-ml", "60", "-osrt", "-np", "-of"])
+            .arg(&out)
+            .arg("-f")
+            .arg(&wav)
+            .current_dir(whisper.parent().unwrap_or(Path::new(".")))
+            .output()
+            .context("starting whisper.cpp")?;
+        let _ = std::fs::remove_file(&wav);
+        if !output.status.success() {
+            let text = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow!("whisper.cpp stopped: {}", text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("no message")));
+        }
+    }
+    let bytes = std::fs::read(&srt).context("reading what Whisper wrote")?;
+    let lines = without_repeats(subs::parse("whisper.srt", &bytes)?);
+    write_lines(backend, episode.id, &lines)?;
+    backend.db.set_subs(episode.id, "synced", "Made by Whisper (machine-made)", "Whisper", None, None)?;
+    Ok(())
+}
+
+/// Whisper sometimes repeats a sentence over music ("彼らは「魔道士」と呼ばれる。"
+/// again and again): a line saying the same thing as the one before is dropped,
+/// and a line that's one sentence over and over keeps it once.
+pub fn without_repeats(lines: Vec<Line>) -> Vec<Line> {
+    let mut out: Vec<Line> = Vec::with_capacity(lines.len());
+    for mut line in lines {
+        let parts: Vec<&str> = line.text.split(['。', ' ', '\u{3000}', '\n']).map(str::trim).filter(|p| !p.is_empty()).collect();
+        if parts.len() > 1 && parts.iter().all(|p| *p == parts[0]) {
+            line.text = format!("{}。", parts[0].trim_end_matches('。'));
+        }
+        let same = out.last().is_some_and(|last: &Line| {
+            let a: String = last.text.chars().filter(|c| c.is_alphanumeric()).collect();
+            let b: String = line.text.chars().filter(|c| c.is_alphanumeric()).collect();
+            !b.is_empty() && (a == b || a.contains(&b))
+        });
+        if !same {
+            out.push(line);
+        }
+    }
+    out
+}
+
+/// Downloads Whisper's Japanese model into Telly's models folder, in the background.
+pub fn get_whisper_model(backend: std::sync::Arc<Backend>) {
+    std::thread::spawn(move || {
+        let task = |label: &str, progress: f64| {
+            set_task(
+                &backend.jobs.download,
+                Some(Task { show_id: 0, episode_id: 0, number: 0, title: "Whisper".into(), label: label.into(), progress }),
+            )
+        };
+        task("Getting Whisper's Japanese model", 0.0);
+        let result = (|| -> Result<()> {
+            let dir = backend.dirs.models();
+            std::fs::create_dir_all(&dir)?;
+            let partial = dir.join(format!("{WHISPER_MODEL_NAME}.part"));
+            let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(3600))).build().into();
+            let mut response = agent.get(WHISPER_MODEL_URL).call().map_err(|e| anyhow!("couldn't download the model ({e})"))?;
+            let total = response.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+            let mut reader = response.body_mut().with_config().limit(2 * 1024 * 1024 * 1024).reader();
+            let mut file = std::fs::File::create(&partial)?;
+            let mut buffer = vec![0u8; 1 << 20];
+            let mut done = 0.0;
+            loop {
+                let n = std::io::Read::read(&mut reader, &mut buffer)?;
+                if n == 0 {
+                    break;
+                }
+                std::io::Write::write_all(&mut file, &buffer[..n])?;
+                done += n as f64;
+                if total > 0.0 {
+                    task("Getting Whisper's Japanese model", done / total);
+                }
+            }
+            drop(file);
+            std::fs::rename(&partial, dir.join(WHISPER_MODEL_NAME))?;
+            Ok(())
+        })();
+        set_task(&backend.jobs.download, None);
+        if let Err(e) = result {
+            backend.push_event("failed", "Whisper's model didn't download", &format!("{e:#}"), 0, 0);
+        } else {
+            backend.push_event("done", "Whisper's model is ready", "Telly can make subtitles for episodes Jimaku has nothing for.", 0, 0);
+        }
+        backend.refresh_tools();
+    });
 }
 
 /// A subtitle file Telly tried for an episode, and how it synced.
@@ -550,6 +702,19 @@ mod tests {
             subs_offset_ms: None,
             subs_nudge_ms: 0,
         }
+    }
+
+    #[test]
+    fn whisper_s_repeats_are_dropped() {
+        let line = |start: f64, text: &str| Line { start, end: start + 2.0, text: text.into(), ruby: vec![], speaker: String::new(), sign: false };
+        let lines = vec![
+            line(0.0, "そこは魔法の世界。"),
+            line(2.0, "彼らは「魔道士」と呼ばれる。 彼らは「魔道士」と呼ばれる。"),
+            line(4.0, "彼らは「魔道士」と呼ばれる。"),
+            line(6.0, "ギルドだ。"),
+        ];
+        let kept: Vec<String> = without_repeats(lines).into_iter().map(|l| l.text).collect();
+        assert_eq!(kept, ["そこは魔法の世界。", "彼らは「魔道士」と呼ばれる。", "ギルドだ。"]);
     }
 
     #[test]

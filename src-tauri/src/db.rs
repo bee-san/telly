@@ -505,6 +505,30 @@ impl Db {
         Ok(n == 1)
     }
 
+    /// Starts Whisper on an episode queued for it ("whisper"); false if it isn't.
+    pub fn claim_whisper(&self, id: i64) -> Result<bool> {
+        let n = self.conn()?.execute(
+            "UPDATE episodes SET subs_state = 'working', subs_detail = 'Whisper is listening' WHERE id = ?1 AND subs_state = 'whisper'",
+            params![id],
+        )?;
+        Ok(n == 1)
+    }
+
+    /// Queues Whisper for an episode, or for every episode of a show without subtitles.
+    pub fn queue_whisper(&self, show_id: Option<i64>, episode_id: Option<i64>) -> Result<usize> {
+        Ok(match episode_id {
+            Some(id) => self.conn()?.execute(
+                "UPDATE episodes SET subs_state = 'whisper', subs_detail = '' WHERE id = ?1 AND subs_state != 'working'",
+                params![id],
+            )?,
+            None => self.conn()?.execute(
+                "UPDATE episodes SET subs_state = 'whisper', subs_detail = ''
+                 WHERE subs_state IN ('none', 'nokey', 'failed') AND (?1 IS NULL OR show_id = ?1)",
+                params![show_id],
+            )?,
+        })
+    }
+
     pub fn set_subs(
         &self,
         id: i64,

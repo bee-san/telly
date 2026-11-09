@@ -234,6 +234,21 @@
   </section>
 
   <section>
+    <h2>Whisper</h2>
+    {#if !status?.tools.whisper}
+      <p class="lede">Whisper can make subtitles for episodes Jimaku has nothing for. Telly uses the whisper.cpp Tidepool downloads for voice input, and Tidepool hasn't got it on this PC yet.</p>
+    {:else if !status.tools.whisperModel}
+      <p class="lede">Whisper can make subtitles for episodes Jimaku has nothing for, marked as machine-made. It needs a model that knows Japanese (190 MB, from whisper.cpp's own models).</p>
+      <div class="actions">
+        <button type="button" class="btn quiet" onclick={async () => { await call("getWhisperModel"); toast({ key: "whispermodel", state: "working", title: "Getting Whisper's Japanese model", text: "The title bar shows how it's going." }); }}>Get Whisper's model</button>
+      </div>
+    {:else}
+      <p class="lede">Ready. On a show's page, <b>Make subtitles with Whisper</b> covers the episodes Jimaku has nothing for. They're marked as machine-made.</p>
+      <p class="muted mono path">{status.tools.whisperModel}</p>
+    {/if}
+  </section>
+
+  <section>
     <h2>ffmpeg</h2>
     {#if status?.tools.ffmpeg}
       <p class="lede">Using <code>{status.tools.ffmpeg}</code><br /><span class="muted">{status.tools.version} · converts with {status.tools.encoder}</span></p>

@@ -53,7 +53,7 @@ function gettingSub(s: ShowCard): string {
 export function subsLabel(state: string, score: number | null): { text: string; tone: "ok" | "warn" | "wait" | "bad" | "" } {
   switch (state) {
     case "synced":
-      return { text: `Synced · ${Math.round((score ?? 0) * 100)}%`, tone: "ok" };
+      return score === null ? { text: "Made by Whisper", tone: "ok" } : { text: `Synced · ${Math.round(score * 100)}%`, tone: "ok" };
     case "check":
       return { text: `Needs a look · ${Math.round((score ?? 0) * 100)}%`, tone: "warn" };
     case "working":
@@ -64,6 +64,8 @@ export function subsLabel(state: string, score: number | null): { text: string; 
       return { text: "None on Jimaku", tone: "bad" };
     case "nokey":
       return { text: "Needs Jimaku key", tone: "bad" };
+    case "whisper":
+      return { text: "Waiting for Whisper", tone: "wait" };
     case "failed":
       return { text: "Failed", tone: "bad" };
     default:

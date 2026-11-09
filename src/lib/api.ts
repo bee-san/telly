@@ -119,7 +119,7 @@ export interface Episode {
   position: number;
   watchedAt: number | null;
   lastPlayedAt: number | null;
-  subsState: "pending" | "working" | "synced" | "check" | "none" | "nokey" | "failed" | "manual";
+  subsState: "pending" | "working" | "synced" | "check" | "none" | "nokey" | "failed" | "manual" | "whisper";
   subsDetail: string;
   subsFile: string;
   subsScore: number | null;
@@ -137,6 +137,8 @@ export interface ShowView {
   card: ShowCard;
   episodes: EpisodeRow[];
   activity: Activity;
+  /** whisper.cpp is on this PC (Tidepool's), and a Japanese model for it. */
+  whisper: { cli: boolean; model: boolean };
 }
 
 export interface Line {

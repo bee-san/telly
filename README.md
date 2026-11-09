@@ -27,6 +27,10 @@ Then in Settings:
 - check the card fields (Kiku's `Picture`, `SentenceAudio` and `MiscInfo` by default)
 - add `http://127.0.0.1:8773/anki/events` to Anki Beacon's addresses, so cards are finished the moment you add them (without Beacon, Telly asks AnkiConnect every 2 seconds while you watch)
 
+Hachidori in Telly links to the Hachidori in your browser, so lookups use your dictionaries, settings and card format. That goes through Hachidori Relay in Anki, or Telly's own relay while Anki is closed. Turn on sharing in your browser's Hachidori (Settings → Sharing), and Telly's Settings → Hachidori says "Linked".
+
+When Jimaku has nothing for an episode (or there's no key yet), its show's page offers **Make subtitles with Whisper**. It uses the whisper.cpp Tidepool downloads for voice input, with whisper.cpp's small multilingual model (190 MB, from Settings → Whisper). Whisper's subtitles are marked as machine-made.
+
 ## Where things go
 
 | | |

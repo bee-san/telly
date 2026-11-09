@@ -525,6 +525,7 @@
   const syncNote = $derived.by(() => {
     const e = view?.episode;
     if (!e) return "";
+    if (e.subsState === "synced" && e.subsFile === "Whisper") return "Subtitles made by Whisper";
     if (e.subsState === "synced") return `Subtitles synced · ${Math.round((e.subsScore ?? 0) * 100)}%`;
     if (e.subsState === "check") return `Subtitles need a look · ${Math.round((e.subsScore ?? 0) * 100)}%`;
     if (e.subsState === "pending" || e.subsState === "working") return "Finding subtitles…";

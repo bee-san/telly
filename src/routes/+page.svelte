@@ -1,5 +1,6 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
+  import { page } from "$app/state";
   import { onMount } from "svelte";
   import AddSheet from "$lib/AddSheet.svelte";
   import Cover from "$lib/Cover.svelte";
@@ -27,6 +28,9 @@
     app.dark = false;
     setWindowTitle("Telly");
     load();
+    // /?add=<folder> opens Add media on that folder (handy for testing in a browser).
+    const folder = page.url.searchParams.get("add");
+    if (folder) adding = folder;
     let timer: ReturnType<typeof setTimeout>;
     const loop = async () => {
       await load();

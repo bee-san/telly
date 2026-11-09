@@ -66,6 +66,8 @@ export interface ShowCard extends Show {
   watched: number;
   mediaReady: number;
   subsReady: number;
+  /** Episodes with subtitles (synced, or needing a look). */
+  subsFound: number;
   status: "new" | "watching" | "finished" | "getting";
   next: NextUp | null;
   cards: number;

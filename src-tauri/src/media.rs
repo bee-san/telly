@@ -295,10 +295,10 @@ pub fn video_filter(v: &VideoInfo, encoder: &str) -> String {
 
 fn encoder_args(encoder: &str) -> Vec<String> {
     let args: &[&str] = match encoder {
-        "h264_nvenc" => &["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "20", "-b:v", "0", "-profile:v", "high"],
-        "h264_amf" => &["-c:v", "h264_amf", "-usage", "transcoding", "-quality", "quality", "-rc", "cqp", "-qp_i", "19", "-qp_p", "21", "-qp_b", "23", "-profile:v", "high"],
-        "h264_qsv" => &["-c:v", "h264_qsv", "-preset", "medium", "-global_quality", "21", "-profile:v", "high"],
-        _ => &["-c:v", "libx264", "-preset", "veryfast", "-crf", "19", "-tune", "animation", "-profile:v", "high"],
+        "h264_nvenc" => &["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "23", "-b:v", "0", "-profile:v", "high"],
+        "h264_amf" => &["-c:v", "h264_amf", "-usage", "transcoding", "-quality", "quality", "-rc", "cqp", "-qp_i", "22", "-qp_p", "24", "-qp_b", "26", "-profile:v", "high"],
+        "h264_qsv" => &["-c:v", "h264_qsv", "-preset", "medium", "-global_quality", "23", "-profile:v", "high"],
+        _ => &["-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-tune", "animation", "-profile:v", "high"],
     };
     args.iter().map(|a| a.to_string()).collect()
 }
@@ -397,6 +397,19 @@ pub fn run_ffmpeg(
 
 /// Reads one audio track as mono 16-bit samples at `rate` Hz (for syncing and Whisper).
 pub fn read_audio(ffmpeg: &Path, path: &Path, audio: usize, rate: u32, start: Option<f64>, length: Option<f64>) -> Result<Vec<i16>> {
+    read_audio_filtered(ffmpeg, path, audio, rate, start, length, None)
+}
+
+/// As `read_audio`, through an ffmpeg audio filter first (a voice band-pass, say).
+pub fn read_audio_filtered(
+    ffmpeg: &Path,
+    path: &Path,
+    audio: usize,
+    rate: u32,
+    start: Option<f64>,
+    length: Option<f64>,
+    filter: Option<&str>,
+) -> Result<Vec<i16>> {
     let mut cmd = command(ffmpeg);
     cmd.args(["-nostdin", "-hide_banner", "-v", "error"]);
     if let Some(start) = start {
@@ -405,6 +418,9 @@ pub fn read_audio(ffmpeg: &Path, path: &Path, audio: usize, rate: u32, start: Op
     cmd.arg("-i").arg(path);
     if let Some(length) = length {
         cmd.args(["-t", &format!("{length:.3}")]);
+    }
+    if let Some(filter) = filter {
+        cmd.args(["-af", filter]);
     }
     cmd.args(["-map", &format!("0:a:{audio}"), "-vn", "-sn", "-ac", "1", "-ar", &rate.to_string(), "-f", "s16le", "-"]);
     let out = cmd.stdin(Stdio::null()).output().context("starting ffmpeg")?;

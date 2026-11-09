@@ -100,6 +100,17 @@
     load();
   }
 
+  async function lookAgain() {
+    toast({ key: "rescan", state: "working", title: "Looking for new episodes", text: card?.folder ?? "" });
+    try {
+      const r = await call<{ added: number }>("rescan", { id });
+      toast({ key: "rescan", state: "done", title: r.added ? `Added ${r.added} episodes` : "No new episodes", text: r.added ? "They'll be ready to play soon." : "Telly checks the folder every 10 minutes too." });
+    } catch (e) {
+      toast({ key: "rescan", state: "failed", title: "Couldn't look", text: errorText(e) });
+    }
+    load();
+  }
+
   async function remove() {
     if (!card || !confirm(`Remove ${card.title} from Telly? Your files stay where they are; Telly's copies and subtitles go.`)) return;
     await call("removeShow", { id });
@@ -132,14 +143,17 @@
           {/if}
           <span class="sp-state">
             {#if card.subsReady < card.episodes}
-              <span class="spin"></span>Subtitles for {card.subsReady} of {card.episodes}
+              <span class="spin"></span>Finding subtitles · {card.subsReady} of {card.episodes} done
+            {:else if card.subsFound === card.episodes}
+              <Icon name="check" />Every episode has subtitles
             {:else}
-              <Icon name="check" />Subtitles done
+              Subtitles for {card.subsFound} of {card.episodes}
             {/if}
-            <span class="bar"><i style:width="{Math.round((100 * card.subsReady) / Math.max(1, card.episodes))}%"></i></span>
+            <span class="bar"><i style:width="{Math.round((100 * (card.subsReady < card.episodes ? card.subsReady : card.subsFound)) / Math.max(1, card.episodes))}%"></i></span>
           </span>
           <span class="grow"></span>
           <button type="button" class="btn quiet small" onclick={() => { matching = true; query = card?.titleRomaji || card?.title || ""; found = []; search(); }}>Change match</button>
+          <button type="button" class="btn quiet small" onclick={lookAgain}>Look for new episodes</button>
           <button type="button" class="btn quiet small" onclick={() => act(() => call("retrySubs", { show: id }))}>Find subtitles again</button>
           <button type="button" class="btn quiet small" onclick={freeSpace}>Free up space</button>
           <button type="button" class="btn danger small" onclick={remove}>Remove</button>
@@ -162,7 +176,7 @@
             {#if s.tone === "ok"}<Icon name="check" />{:else if ep.subsState === "working"}<span class="spin"></span>{/if}
             <span>{s.text}</span>
           </span>
-          <span class="cell muted" title={ep.subsDetail}><span>{ep.subsDetail || (ep.subsFile ? ep.subsFile : "")}</span></span>
+          <span class="cell muted" title={ep.subsFile || ep.subsDetail}><span>{["synced", "check", "manual", "failed", "none"].includes(ep.subsState) ? ep.subsDetail || ep.subsFile : ""}</span></span>
           <span class="ep-state" class:ok={ep.watched}>
             {#if ep.watched}<i></i>Watched{:else if ep.position > 20}<i class="part"></i>{clock(ep.position)}{:else if ep.isNext}Next{/if}
             <span class="more" role="presentation" onclick={(e) => rowMenu(e, ep)}><Icon name="more" /></span>

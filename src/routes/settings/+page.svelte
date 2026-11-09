@@ -196,11 +196,11 @@
       </div>
     </div>
     <div class="status-list">
-      <p><i class:ok={status?.anki} class:bad={status && !status.anki}></i>{status?.anki ? `Anki is open (AnkiConnect at ${status.ankiUrl})` : "Anki isn't open, or AnkiConnect isn't installed"}</p>
+      <p><i class:ok={status?.anki} class:bad={status && !status.anki}></i><span>{status?.anki ? `Anki is open (AnkiConnect at ${status.ankiUrl})` : "Anki isn't open, or AnkiConnect isn't installed"}</span></p>
       <p><i class:ok={status?.mining?.beacon} class:warn={status?.mining && !status.mining.beacon}></i>
-        {#if status?.mining?.beacon}Anki Beacon is telling Telly about new cards{:else if status?.mining?.listening}Listening for Anki Beacon at <code>{status.beaconAddress}</code>. Add that address to Beacon's config in Anki (Tools → Add-ons → Anki Beacon → Config). Until then Telly asks AnkiConnect every 2 seconds while you watch.{:else}{status?.mining?.listenError ?? "Not listening for Anki Beacon"}{/if}
+        <span>{#if status?.mining?.beacon}Anki Beacon is telling Telly about new cards{:else if status?.mining?.listening}Listening for Anki Beacon at <code>{status.beaconAddress}</code>. Add that address to Beacon's config in Anki (Tools → Add-ons → Anki Beacon → Config). Until then Telly asks AnkiConnect every 2 seconds while you watch.{:else}{status?.mining?.listenError ?? "Not listening for Anki Beacon"}{/if}</span>
       </p>
-      <p><i class:ok={status?.tools.canClip} class:bad={status && !status.tools.canClip}></i>{status?.tools.canClip ? "ffmpeg can make animated AVIF and Opus" : "This ffmpeg can't make AVIF and Opus (it needs libsvtav1 and libopus)"}</p>
+      <p><i class:ok={status?.tools.canClip} class:bad={status && !status.tools.canClip}></i><span>{status?.tools.canClip ? "ffmpeg can make animated AVIF and Opus" : "This ffmpeg can't make AVIF and Opus (it needs libsvtav1 and libopus)"}</span></p>
     </div>
   </section>
 

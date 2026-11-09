@@ -117,6 +117,7 @@ pub struct ShowCard {
     pub watched: usize,
     pub media_ready: usize,
     pub subs_ready: usize,
+    pub subs_found: usize,
     /// new, watching, finished or getting (the next episode isn't ready to play yet).
     pub status: String,
     pub next: Option<NextUp>,
@@ -258,6 +259,7 @@ impl Backend {
         jobs::start(self.clone());
         let backend = self.clone();
         std::thread::Builder::new().name("telly-cards".into()).spawn(move || cards::worker(&backend)).ok();
+        self.watch_folders();
     }
 
     /// Listens for Anki Beacon and polls AnkiConnect while the player is open.
@@ -333,6 +335,7 @@ impl Backend {
         let watched = episodes.iter().filter(|e| e.watched_at.is_some()).count();
         let media_ready = episodes.iter().filter(|e| e.media_state == "ready").count();
         let subs_ready = episodes.iter().filter(|e| settled(&e.subs_state)).count();
+        let subs_found = episodes.iter().filter(|e| matches!(e.subs_state.as_str(), "synced" | "check" | "manual")).count();
         let next = jobs::next_episode(&episodes).map(|e| NextUp {
             episode_id: e.id,
             number: e.number,
@@ -359,6 +362,7 @@ impl Backend {
             watched,
             media_ready,
             subs_ready,
+            subs_found,
             status: status.into(),
             next,
         })
@@ -424,7 +428,7 @@ impl Backend {
         let tools = self.tools();
         let scan = scan::scan(Path::new(folder), |paths| scan::probe_durations(tools.ffprobe.as_deref(), paths))?;
         let count = scan.files.iter().filter(|f| f.number.is_some()).count();
-        let (matches, error) = match anilist::search(&scan.guess) {
+        let (matches, error) = match anilist::search_loosely(&scan.guess) {
             Ok(mut found) => {
                 anilist::rank(&mut found, &scan.guess, count);
                 (found, None)
@@ -432,6 +436,68 @@ impl Backend {
             Err(e) => (Vec::new(), Some(format!("{e:#}"))),
         };
         Ok(json!({ "scan": scan, "matches": matches, "error": error, "ffprobe": tools.ffprobe.is_some() }))
+    }
+
+    /// Looks in a show's folder again for episodes that weren't there, or
+    /// couldn't be read (still downloading), when it was added. Returns how many it added.
+    pub fn rescan(&self, id: i64) -> Result<usize> {
+        let show = self.db.show(id)?.ok_or_else(|| anyhow!("That show isn't in Telly any more"))?;
+        let existing = self.db.episodes(id)?;
+        let known: std::collections::HashMap<String, f64> = existing.iter().map(|e| (e.path.clone(), e.duration)).collect();
+        let taken: std::collections::HashSet<i64> = existing.iter().map(|e| e.number).collect();
+        let tools = self.tools();
+        let scan = scan::scan(Path::new(&show.folder), |paths| {
+            // Only files Telly doesn't know yet need ffprobe.
+            let unknown: Vec<PathBuf> = paths.iter().filter(|p| !known.contains_key(p.to_string_lossy().as_ref())).cloned().collect();
+            let probed = scan::probe_durations(tools.ffprobe.as_deref(), &unknown);
+            let mut by_path: std::collections::HashMap<PathBuf, Option<f64>> = unknown.into_iter().zip(probed).collect();
+            paths
+                .iter()
+                .map(|p| match known.get(p.to_string_lossy().as_ref()) {
+                    // Known episodes count as readable whatever their length.
+                    Some(d) => Some(if *d > 0.0 { *d } else { 600.0 }),
+                    None => by_path.remove(p).flatten(),
+                })
+                .collect()
+        })?;
+        let mut next_number = existing.iter().map(|e| e.number).max().unwrap_or(0) + 1;
+        let mut new = Vec::new();
+        for f in scan.files.iter().filter(|f| f.reason.is_empty() && !known.contains_key(&f.path)) {
+            let number = match f.parsed {
+                Some(n) if scan.numbering == "names" => {
+                    if taken.contains(&n) || new.iter().any(|e: &crate::db::NewEpisode| e.number == n) {
+                        continue; // another copy of an episode Telly has
+                    }
+                    n
+                }
+                _ => {
+                    next_number += 1;
+                    next_number - 1
+                }
+            };
+            new.push(crate::db::NewEpisode { number, path: f.path.clone(), size: f.size, duration: f.duration });
+        }
+        if !new.is_empty() {
+            self.db.add_episodes(id, &new)?;
+            self.jobs.poke();
+        }
+        Ok(new.len())
+    }
+
+    /// Looks for new episodes in every show's folder now, and every 10 minutes.
+    fn watch_folders(self: &Arc<Self>) {
+        let backend = self.clone();
+        std::thread::Builder::new()
+            .name("telly-folders".into())
+            .spawn(move || loop {
+                for show in backend.db.shows().unwrap_or_default() {
+                    if Path::new(&show.folder).is_dir() {
+                        let _ = backend.rescan(show.id);
+                    }
+                }
+                std::thread::sleep(Duration::from_secs(600));
+            })
+            .ok();
     }
 
     fn new_show_from(anime: Option<&Anime>, mut base: NewShow) -> NewShow {
@@ -702,6 +768,10 @@ impl Backend {
                 to_value(found)
             }
             "addShow" => self.add_show(&args),
+            "rescan" => {
+                let added = self.rescan(arg(&args, "id")?)?;
+                Ok(json!({ "added": added }))
+            }
             "rematch" => self.rematch(arg(&args, "id")?, arg(&args, "anilistId")?),
             "removeShow" => self.remove_show(arg(&args, "id")?),
             "renumber" => {

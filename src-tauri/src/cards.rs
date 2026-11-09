@@ -325,7 +325,9 @@ fn finish(backend: &Backend, job: &MineJob) -> Result<()> {
     let empty = |name: &str| note.field(name).is_some_and(|v| v.trim().is_empty());
 
     let base = format!("telly-{}-e{:02}-{}", slug(&show.title), episode.number, job.note_id);
-    let clip = clip::cut(&ffmpeg, &video, audio_index, job.start, job.end, &backend.dirs.clips(), &base)?;
+    // Anki runs in its own folder, so it gets full paths.
+    let clips = std::path::absolute(backend.dirs.clips()).unwrap_or_else(|_| backend.dirs.clips());
+    let clip = clip::cut(&ffmpeg, &video, audio_index, job.start, job.end, &clips, &base)?;
     let mut update = Map::new();
     if empty(&f.picture) {
         let name = anki::store_media_file(&url, &format!("{base}.avif"), &clip.picture)?;

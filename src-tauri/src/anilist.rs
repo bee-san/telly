@@ -144,18 +144,50 @@ fn likeness(a: &str, b: &str) -> f64 {
     }
 }
 
+/// The format a folder's name asks for: "OVA", "MOVIE", "SPECIAL" or "ONA", else TV.
+fn format_hint(title: &str) -> &'static str {
+    let words = words(title);
+    let has = |w: &[&str]| words.iter().any(|x| w.contains(&x.as_str()));
+    if has(&["ova", "oad", "ovas", "oads"]) {
+        "OVA"
+    } else if has(&["movie", "film", "gekijouban", "劇場版"]) {
+        "MOVIE"
+    } else if has(&["special", "specials", "sp"]) {
+        "SPECIAL"
+    } else if has(&["ona"]) {
+        "ONA"
+    } else {
+        "TV"
+    }
+}
+
+/// Searches, and if nothing comes back, searches again with fewer words
+/// ("Fairy Tail OVA Collection" → "Fairy Tail OVA" → "Fairy Tail").
+pub fn search_loosely(text: &str) -> Result<Vec<Anime>> {
+    let mut words: Vec<&str> = text.split_whitespace().collect();
+    loop {
+        let found = search(&words.join(" "))?;
+        if !found.is_empty() || words.len() <= 1 {
+            return Ok(found);
+        }
+        words.pop();
+    }
+}
+
 /// Orders search results by how well they fit a folder called `title` with `count` episodes.
 pub fn rank(results: &mut [Anime], title: &str, count: usize) {
     let n = results.len().max(1) as f64;
+    let wanted = format_hint(title);
     for (i, a) in results.iter_mut().enumerate() {
         let names = [a.romaji.as_str(), a.english.as_str(), a.native.as_str()]
             .into_iter()
             .chain(a.synonyms.iter().map(String::as_str));
         let title_fit = names.map(|name| likeness(title, name)).fold(0.0, f64::max);
-        let format_fit = match a.format.as_str() {
-            "TV" => 1.0,
-            "TV_SHORT" | "ONA" => 0.6,
-            "OVA" | "SPECIAL" => 0.3,
+        let format_fit = match (wanted, a.format.as_str()) {
+            (w, f) if w == f => 1.0,
+            ("TV", "TV_SHORT" | "ONA") => 0.6,
+            ("TV", "OVA" | "SPECIAL") => 0.3,
+            ("OVA", "SPECIAL" | "ONA") | ("SPECIAL", "OVA" | "ONA") => 0.6,
             _ => 0.0,
         };
         let episode_fit = match a.episodes {
@@ -211,6 +243,9 @@ mod tests {
         let mut ft = vec![anime(9, "FAIRY TAIL (2014)", "Fairy Tail Series 2", "TV", Some(102)), anime(6702, "FAIRY TAIL", "Fairy Tail", "TV", Some(175))];
         rank(&mut ft, "Fairy Tail", 175);
         assert_eq!(ft[0].id, 6702);
+        let mut ova = vec![anime(6702, "FAIRY TAIL", "Fairy Tail", "TV", Some(175)), anime(10087, "FAIRY TAIL OVA", "Fairy Tail OVA", "OVA", Some(9))];
+        rank(&mut ova, "Fairy Tail OVA", 9);
+        assert_eq!(ova[0].id, 10087);
     }
 
     #[test]

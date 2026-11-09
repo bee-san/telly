@@ -139,6 +139,8 @@ pub fn clean_title(name: &str) -> String {
     let parts = re(&PARTS, r"(?i)\b(box(?:\s*set)?|set|disc|disk|vol(?:ume)?|part|season|series)\b\s*\d*");
     let cleaned = formats.replace_all(&bare, " ");
     let cleaned = parts.replace_all(&cleaned, " ");
+    // "Fairy Tail - OVAs" searches better as "Fairy Tail OVA".
+    let cleaned = cleaned.replace(" - ", " ").replace("OVAs", "OVA").replace("OADs", "OAD");
     let cleaned = re(&SPACES, r"\s+").replace_all(cleaned.trim(), " ");
     cleaned.trim_matches(|c: char| c == '-' || c.is_whitespace()).to_string()
 }
@@ -249,7 +251,7 @@ pub fn scan(folder: &Path, durations: impl Fn(&[PathBuf]) -> Vec<Option<f64>>) -
             let reason = if let Some(why) = extra_reason(&rel) {
                 why.to_string()
             } else if duration <= 0.0 {
-                "Telly couldn't read it".to_string()
+                "Telly couldn't read it (still downloading?)".to_string()
             } else if duration < MIN_SECONDS {
                 "Under 5 minutes".to_string()
             } else if duration > MAX_SECONDS {
@@ -353,6 +355,7 @@ mod tests {
         assert_eq!(clean_title("[Judas] Fairy Tail (2009)"), "Fairy Tail");
         assert_eq!(clean_title("Shirokuma_Cafe_BD_1080p"), "Shirokuma Cafe");
         assert_eq!(clean_title("Haikyuu!! Season 2 Complete"), "Haikyuu!!");
+        assert_eq!(clean_title("[Judas] Fairy Tail (2011) - OVAs"), "Fairy Tail OVA");
     }
 
     #[test]

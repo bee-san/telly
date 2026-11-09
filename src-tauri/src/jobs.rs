@@ -25,10 +25,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-/// A sync scoring at least this shows as synced; below it, as "needs a look".
+/// A sync scoring at least this shows as synced; below it, as "needs a look"
+/// (0.5 is 4 spreads above chance; see sync.rs).
 pub const GOOD_SYNC: f64 = 0.5;
 /// After this, the quick sync stops trying more files.
-const GREAT_SYNC: f64 = 0.7;
+const GREAT_SYNC: f64 = 0.75;
 /// The most subtitle files tried per episode.
 const MAX_TRIES: usize = 4;
 /// Nothing played for this long counts as idle.
@@ -370,7 +371,7 @@ pub fn write_lines(backend: &Backend, episode_id: i64, lines: &[Line]) -> Result
 /// Where people speak in an episode, from its Japanese track, and how long it is.
 fn speech_of(ffmpeg: &Path, probe: &media::Probe, episode: &Episode) -> Result<(Vec<(f64, f64)>, f64)> {
     let source = Path::new(&episode.path);
-    let samples = media::read_audio(ffmpeg, source, media::japanese_audio(probe), sync::RATE, None, None)?;
+    let samples = media::read_audio_filtered(ffmpeg, source, media::japanese_audio(probe), sync::RATE, None, None, Some(sync::VOICE_FILTER))?;
     let length = samples.len() as f64 / sync::RATE as f64;
     Ok((sync::voice_spans(&samples), length))
 }

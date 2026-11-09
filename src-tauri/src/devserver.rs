@@ -23,6 +23,7 @@ fn allowed(origin: Option<&str>) -> bool {
 fn main() {
     let mut args = std::env::args().skip(1);
     let dir = PathBuf::from(args.next().expect("usage: telly-devserver <data dir> [port]"));
+    let dir = std::path::absolute(&dir).unwrap_or(dir);
     let port: u16 = args.next().and_then(|p| p.parse().ok()).unwrap_or(1430);
     let backend = Arc::new(Backend::open(Dirs { local: dir.clone(), roaming: dir.clone() }).expect("opening the data folder"));
     backend.start();

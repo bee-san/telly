@@ -252,7 +252,7 @@
   }
 
   function lineStart(l: Line) {
-    return l.start + nudge / 1000 - 0.05;
+    return l.start + nudge / 1000 + 0.02;
   }
 
   function prevLine() {

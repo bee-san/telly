@@ -358,6 +358,20 @@ impl Db {
         Ok(id)
     }
 
+    /// Episodes that turned up in a show's folder after it was added.
+    pub fn add_episodes(&self, show_id: i64, episodes: &[NewEpisode]) -> Result<()> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        for e in episodes {
+            tx.execute(
+                "INSERT INTO episodes (show_id, number, path, size, duration) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![show_id, e.number, e.path, e.size, e.duration],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn show(&self, id: i64) -> Result<Option<Show>> {
         let sql = format!("SELECT {SHOW_COLUMNS} FROM shows WHERE id = ?1");
         Ok(self.conn()?.query_row(&sql, params![id], show_from_row).optional()?)

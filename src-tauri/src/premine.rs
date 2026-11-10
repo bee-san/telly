@@ -6,14 +6,16 @@
 //!   nouns and the cast's names are left out. Where nouns run together, the
 //!   longest stretch Hachidori knows is one word (魔導士 in 魔導士たち, rather
 //!   than 魔 and 導).
-//! - Each word's headword, reading and frequency come from Hachidori, through
-//!   the Yomitan API (port 19633) that Hachidori Relay in Anki answers from the
-//!   Hachidori in your browser, so they're what a lookup there would show.
+//! - Each word's headword, reading and frequency come from Hachidori, so
+//!   they're what a lookup would show: Telly's own (own_hachidori.rs), or,
+//!   when Telly is linked to the Hachidori in your browser, that one through
+//!   the Yomitan API Hachidori Relay serves on port 19633.
 //! - Anki says what you have. A note whose word field holds the headword, or
 //!   its reading, is a card you have, so premining leaves the word out. A card
 //!   21 days or more apart is mature: its word is one you know.
 //! - Cards are made in your Hachidori card format (its first Template), in a
-//!   Premined subdeck of its deck, with the line the word came from. Telly's
+//!   Premined subdeck of the show's deck (Type::Fairy Tail::Premined), with
+//!   the line the word came from. Telly's
 //!   card finisher then adds the moving picture, the audio and MiscInfo, and
 //!   tags them as it does the cards you mine while watching.
 
@@ -21,7 +23,7 @@ use crate::backend::Backend;
 use crate::db::{Episode, Show};
 use crate::names::kana::{contains_japanese, contains_kanji, kata_to_hira};
 use crate::subs::Line;
-use crate::{anki, cards, jobs, names};
+use crate::{anki, cards, jobs, names, own_hachidori};
 use anyhow::{anyhow, Result};
 use lindera::dictionary::load_dictionary;
 use lindera::mode::Mode;
@@ -50,6 +52,7 @@ const CHECKS_PER_REQUEST: usize = 100;
 /// The subdeck of your card format's deck that premined cards go in.
 const SUBDECK: &str = "Premined";
 const NO_RELAY: &str = "Premining needs Anki open, with Hachidori Relay. Open Anki and try again.";
+const NO_OWN: &str = "Telly’s Hachidori isn’t running yet. Wait a moment, or use Restart Hachidori in Settings.";
 const NO_SHARING: &str = "Premining needs the Hachidori in your browser. Turn on sharing in it (Settings → Sharing) and try again.";
 
 /// What Hachidori shows for a word: its headword, its reading, and its rank in
@@ -297,7 +300,39 @@ fn candidates(text: &str) -> Result<Vec<Candidate>> {
 
 // ---- Hachidori ----
 
-fn api(path: &str, body: Value) -> Result<Value> {
+/// Asks Hachidori a Yomitan API request (`path` as Hachidori Relay serves it):
+/// Telly's own, unless Telly is linked to the one in your browser, or a
+/// stand-in is set for testing.
+fn api(backend: &Backend, path: &str, body: Value) -> Result<Value> {
+    if std::env::var_os("TELLY_YOMITAN_API").is_none() && !backend.db.setting_bool("hachidori.link", false) {
+        if !backend.own_hachidori.answering() {
+            return Err(anyhow!(NO_OWN));
+        }
+        return own_api(backend, path, body);
+    }
+    relay_api(path, body)
+}
+
+/// The request as Hachidori's own API code takes it (its hd_api_* messages),
+/// answered the way Hachidori Relay answers it.
+fn own_api(backend: &Backend, path: &str, body: Value) -> Result<Value> {
+    let ask = |request: Value| backend.own_hachidori.ask(request, Duration::from_secs(120));
+    match path {
+        "/termEntries" => Ok(ask(json!({ "type": "hd_api_term_entries", "terms": body["term"] }))?["results"].take()),
+        "/ankiCardFormats" => Ok(ask(json!({ "type": "hd_api_anki_card_formats" }))?["cardFormats"].take()),
+        "/ankiFields" => ask(json!({
+            "type": "hd_api_anki_fields",
+            "text": body["text"],
+            "entryType": body["type"],
+            "markers": body["markers"],
+            "maxEntries": body["maxEntries"],
+            "includeMedia": body["includeMedia"],
+        })),
+        _ => Err(anyhow!("Telly’s Hachidori doesn’t answer {path}")),
+    }
+}
+
+fn relay_api(path: &str, body: Value) -> Result<Value> {
     let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(90))).http_status_as_error(false).build().into();
     let mut response = agent.post(format!("{}{path}", api_address())).send_json(body).map_err(|_| anyhow!(NO_RELAY))?;
     let value: Value = response
@@ -327,19 +362,28 @@ fn term_of(text: &str, result: &Value) -> Option<Term> {
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter(|f| f.get("frequencyMode").and_then(Value::as_str) != Some("occurrence-based"))
-        .filter_map(|f| {
-            let value = f.get("frequency").and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|x| x.round() as i64)))?;
-            Some((f.get("dictionaryIndex").and_then(Value::as_i64).unwrap_or(0), value))
-        })
+        .filter_map(|f| Some((f.get("dictionaryIndex").and_then(Value::as_i64).unwrap_or(0), rank_of(f)?)))
         .filter(|(_, v)| *v > 0)
         .collect();
     ranks.sort();
     Some(Term { headword, reading, rank: ranks.first().map(|(_, v)| *v) })
 }
 
+/// A frequency as a rank (lower is more common). A dictionary that counts
+/// occurrences (higher is more common) has no rank, unless it shows one: Bee's
+/// Frequency Dictionary calls itself occurrence-based but shows 本 as "#459".
+fn rank_of(frequency: &Value) -> Option<i64> {
+    if frequency.get("frequencyMode").and_then(Value::as_str) != Some("occurrence-based") {
+        return frequency.get("frequency").and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|x| x.round() as i64)));
+    }
+    let shown = frequency.get("displayValue").and_then(Value::as_str)?.trim().strip_prefix('#')?;
+    let digits: String = shown.chars().take_while(|c| c.is_ascii_digit() || *c == ',').filter(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
 /// Looks up the texts Telly hasn't asked Hachidori about yet.
-fn look_up(cache: &Mutex<HashMap<String, Option<Term>>>, texts: &[String], step: &dyn Fn(f64)) -> Result<()> {
+fn look_up(backend: &Backend, texts: &[String], step: &dyn Fn(f64)) -> Result<()> {
+    let cache = &backend.premining.terms;
     let new: Vec<String> = {
         let known = cache.lock().map_err(|_| anyhow!("premining stopped"))?;
         let mut seen = HashSet::new();
@@ -347,7 +391,7 @@ fn look_up(cache: &Mutex<HashMap<String, Option<Term>>>, texts: &[String], step:
     };
     for (k, chunk) in new.chunks(LOOKUPS_PER_REQUEST).enumerate() {
         step(k as f64 * LOOKUPS_PER_REQUEST as f64 / new.len().max(1) as f64);
-        let answer = api("/termEntries", json!({ "term": chunk }))?;
+        let answer = api(backend, "/termEntries", json!({ "term": chunk }))?;
         let results = answer.as_array().cloned().unwrap_or_default();
         let mut known = cache.lock().map_err(|_| anyhow!("premining stopped"))?;
         for (i, text) in chunk.iter().enumerate() {
@@ -357,8 +401,8 @@ fn look_up(cache: &Mutex<HashMap<String, Option<Term>>>, texts: &[String], step:
     Ok(())
 }
 
-fn card_format() -> Result<CardFormat> {
-    let formats = api("/ankiCardFormats", json!({}))?;
+fn card_format(backend: &Backend) -> Result<CardFormat> {
+    let formats = api(backend, "/ankiCardFormats", json!({}))?;
     let first = formats
         .as_array()
         .and_then(|a| a.first())
@@ -436,7 +480,7 @@ struct Use {
 /// The words to premine in `count` episodes of `show` from Episode `from`.
 fn make_list(backend: &Backend, show: &Show, from: i64, count: i64, step: &dyn Fn(&str, f64)) -> Result<List> {
     step("Reading your card format", 0.0);
-    let format = card_format()?;
+    let format = card_format(backend)?;
     let field = format.word_field();
     let mut episodes: Vec<Episode> = backend.db.episodes(show.id)?.into_iter().filter(|e| e.number >= from).collect();
     episodes.sort_by_key(|e| e.number);
@@ -463,7 +507,7 @@ fn make_list(backend: &Backend, show: &Show, from: i64, count: i64, step: &dyn F
 
     // What Hachidori makes of them.
     let texts: Vec<String> = found.iter().flat_map(|(e, l, c)| c.texts(&lines[*e][*l].text)).collect();
-    look_up(&backend.premining.terms, &texts, &|p| step("Looking up the words in Hachidori", 0.2 + 0.6 * p))?;
+    look_up(backend, &texts, &|p| step("Looking up the words in Hachidori", 0.2 + 0.6 * p))?;
     let terms = backend.premining.terms.lock().map_err(|_| anyhow!("premining stopped"))?.clone();
 
     // Each use of each word.
@@ -535,7 +579,7 @@ fn make_list(backend: &Backend, show: &Show, from: i64, count: i64, step: &dyn F
         known: if uses.is_empty() { 0.0 } else { known_uses as f64 / uses.len() as f64 },
         learning: have.iter().filter(|(card, mature)| *card && !*mature).count(),
         words: words.into_iter().map(|(_, w)| w).collect(),
-        deck: format!("{}::{SUBDECK}", format.deck),
+        deck: premined_deck(backend, show),
     })
 }
 
@@ -548,6 +592,11 @@ fn sort_words(words: &mut [(usize, Word)]) {
 }
 
 // ---- Cards ----
+
+/// Where `show`'s premined cards go: a Premined subdeck of the show's deck.
+fn premined_deck(backend: &Backend, show: &Show) -> String {
+    format!("{}::{SUBDECK}", own_hachidori::deck_for(backend, &show.title))
+}
 
 /// The {markers} in a template, lower case, in order.
 fn markers_in(template: &str) -> Vec<String> {
@@ -683,8 +732,9 @@ fn sentence_markers(word: &Word) -> Result<HashMap<String, String>> {
 }
 
 /// Makes one card in Anki; returns its note.
-fn make_card(url: &str, format: &CardFormat, deck: &str, word: &Word) -> Result<i64> {
+fn make_card(backend: &Backend, url: &str, format: &CardFormat, deck: &str, word: &Word) -> Result<i64> {
     let answer = api(
+        backend,
         "/ankiFields",
         json!({ "text": word.headword, "type": "term", "markers": format.markers(), "maxEntries": 1, "includeMedia": true }),
     )?;
@@ -721,8 +771,11 @@ fn make_card(url: &str, format: &CardFormat, deck: &str, word: &Word) -> Result<
 
 fn make_cards(backend: &Backend, words: &[Word], step: &dyn Fn(&str, f64)) -> Result<(usize, Vec<String>)> {
     step("Reading your card format", 0.0);
-    let format = card_format()?;
-    let deck = format!("{}::{SUBDECK}", format.deck);
+    let format = card_format(backend)?;
+    let episode = words.first().map(|w| w.episode_id).unwrap_or_default();
+    let show = backend.db.episode(episode)?.and_then(|e| backend.db.show(e.show_id).ok().flatten());
+    let show = show.ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?;
+    let deck = premined_deck(backend, &show);
     let url = cards::anki_url(backend);
     anki::invoke(&url, "createDeck", json!({ "deck": deck }))?;
     let padding = backend.db.setting_str("clip.padding");
@@ -730,7 +783,7 @@ fn make_cards(backend: &Backend, words: &[Word], step: &dyn Fn(&str, f64)) -> Re
     let (mut added, mut skipped) = (0, Vec::new());
     for (i, word) in words.iter().enumerate() {
         step(&format!("Making cards · {} of {}", i + 1, words.len()), i as f64 / words.len().max(1) as f64);
-        match make_card(&url, &format, &deck, word) {
+        match make_card(backend, &url, &format, &deck, word) {
             Ok(note) => {
                 added += 1;
                 // The moving picture and the audio, by the card finisher.
@@ -907,6 +960,10 @@ mod tests {
         assert_eq!(term_of("悪意", &result), Some(Term { headword: "悪意".into(), reading: "あくい".into(), rank: Some(15000) }));
         // A match of only part of the text is another word.
         assert_eq!(term_of("悪意者", &result), None);
+        // An occurrence-based dictionary that shows a rank ranks by it.
+        let shown = json!({ "dictionaryIndex": 0, "frequency": 481, "frequencyMode": "occurrence-based", "displayValue": "#459 (sum)" });
+        assert_eq!(rank_of(&shown), Some(459));
+        assert_eq!(rank_of(&json!({ "frequency": 42, "frequencyMode": "occurrence-based", "displayValue": "42" })), None);
     }
 
     #[test]

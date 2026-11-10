@@ -359,10 +359,10 @@ export async function relayStatus(): Promise<string> {
 }
 
 /** Windows' folder picker in the app; a prompt in a browser. */
-export async function pickFolder(): Promise<string | null> {
-  if (!inTauri) return window.prompt("Folder to add (full path)");
+export async function pickFolder(title = "Add media"): Promise<string | null> {
+  if (!inTauri) return window.prompt(`${title} (full path)`);
   const { open } = await import("@tauri-apps/plugin-dialog");
-  const picked = await open({ directory: true, multiple: false, title: "Add media" });
+  const picked = await open({ directory: true, multiple: false, title });
   return typeof picked === "string" ? picked : null;
 }
 
@@ -430,4 +430,16 @@ export interface PremineStatus {
   error: string;
   added: number;
   skipped: string[];
+}
+
+/** Telly's own Hachidori: your dictionaries going in, and its Anki setup. */
+export interface OwnHachidori {
+  folder: string;
+  total: number;
+  installed: number;
+  installing: string;
+  failed: string[];
+  model: string;
+  deck: string;
+  ankiError: string;
 }

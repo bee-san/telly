@@ -34,7 +34,12 @@ Then in Settings:
 - check the card fields (Kiku's `Picture`, `SentenceAudio` and `MiscInfo` by default)
 - add `http://127.0.0.1:8773/anki/events` to Anki Beacon's addresses, so cards are finished the moment you add them (without Beacon, Telly asks AnkiConnect every 2 seconds while you watch)
 
-Hachidori in Telly links to the Hachidori in your browser, so lookups use your dictionaries, settings and card format. That goes through Hachidori Relay in Anki, or Telly's own relay while Anki is closed. Turn on sharing in your browser's Hachidori (Settings → Sharing), and Telly's Settings → Hachidori says "Linked".
+Hachidori in Telly is ready to mine on its own, in overlay mode (lookups on hover, no first-run page):
+
+- **Dictionaries:** it installs every Yomitan dictionary (.zip) in `Documents\dictionaries`, or the folder chosen in Settings → Hachidori, one at a time, and again when a file changes. The word dictionaries go in first (Jitendex, JMdict, then 大辞林 and 三省堂国語辞典), so they lead the popup and the card's definition; the rest follow, smallest first. Hachidori's own Settings (Settings → Hachidori → Open Hachidori Settings) can reorder them.
+- **Anki:** when a show starts playing, Hachidori's card template is set to the note type in Settings → Cards (kiku_typed) and the show's deck (`Type::{show}`, so `Type::Fairy Tail`), which Telly makes in Anki if it's missing. The fields come from Hachidori's own mapping for Kiku, as its first-run setup makes them.
+
+Settings → Hachidori can link it to the Hachidori in your browser instead, so lookups use that one's dictionaries, settings and card format, through Hachidori Relay in Anki (or Telly's own relay while Anki is closed), with sharing on in the browser's Hachidori (Settings → Sharing).
 
 ## Explain and Previously on
 
@@ -58,10 +63,10 @@ It goes into Hachidori as **Telly characters** the way SubMiner sends its own: t
 A show's page has **Premine…**: the words in the next episode (or the next 3 or 10) that you have no card for, most useful first, each with the first line it comes up in. Tick the ones you want, or take the top 20, 40 or 80, and **Make cards**.
 
 - **Words** come from the synced subtitles, split by [Lindera](https://github.com/lindera/lindera) with IPADIC (built into Telly). Particles, auxiliaries, pronouns, words only there for the grammar (わけ, こと, ている's いる), numbers, names and the cast are left out. Where nouns run together, the longest stretch Hachidori knows is one word (魔導士 in 魔導士たち, not 魔 and 導).
-- **Hachidori** gives each word's headword, reading and rank in your frequency dictionary, through the Yomitan API that Hachidori Relay serves on port 19633. So premining needs Anki open and sharing on in your browser's Hachidori, as lookups in Telly do.
+- **Hachidori** gives each word's headword, reading and rank in your frequency dictionary: Telly's own, through Hachidori's own API code running in its engine page, or, when Telly is linked to the Hachidori in your browser, that one, through the Yomitan API Hachidori Relay serves on port 19633.
 - **Anki** says what you have. A note whose word field (the one your card format fills with `{expression}`) holds the word, or its reading (する for 為る), is a card you have, so the word isn't listed. A card 21 days or more apart is mature, and its word is known: that's the share of known words at the top.
 - **Most useful first:** the words that come up most in those episodes, then the most common anywhere.
-- **Cards** are made in your Hachidori card format (the first Template in its Settings → Anki), word audio included, in a **Premined** subdeck of its deck, so you can set how many new ones you see a day. The sentence, its furigana and the cloze come from the word's line. Telly then adds the moving picture, the line's audio and MiscInfo as it does for the cards you mine while watching, and tags them `telly::premine`.
+- **Cards** are made in your Hachidori card format (the first Template in its Settings → Anki), word audio included, in a **Premined** subdeck of the show's deck (`Type::Fairy Tail::Premined`), so you can set how many new ones you see a day. The sentence, its furigana and the cloze come from the word's line. Telly then adds the moving picture, the line's audio and MiscInfo as it does for the cards you mine while watching, and tags them `telly::premine`.
 
 ## How subtitles are matched
 

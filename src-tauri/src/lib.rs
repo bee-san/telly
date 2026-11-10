@@ -18,6 +18,7 @@ pub mod matching;
 pub mod media;
 pub mod mining;
 pub mod names;
+pub mod own_hachidori;
 pub mod premine;
 pub mod relay;
 pub mod scan;
@@ -46,7 +47,8 @@ struct HachidoriState {
 
 /// How long the host page has to report before Settings says something went wrong.
 const HOST_TIMEOUT: Duration = Duration::from_secs(20);
-/// Setting: link Telly's Hachidori to the one in your browser.
+/// Setting: link Telly's Hachidori to the one in your browser (off: it has
+/// your dictionaries and Anki setup itself; see own_hachidori.rs).
 const LINK_SETTING: &str = "hachidori.link";
 /// Setting: run the built-in relay (when Anki isn't running).
 const RELAY_SETTING: &str = "hachidori.relay";
@@ -83,7 +85,7 @@ struct HachidoriInfo {
 }
 
 fn link_wanted(backend: &Backend) -> bool {
-    backend.db.setting_bool(LINK_SETTING, true)
+    backend.db.setting_bool(LINK_SETTING, false)
 }
 
 #[tauri::command]
@@ -222,6 +224,19 @@ fn serve_media(backend: &Backend, path: &str, range: Option<&str>) -> http::Resp
     built.expect("valid response")
 }
 
+/// Answers a `media://` POST (Backend::receive).
+fn receive_media(backend: &Backend, path: &str, body: &[u8]) -> http::Response<Vec<u8>> {
+    let response = http::Response::builder().header("Access-Control-Allow-Origin", "*");
+    let built = match backend.receive(path, body) {
+        Ok(()) => response.header(http::header::CONTENT_TYPE, "application/json").body(b"{}".to_vec()),
+        Err(e) => response
+            .status(http::StatusCode::BAD_REQUEST)
+            .header(http::header::CONTENT_TYPE, "text/plain; charset=utf-8")
+            .body(format!("{e:#}").into_bytes()),
+    };
+    built.expect("valid response")
+}
+
 /// Telly's data folders: %LOCALAPPDATA%\Telly and %APPDATA%\Telly, or
 /// TELLY_DATA_DIR for both (development and tests).
 fn data_dirs(app: &tauri::App) -> Result<Dirs, Box<dyn std::error::Error>> {
@@ -249,6 +264,12 @@ pub fn run() {
             let path = request.uri().path().to_string();
             let query = request.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
             let range = request.headers().get(http::header::RANGE).and_then(|v| v.to_str().ok()).map(str::to_string);
+            // Hachidori's engine page posts its answers to premining's questions.
+            if request.method() == http::Method::POST {
+                let body = request.body().clone();
+                tauri::async_runtime::spawn_blocking(move || responder.respond(receive_media(&backend, &format!("{path}{query}"), &body)));
+                return;
+            }
             tauri::async_runtime::spawn_blocking(move || responder.respond(serve_media(&backend, &format!("{path}{query}"), range.as_deref())));
         })
         .setup(|app| {
@@ -257,7 +278,7 @@ pub fn run() {
             backend.start_mining();
             let for_relay = backend.clone();
             app.manage(RelayStatus(relay::supervise(move || {
-                for_relay.db.setting_bool(RELAY_SETTING, true) && for_relay.db.setting_bool(LINK_SETTING, true)
+                for_relay.db.setting_bool(RELAY_SETTING, true) && for_relay.db.setting_bool(LINK_SETTING, false)
             })));
             app.manage(backend);
 

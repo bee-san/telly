@@ -10,12 +10,14 @@
     inTauri,
     openHachidoriSettings,
     pickFile,
+    pickFolder,
     relayStatus,
     setWindowTitle,
     type ClaudeStatus,
     type HachidoriInfo,
     type HostStatus,
     type NamesStatus,
+    type OwnHachidori,
     type Settings,
     type Status,
   } from "$lib/api";
@@ -33,6 +35,7 @@
   let saved = $state<Record<string, boolean>>({});
   let claude = $state<ClaudeStatus | null>(null);
   let names = $state<NamesStatus | null>(null);
+  let own = $state<OwnHachidori | null>(null);
 
   async function load() {
     try {
@@ -42,6 +45,7 @@
       hd = await hachidoriInfo();
       relay = await relayStatus();
       names = await call<NamesStatus>("namesStatus");
+      own = await call<OwnHachidori>("ownHachidori");
       claude = await call<ClaudeStatus>("claudeStatus");
     } catch (e) {
       error = errorText(e);
@@ -64,6 +68,7 @@
       status = await call<Status>("status").catch(() => status);
       relay = await relayStatus().catch(() => relay);
       names = await call<NamesStatus>("namesStatus").catch(() => names);
+      own = await call<OwnHachidori>("ownHachidori").catch(() => own);
     }, 5000);
     return () => {
       clearInterval(timer);
@@ -117,6 +122,34 @@
     status = await call<Status>("status");
   }
 
+  async function chooseDictionaries() {
+    const folder = await pickFolder("Choose the dictionaries folder");
+    if (!folder) return;
+    await set("hachidori.dictionaries", folder);
+    own = await call<OwnHachidori>("ownHachidori").catch(() => own);
+  }
+
+  const linked = $derived(hd?.status?.state === "linked" || hd?.status?.state === "connecting");
+
+  const dictText = $derived.by(() => {
+    if (!own) return "";
+    if (linked) return "Linked, so the dictionaries are the browser Hachidori’s.";
+    if (!own.folder) return "Choose the folder your Yomitan dictionaries (.zip files) are in.";
+    if (!own.total) return "There are no dictionaries (.zip files) in this folder.";
+    const failed = own.failed.length ? ` Couldn’t install: ${own.failed.join(", ")}.` : "";
+    if (own.installing) return `Installing ${own.installing} · ${own.installed} of ${own.total} installed.${failed}`;
+    if (own.installed === own.total) return `All ${own.total} are installed.${failed}`;
+    return `${own.installed} of ${own.total} installed; the rest go in while Telly is open.${failed}`;
+  });
+
+  const ankiText = $derived.by(() => {
+    if (!own || linked) return "";
+    if (own.ankiError) return `Hachidori’s Anki setup: ${own.ankiError}`;
+    return own.deck
+      ? `Hachidori adds cards to ${own.deck}, as ${own.model}.`
+      : `Hachidori adds cards to the show’s deck once a show is playing, as ${own.model}.`;
+  });
+
   async function restartHachidori() {
     await hachidoriStart();
     hd = await hachidoriInfo();
@@ -133,7 +166,7 @@
       case "connecting":
         return `Connecting to the browser’s Hachidori…${s.detail ? ` ${s.detail}` : ""}`;
       case "standalone":
-        return "Running on its own, not linked.";
+        return "Running on its own, with the dictionaries and Anki setup below.";
       case "link-failed":
         return `Couldn’t link: ${s.detail}. Open Anki with Hachidori Relay, or leave Telly’s relay on, then open Hachidori in the browser.`;
       case "error":
@@ -207,6 +240,7 @@
       <label class="field"><span>Note type</span>
         <span class="inline"><input class="input grow" value={str("anki.noteType", "kiku_typed")} onchange={(e) => set("anki.noteType", e.currentTarget.value.trim())} /><button type="button" class="btn quiet" onclick={kikuFields}>Check its fields</button></span>
       </label>
+      <label class="field"><span>Deck</span><input class="input" value={str("anki.deck", "Type::{show}")} onchange={(e) => set("anki.deck", e.currentTarget.value.trim())} title={"{show} is the title of the show being watched"} /></label>
       <label class="field"><span>Sentence field</span><input class="input" value={status?.fields.sentence ?? "Sentence"} onchange={(e) => set("anki.field.sentence", e.currentTarget.value.trim())} /></label>
       <label class="field"><span>Picture field</span><input class="input" value={status?.fields.picture ?? "Picture"} onchange={(e) => set("anki.field.picture", e.currentTarget.value.trim())} /></label>
       <label class="field"><span>Audio field</span><input class="input" value={status?.fields.audio ?? "SentenceAudio"} onchange={(e) => set("anki.field.audio", e.currentTarget.value.trim())} /></label>
@@ -233,8 +267,14 @@
     <h2>Hachidori</h2>
     <p class="lede">{hdText}</p>
     <div class="rows">
-      <label class="check"><input type="checkbox" checked={bool("hachidori.link", true)} onchange={async (e) => { await set("hachidori.link", e.currentTarget.checked); restartHachidori(); }} /><span>Link to the Hachidori in the browser<small>Dictionaries, settings, and card format come from it, through Hachidori Relay.</small></span></label>
+      <label class="check"><input type="checkbox" checked={bool("hachidori.link", false)} onchange={async (e) => { await set("hachidori.link", e.currentTarget.checked); restartHachidori(); }} /><span>Link to the Hachidori in the browser<small>Dictionaries, settings, and card format come from it, through Hachidori Relay.</small></span></label>
       <label class="check"><input type="checkbox" checked={bool("hachidori.relay", true)} onchange={(e) => set("hachidori.relay", e.currentTarget.checked)} /><span>Run Telly’s own relay while Anki is closed<small>{relayText}</small></span></label>
+    </div>
+    <div class="field">
+      <span>Dictionaries</span>
+      <span class="inline"><input class="input grow mono" value={own?.folder ?? ""} placeholder="C:\Users\you\Documents\dictionaries" onchange={async (e) => { await set("hachidori.dictionaries", e.currentTarget.value.trim()); own = await call<OwnHachidori>("ownHachidori").catch(() => own); }} /><button type="button" class="btn quiet" onclick={chooseDictionaries}>Choose folder…</button></span>
+      {#if dictText}<small class="muted">{dictText}</small>{/if}
+      {#if ankiText}<small class="muted">{ankiText}</small>{/if}
     </div>
     <div class="actions">
       <button type="button" class="btn quiet" onclick={() => openHachidoriSettings().catch((e) => toast({ key: "hd", state: "failed", title: "Hachidori", text: errorText(e) }))} disabled={!hd?.prepared}>Open Hachidori Settings</button>

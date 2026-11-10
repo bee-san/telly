@@ -10,6 +10,7 @@ use crate::jobs::{self, Jobs, Task};
 use crate::log::{Log, Sitting};
 use crate::mining::{self, Mining};
 use crate::names::{self, Names};
+use crate::own_hachidori::{self, Own};
 use crate::premine::{self, Premining};
 use crate::scan;
 use crate::subs::Line;
@@ -59,6 +60,9 @@ impl Dirs {
 
 /// How subtitles are matched; a newer one syncs every episode again.
 const SUBS_ENGINE: i64 = 2;
+/// Telly's own Hachidori has your dictionaries and Anki setup (own_hachidori.rs),
+/// so it stops waiting on a browser to link to, once.
+const OWN_HACHIDORI: i64 = 1;
 
 /// The episode open in the player.
 struct Playing {
@@ -95,6 +99,8 @@ pub struct Backend {
     pub names: Names,
     /// Premining's list and cards (premine.rs).
     pub premining: Premining,
+    /// The work Telly's own Hachidori does for it (own_hachidori.rs).
+    pub own_hachidori: Own,
 }
 
 /// One line that just played, for the log.
@@ -259,6 +265,10 @@ impl Backend {
             let _ = db.requeue_subs(None, &["synced", "check", "none"]);
             let _ = db.set_setting("subs.engine", &json!(SUBS_ENGINE));
         }
+        if db.setting_i64("hachidori.own", 0) < OWN_HACHIDORI {
+            let _ = db.set_setting("hachidori.link", &json!(false));
+            let _ = db.set_setting("hachidori.own", &json!(OWN_HACHIDORI));
+        }
         let found = tools::find(&dirs.tools(), &dirs.models(), &db.setting_str("tools.ffmpeg"));
         Ok(Backend {
             db,
@@ -274,6 +284,7 @@ impl Backend {
             asks: Asks::default(),
             names: Names::default(),
             premining: Premining::default(),
+            own_hachidori: Own::default(),
         })
     }
 
@@ -834,7 +845,15 @@ impl Backend {
                 self.show_view(arg(&args, "id")?)
             }
             "episode" => self.episode_view(arg(&args, "id")?),
-            "openPlayer" => self.open_player(arg(&args, "id")?),
+            "openPlayer" => {
+                let id = arg(&args, "id")?;
+                let view = self.open_player(id)?;
+                // Hachidori mines into this show's deck.
+                if let Some(show) = self.db.episode(id)?.and_then(|e| self.db.show(e.show_id).ok().flatten()) {
+                    own_hachidori::watching(self, &show.title);
+                }
+                Ok(view)
+            }
             "closePlayer" => self.close_player(arg(&args, "id")?, arg(&args, "position")?),
             "tick" => self.tick(serde_json::from_value(args).context("the player’s tick")?),
             "markWatched" => {
@@ -946,6 +965,7 @@ impl Backend {
             }
             "premine" => to_value(premine::start_list(self, arg(&args, "show")?, arg(&args, "from")?, arg(&args, "count")?)?),
             "premineStatus" => to_value(premine::status(self)),
+            "ownHachidori" => to_value(own_hachidori::report(self)),
             "premineCards" => to_value(premine::start_cards(self, arg(&args, "words")?)?),
             "ankiFields" => {
                 let url = cards::anki_url(self);
@@ -956,17 +976,39 @@ impl Backend {
         }
     }
 
+    /// What Hachidori's engine page posts: its answers to premining's questions.
+    pub fn receive(&self, path: &str, body: &[u8]) -> Result<()> {
+        let (path, query) = path.split_once('?').unwrap_or((path, ""));
+        match path {
+            "/hd/api/answer" => self.own_hachidori.answer(query, body),
+            _ => Err(anyhow!("nothing takes {path}")),
+        }
+    }
+
     /// A file the player or the library asks for: /ep/<id>, /cover/<show id> or /clip/<name>.
     pub fn serve(&self, path: &str, range: Option<&str>) -> Result<Served> {
         let (path, query) = path.split_once('?').unwrap_or((path, ""));
         let json_reply = |v: Value| Served { bytes: v.to_string().into_bytes(), mime: "application/json", range: None };
-        // Hachidori's engine page asks for the character dictionary, and says how adding it went.
+        // Hachidori's engine page asks for the character dictionary, your
+        // dictionaries, the Anki setup and premining's questions, and says how
+        // each went (own_hachidori.rs).
         match path {
             "/names/state" => return Ok(json_reply(names::state(self))),
             "/names/imported" => {
                 names::imported(self, query)?;
                 return Ok(json_reply(json!({})));
             }
+            "/hd/dictionaries/next" => return Ok(json_reply(own_hachidori::next_dictionary(self))),
+            "/hd/dictionaries/done" => {
+                own_hachidori::dictionary_done(self, query)?;
+                return Ok(json_reply(json!({})));
+            }
+            "/hd/anki" => return Ok(json_reply(own_hachidori::anki_setup(self))),
+            "/hd/anki/done" => {
+                own_hachidori::anki_done(self, query);
+                return Ok(json_reply(json!({})));
+            }
+            "/hd/api/next" => return Ok(json_reply(self.own_hachidori.next_request(Duration::from_secs(20)))),
             _ => {}
         }
         let decoded = percent_encoding::percent_decode_str(path).decode_utf8_lossy().into_owned();
@@ -979,6 +1021,7 @@ impl Backend {
             ["cover", id] => self.cover_path(id.parse().map_err(|_| anyhow!("bad show"))?),
             ["clip", name] if !name.contains("..") => self.dirs.clips().join(name),
             ["names", "telly-characters.zip"] => names::zip_path(self),
+            ["hd", "dictionaries", "file", name] => own_hachidori::dictionary_file(self, name)?,
             _ => return Err(anyhow!("nothing at {path}")),
         };
         read_range(&file, range)

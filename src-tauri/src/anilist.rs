@@ -89,7 +89,7 @@ fn query(q: &str, variables: Value) -> Result<Value> {
         .header("User-Agent", USER_AGENT)
         .header("Accept", "application/json")
         .send_json(&body)
-        .map_err(|e| anyhow!("AniList isn't reachable ({e})"))?;
+        .map_err(|e| anyhow!("AniList isn’t reachable ({e})"))?;
     let status = response.status().as_u16();
     if status == 429 {
         return Err(anyhow!("AniList asked Telly to slow down. Try again in a minute."));
@@ -99,6 +99,31 @@ fn query(q: &str, variables: Value) -> Result<Value> {
         return Err(anyhow!("AniList: {error}"));
     }
     Ok(answer)
+}
+
+/// `query`, waiting out AniList's rate limit (90 requests a minute, less
+/// when it's busy) for the many pages of a long show's cast.
+pub fn query_patiently(q: &str, variables: Value) -> Result<Value> {
+    let body = json!({ "query": q, "variables": variables });
+    for attempt in 0..6u32 {
+        let mut response = agent()
+            .post(API)
+            .header("User-Agent", USER_AGENT)
+            .header("Accept", "application/json")
+            .send_json(&body)
+            .map_err(|e| anyhow!("AniList isn’t reachable ({e})"))?;
+        if response.status().as_u16() == 429 {
+            let wait = response.headers().get("retry-after").and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse::<u64>().ok());
+            std::thread::sleep(Duration::from_secs(wait.unwrap_or(5 << attempt).clamp(2, 90)));
+            continue;
+        }
+        let answer: Value = response.body_mut().with_config().limit(16 * 1024 * 1024).read_json().context("AniList sent something unexpected")?;
+        if let Some(error) = answer.pointer("/errors/0/message").and_then(Value::as_str) {
+            return Err(anyhow!("AniList: {error}"));
+        }
+        return Ok(answer);
+    }
+    Err(anyhow!("AniList kept asking Telly to slow down. It will try again later."))
 }
 
 /// Anime matching `text`, AniList's best match first.
@@ -202,20 +227,21 @@ pub fn rank(results: &mut [Anime], title: &str, count: usize) {
     results.sort_by(|a, b| b.score.total_cmp(&a.score));
 }
 
+/// An image from AniList's CDN (a cover or a character's portrait).
+pub fn image(url: &str) -> Result<Vec<u8>> {
+    let mut response = agent().get(url).header("User-Agent", USER_AGENT).call().map_err(|e| anyhow!("couldn’t get the image ({e})"))?;
+    if !response.status().is_success() {
+        return Err(anyhow!("AniList’s image server answered {}", response.status()));
+    }
+    Ok(response.body_mut().with_config().limit(16 * 1024 * 1024).read_to_vec()?)
+}
+
 /// Saves a cover image (for the library and the show page).
 pub fn download_cover(url: &str, path: &Path) -> Result<()> {
     if url.is_empty() {
         return Err(anyhow!("no cover"));
     }
-    let bytes = agent()
-        .get(url)
-        .header("User-Agent", USER_AGENT)
-        .call()
-        .map_err(|e| anyhow!("couldn't get the cover ({e})"))?
-        .body_mut()
-        .with_config()
-        .limit(16 * 1024 * 1024)
-        .read_to_vec()?;
+    let bytes = image(url)?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -252,7 +278,7 @@ mod tests {
     fn picks_a_short_title() {
         let a = anime(1, "Shirokuma Cafe", "Polar Bear Cafe", "TV", Some(50));
         assert_eq!(a.short_title(), "Polar Bear Cafe");
-        let b = anime(2, "Sousou no Frieren", "Frieren: Beyond Journey's End", "TV", Some(28));
+        let b = anime(2, "Sousou no Frieren", "Frieren: Beyond Journey’s End", "TV", Some(28));
         assert_eq!(b.short_title(), "Sousou no Frieren");
     }
 }

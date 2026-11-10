@@ -174,7 +174,7 @@ pub fn clip_bounds(lines: &[Line], line: &Line, padding: &str) -> (f64, f64) {
 /// Notes Beacon (or polling) just reported. Runs off the listener's thread.
 pub fn notes_found(backend: &Backend, ids: Vec<i64>) {
     if let Err(e) = take_notes(backend, &ids) {
-        backend.push_event("failed", "Couldn't finish the card", &format!("{e:#}"), ids.first().copied().unwrap_or(0), 0);
+        backend.push_event("failed", "Couldn’t finish the card", &format!("{e:#}"), ids.first().copied().unwrap_or(0), 0);
     }
 }
 
@@ -238,7 +238,7 @@ pub fn add_line_to_last_card(backend: &Backend, episode_id: i64, start: f64, end
 
 /// Tries a failed card again.
 pub fn retry(backend: &Backend, job_id: i64) -> Result<()> {
-    let job = backend.db.mine_job(job_id)?.ok_or_else(|| anyhow!("That card's job is gone"))?;
+    let job = backend.db.mine_job(job_id)?.ok_or_else(|| anyhow!("That card’s job is gone"))?;
     backend.db.update_mine_job(job.id, "pending", "", 0)?;
     if let Ok(mut nb) = backend.cards.not_before.lock() {
         nb.remove(&job.id);
@@ -287,7 +287,7 @@ pub fn worker(backend: &Backend) {
                 Err(e) => {
                     let tries = job.tries + 1;
                     let text = format!("{e:#}");
-                    let waiting = text.contains("open in Anki") || text.contains("isn't reachable");
+                    let waiting = text.contains("open in Anki") || text.contains("isn’t reachable");
                     if waiting && tries < MAX_TRIES {
                         let _ = backend.db.update_mine_job(job.id, "pending", &text, tries);
                         if let Ok(mut nb) = backend.cards.not_before.lock() {
@@ -309,7 +309,7 @@ fn finish(backend: &Backend, job: &MineJob) -> Result<()> {
     let tools = backend.tools();
     let ffmpeg = tools.ffmpeg.ok_or_else(|| anyhow!("Telly needs ffmpeg to cut clips. Choose it in Settings."))?;
     if !tools.can_clip {
-        return Err(anyhow!("This ffmpeg can't make AVIF and Opus (it needs libsvtav1 and libopus)"));
+        return Err(anyhow!("This ffmpeg can’t make AVIF and Opus (it needs libsvtav1 and libopus)"));
     }
     let (video, audio_index) = if episode.media_state == "ready" && !episode.play_path.is_empty() {
         (PathBuf::from(&episode.play_path), episode.audio_index)
@@ -346,7 +346,7 @@ fn finish(backend: &Backend, job: &MineJob) -> Result<()> {
         let after = anki::notes_info(&url, &[job.note_id])?.into_iter().next();
         let landed = after.is_some_and(|n| update.keys().all(|k| n.field(k).is_some_and(|v| !v.trim().is_empty())));
         if !landed {
-            return Err(anyhow!("The card is open in Anki's browser, so Telly can't change it yet. Close it and Telly will try again."));
+            return Err(anyhow!("The card is open in Anki’s browser, so Telly can’t change it yet. Close it and Telly will try again."));
         }
     }
     anki::add_tags(&url, &[job.note_id], &format!("telly telly::{}", slug(&show.title)))?;

@@ -122,7 +122,7 @@ fn extra_reason(rel: &str) -> Option<&'static str> {
         &R,
         r"(?i)\b(NCOP|NCED|creditless|non[- ]?credit|clean (?:opening|ending)|trailers?|teasers?|previews?|promos?|PV|CM|menus?|extras?|bonus|special features|making of|interviews?)\b",
     );
-    r.is_match(rel).then_some("Its name says it's an extra")
+    r.is_match(rel).then_some("Its name says it’s an extra")
 }
 
 /// "NARUTO DVD Box 1" becomes "NARUTO"; "[Judas] Fairy Tail (2009)" becomes "Fairy Tail".
@@ -231,7 +231,7 @@ fn groups(folder: &Path, files: &[ScannedFile]) -> Vec<Group> {
 /// asked for all of them at once, so it can work in parallel.
 pub fn scan(folder: &Path, durations: impl Fn(&[PathBuf]) -> Vec<Option<f64>>) -> Result<Scan> {
     if !folder.is_dir() {
-        return Err(anyhow!("{} isn't a folder", folder.display()));
+        return Err(anyhow!("{} isn’t a folder", folder.display()));
     }
     let mut paths = Vec::new();
     walk(folder, 0, &mut paths);
@@ -251,7 +251,7 @@ pub fn scan(folder: &Path, durations: impl Fn(&[PathBuf]) -> Vec<Option<f64>>) -
             let reason = if let Some(why) = extra_reason(&rel) {
                 why.to_string()
             } else if duration <= 0.0 {
-                "Telly couldn't read it (still downloading?)".to_string()
+                "Telly couldn’t read it (still downloading?)".to_string()
             } else if duration < MIN_SECONDS {
                 "Under 5 minutes".to_string()
             } else if duration > MAX_SECONDS {

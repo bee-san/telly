@@ -33,6 +33,8 @@ sysinfo = { version = "0.40.1", default-features = false, features = ["system"] 
 regex = "1"
 encoding_rs = "0.8"
 percent-encoding = "2.3.2"
+# Character portraits for the names dictionary, resized as characterdictionary.tokyo does.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 # Subtitle sync: alass's aligner, and the WebRTC voice detector alass uses.
 alass-core = "2"
 webrtc-vad = "0.4"

@@ -76,7 +76,7 @@
 
   async function remove(s: ShowCard) {
     menu = null;
-    if (!confirm(`Remove ${s.title} from Telly? Your files stay where they are; Telly's copies and subtitles go.`)) return;
+    if (!confirm(`Remove ${s.title} from Telly? The video files stay where they are. Telly’s copies and subtitles are deleted.`)) return;
     await call("removeShow", { id: s.id });
     load();
   }
@@ -90,17 +90,17 @@
   <div class="toolbar">
     <label class="search">
       <Icon name="search" />
-      <input type="search" bind:value={q} placeholder="Search your shows" aria-label="Search your shows" />
+      <input type="search" bind:value={q} placeholder="Search" aria-label="Search shows" />
     </label>
     <span class="grow"></span>
     <a class="btn quiet" href="/settings"><Icon name="gear" /><span>Settings</span></a>
-    <button type="button" class="btn big" onclick={add}><Icon name="plus" /><span>Add media</span></button>
+    <button type="button" class="btn" onclick={add}><Icon name="plus" /><span>Add Media…</span></button>
   </div>
 
   {#if lib && (!lib.setup.ffmpeg || !lib.setup.jimaku)}
     <p class="setup">
-      {#if !lib.setup.ffmpeg}Telly needs ffmpeg to play and convert your rips.{/if}
-      {#if !lib.setup.jimaku}Add your Jimaku API key so Telly can find subtitles.{/if}
+      {#if !lib.setup.ffmpeg}Telly needs ffmpeg to play and convert rips.{/if}
+      {#if !lib.setup.jimaku}Add a Jimaku API key so Telly can find subtitles.{/if}
       <a href="/settings" class="link-btn">Open Settings</a>
     </p>
   {/if}
@@ -108,11 +108,11 @@
 
   {#if lib && lib.shows.length === 0}
     <div class="first">
-      <h2>Your shows go here</h2>
-      <p>Press <b>Add media</b> and pick a folder of rips. Telly works out the show, finds Japanese subtitles and syncs them, and gets each episode ready to play. Your files stay where they are.</p>
+      <h2>No Shows Yet</h2>
+      <p>Press <b>Add Media…</b> and pick a folder of rips. Telly works out the show, finds Japanese subtitles, syncs them, and gets each episode ready to play. The files stay where they are.</p>
     </div>
   {:else if lib}
-    <div class="shelf-head"><h2>Currently watching</h2><span>{count(watching.length)}</span></div>
+    <div class="shelf-head"><h2>Currently Watching</h2><span>{count(watching.length)}</span></div>
     {#if watching.length}
       <div class="watching">
         {#each watching as s (s.id)}
@@ -133,7 +133,7 @@
         {/each}
       </div>
     {:else}
-      <p class="empty">{q ? "Nothing you're watching matches." : "Nothing on the go. Pick something from your library."}</p>
+      <p class="empty">{q ? "No show in progress matches." : "Nothing in progress. Pick something from the library."}</p>
     {/if}
 
     <div class="shelf-head"><h2>Library</h2><span>{count(rest.length)}</span></div>
@@ -153,18 +153,18 @@
         {/each}
       </div>
     {:else}
-      <p class="empty">{q ? "No shows match." : "Everything you own is on the go."}</p>
+      <p class="empty">{q ? "No shows match." : "Every show in the library is in progress."}</p>
     {/if}
   {/if}
 </div>
 
 {#if menu}
   <div class="menu" style:left="{menu.x}px" style:top="{menu.y}px" role="menu">
-    <button type="button" role="menuitem" onclick={() => menu && goto(`/show?id=${menu.show.id}`)}>Episodes</button>
+    <button type="button" role="menuitem" onclick={() => menu && goto(`/show?id=${menu.show.id}`)}>Show Episodes</button>
     {#if menu.show.next?.ready}
       <button type="button" role="menuitem" onclick={() => menu?.show.next && goto(`/watch?ep=${menu.show.next.episodeId}`)}>Play Episode {menu.show.next.number}</button>
     {/if}
-    <button type="button" role="menuitem" class="danger" onclick={() => menu && remove(menu.show)}>Remove from Telly</button>
+    <button type="button" role="menuitem" class="danger" onclick={() => menu && remove(menu.show)}>Remove From Telly…</button>
   </div>
 {/if}
 

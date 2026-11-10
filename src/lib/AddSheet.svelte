@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { call, errorText, type Anime, type ScanResult, type ScannedFile } from "./api";
-  import { clock } from "./format";
+  import { clock, plural } from "./format";
   import Icon from "./Icon.svelte";
 
   let { folder, onclose, onadded }: { folder: string; onclose: () => void; onadded: (id: number) => void } = $props();
@@ -115,13 +115,13 @@
 </script>
 
 <div class="modal-bg" role="presentation" onclick={(e) => e.target === e.currentTarget && phase !== "adding" && onclose()}>
-  <div class="sheet" role="dialog" aria-modal="true" aria-label="Add media">
+  <div class="sheet" role="dialog" aria-modal="true" aria-label="Add Media">
     {#if phase === "scanning"}
       <div class="busy"><span class="spin"></span><span>Reading <span class="mono">{folder}</span>…</span></div>
     {:else if phase === "groups" && result}
       <div class="head-text">
-        <span class="kicker">Add media</span>
-        <h3>This folder holds more than one season</h3>
+        <span class="kicker">Add Media</span>
+        <h3>This Folder Holds More Than One Season</h3>
         <p>Each season is its own show on AniList, so add them one at a time. Which one first?</p>
       </div>
       <div class="groups">
@@ -132,7 +132,7 @@
         {/each}
       </div>
       <div class="sheet-foot">
-        <button type="button" class="btn quiet" onclick={() => (phase = "match")}>Add the whole folder as one show</button>
+        <button type="button" class="btn quiet" onclick={() => (phase = "match")}>Add Whole Folder as One Show</button>
         <button type="button" class="btn quiet" onclick={onclose}>Cancel</button>
       </div>
     {:else if phase === "search"}
@@ -158,7 +158,7 @@
         {/each}
       </div>
       <div class="sheet-foot">
-        <button type="button" class="btn quiet" onclick={() => { chosen = null; phase = "match"; }}>It isn't on AniList</button>
+        <button type="button" class="btn quiet" onclick={() => { chosen = null; phase = "match"; }}>Add Without AniList</button>
         <button type="button" class="btn quiet" onclick={() => (phase = "match")}>Back</button>
       </div>
     {:else if result}
@@ -171,20 +171,20 @@
             <p>{chosen.english || chosen.romaji} · {meta(chosen)}</p>
           {:else}
             <h3>{result.scan.guess || "Untitled"}</h3>
-            <p>Telly can still play it, but Jimaku finds subtitles by AniList's entry.</p>
+            <p>Telly can still play it, but Jimaku finds subtitles by AniList’s entry.</p>
           {/if}
           <p class="folder mono">{result.scan.folder}</p>
         </div>
-        <button type="button" class="link-btn" onclick={() => { phase = "search"; if (!found.length) search(); }}>{chosen ? "Not this one" : "Find it"}</button>
+        <button type="button" class="link-btn" onclick={() => { phase = "search"; if (!found.length) search(); }}>{chosen ? "Choose Another Show" : "Find It on AniList"}</button>
       </div>
 
       <div class="map-top">
-        <b>{included.length} episodes</b>
-        <span>{byOrder ? "In folder order. Drag rows to fix it." : "Numbered from the file names."}</span>
+        <b>{plural(included.length, "episode")}</b>
+        <span>{byOrder ? "In folder order. Drag rows to reorder them." : "Numbered from the file names."}</span>
         {#if byOrder}
           <label class="start">Starts at episode <input class="input" type="number" min="1" bind:value={startAt} /></label>
         {:else}
-          <button type="button" class="link-btn" onclick={() => (byOrder = true)}>Number them in order instead</button>
+          <button type="button" class="link-btn" onclick={() => (byOrder = true)}>Number in Folder Order</button>
         {/if}
       </div>
       <div class="map" role="list">
@@ -209,21 +209,21 @@
           </div>
         {/each}
         {#if files.length > 12 && !showAll}
-          <button type="button" class="map-more" onclick={() => (showAll = true)}>Show all {files.length} files</button>
+          <button type="button" class="map-more" onclick={() => (showAll = true)}>Show All {files.length} Files</button>
         {/if}
       </div>
-      {#if !result.ffprobe}<p class="err">Telly can't find ffprobe, so it couldn't measure the videos. Choose ffmpeg in Settings first.</p>{/if}
+      {#if !result.ffprobe}<p class="err">Telly can’t find ffprobe, so it couldn’t measure the videos. Choose ffmpeg in Settings first.</p>{/if}
       {#if clash}<p class="err">Two files would be the same episode. Leave one out, or number them in order.</p>{/if}
       {#if error}<p class="err">{error}</p>{/if}
-      <p class="sheet-note">Telly never moves or renames your files. Its copies, subtitles and covers go in its own folder.</p>
+      <p class="sheet-note">Telly never moves or renames the files. Its copies, subtitles, and covers go in its own folder.</p>
       <div class="sheet-foot">
         <button type="button" class="btn quiet" onclick={onclose}>Cancel</button>
-        <button type="button" class="btn" onclick={add} disabled={included.length === 0 || clash}><Icon name="plus" /><span>Add to library</span></button>
+        <button type="button" class="btn" onclick={add} disabled={included.length === 0 || clash}><Icon name="plus" /><span>Add to Library</span></button>
       </div>
     {:else if phase === "adding"}
       <div class="busy"><span class="spin"></span><span>Adding…</span></div>
     {:else}
-      <p class="err">{error || "Telly couldn't read that folder."}</p>
+      <p class="err">{error || "Telly couldn’t read that folder."}</p>
       <div class="sheet-foot"><button type="button" class="btn quiet" onclick={onclose}>Close</button></div>
     {/if}
   </div>

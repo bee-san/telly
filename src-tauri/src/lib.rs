@@ -4,8 +4,10 @@
 
 pub mod anilist;
 pub mod anki;
+pub mod ask;
 pub mod backend;
 pub mod cards;
+pub mod claude;
 pub mod clip;
 pub mod db;
 mod hachidori;
@@ -14,6 +16,7 @@ pub mod jobs;
 pub mod log;
 pub mod media;
 pub mod mining;
+pub mod names;
 pub mod relay;
 pub mod scan;
 pub mod subs;
@@ -140,7 +143,7 @@ async fn hachidori_start(app: AppHandle, backend: State<'_, Arc<Backend>>, state
                 &handle,
                 HostStatus {
                     state: "error".into(),
-                    detail: "Hachidori's engine page never opened. Try Restart Hachidori, or restart Telly.".into(),
+                    detail: "Hachidori’s engine page never opened. Try Restart Hachidori, or restart Telly.".into(),
                     host: String::new(),
                 },
             );

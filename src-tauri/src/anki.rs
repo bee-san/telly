@@ -19,7 +19,7 @@ pub fn invoke(url: &str, action: &str, params: Value) -> Result<Value> {
     let mut response = agent()
         .post(url)
         .send_json(json!({ "action": action, "version": 6, "params": params }))
-        .map_err(|e| anyhow!("Anki isn't reachable at {url} ({e}). Is Anki open with AnkiConnect?"))?;
+        .map_err(|e| anyhow!("Anki isn’t reachable at {url} ({e}). Is Anki open with AnkiConnect?"))?;
     let body: Value = response.body_mut().with_config().limit(64 * 1024 * 1024).read_json()?;
     if let Some(error) = body.get("error").and_then(Value::as_str) {
         return Err(anyhow!("AnkiConnect: {error}"));

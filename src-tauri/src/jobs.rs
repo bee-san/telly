@@ -253,7 +253,7 @@ pub fn copy_path(backend: &Backend, show_id: i64, episode_id: i64) -> PathBuf {
 fn prepare_video(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, encoder: &str, show: &Show, episode: &Episode) -> Result<()> {
     let source = PathBuf::from(&episode.path);
     if !source.is_file() {
-        return Err(anyhow!("The file isn't there any more: {}", episode.path));
+        return Err(anyhow!("The file isn’t there any more: {}", episode.path));
     }
     let probe = media::probe(ffprobe, &source)?;
     let forced = backend.db.setting_bool(&format!("convert.force.{}", episode.id), false);
@@ -383,7 +383,7 @@ fn whisper_subtitles(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, whisper: 
             .status()
             .context("starting ffmpeg")?;
         if !status.success() {
-            return Err(anyhow!("ffmpeg couldn't read the audio"));
+            return Err(anyhow!("ffmpeg couldn’t read the audio"));
         }
         let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(2, 12);
         // -mc 0: no text carried from one window to the next, which stops
@@ -443,13 +443,13 @@ pub fn get_whisper_model(backend: std::sync::Arc<Backend>) {
                 Some(Task { show_id: 0, episode_id: 0, number: 0, title: "Whisper".into(), label: label.into(), progress }),
             )
         };
-        task("Getting Whisper's Japanese model", 0.0);
+        task("Getting Whisper’s Japanese model", 0.0);
         let result = (|| -> Result<()> {
             let dir = backend.dirs.models();
             std::fs::create_dir_all(&dir)?;
             let partial = dir.join(format!("{WHISPER_MODEL_NAME}.part"));
             let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(3600))).build().into();
-            let mut response = agent.get(WHISPER_MODEL_URL).call().map_err(|e| anyhow!("couldn't download the model ({e})"))?;
+            let mut response = agent.get(WHISPER_MODEL_URL).call().map_err(|e| anyhow!("couldn’t download the model ({e})"))?;
             let total = response.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
             let mut reader = response.body_mut().with_config().limit(2 * 1024 * 1024 * 1024).reader();
             let mut file = std::fs::File::create(&partial)?;
@@ -463,7 +463,7 @@ pub fn get_whisper_model(backend: std::sync::Arc<Backend>) {
                 std::io::Write::write_all(&mut file, &buffer[..n])?;
                 done += n as f64;
                 if total > 0.0 {
-                    task("Getting Whisper's Japanese model", done / total);
+                    task("Getting Whisper’s Japanese model", done / total);
                 }
             }
             drop(file);
@@ -472,9 +472,9 @@ pub fn get_whisper_model(backend: std::sync::Arc<Backend>) {
         })();
         set_task(&backend.jobs.download, None);
         if let Err(e) = result {
-            backend.push_event("failed", "Whisper's model didn't download", &format!("{e:#}"), 0, 0);
+            backend.push_event("failed", "Whisper’s model didn’t download", &format!("{e:#}"), 0, 0);
         } else {
-            backend.push_event("done", "Whisper's model is ready", "Telly can make subtitles for episodes Jimaku has nothing for.", 0, 0);
+            backend.push_event("done", "Whisper’s model is ready", "Telly can make subtitles for episodes Jimaku has nothing for.", 0, 0);
         }
         backend.refresh_tools();
     });
@@ -612,7 +612,7 @@ fn find_subtitles(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, show: &Show,
         return Ok(());
     }
     update_task(&backend.jobs.subs, Some(&format!("Listening to {} {}", show.title, episode.number)), 0.0);
-    let (speech, length) = speech_of(ffmpeg, &probe, episode).context("reading the episode's audio")?;
+    let (speech, length) = speech_of(ffmpeg, &probe, episode).context("reading the episode’s audio")?;
     let mut tried: Vec<Tried> = Vec::new();
     let mut best: Option<(sync::Synced, String)> = None;
     for (i, file) in files.iter().take(MAX_TRIES).enumerate() {
@@ -635,7 +635,7 @@ fn find_subtitles(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, show: &Show,
     std::fs::create_dir_all(backend.dirs.subs())?;
     std::fs::write(tried_path(backend, episode.id), serde_json::to_vec(&tried)?)?;
     let Some((synced, name)) = best else {
-        backend.db.set_subs(episode.id, "none", "None of Jimaku's files for this episode are Japanese subtitles Telly can read", "", None, None)?;
+        backend.db.set_subs(episode.id, "none", "None of Jimaku’s files for this episode are Japanese subtitles Telly can read", "", None, None)?;
         return Ok(());
     };
     write_lines(backend, episode.id, &synced.lines)?;

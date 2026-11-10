@@ -3,11 +3,13 @@
 //! run the same code.
 
 use crate::anilist::{self, Anime};
+use crate::ask::{self, Asks};
 use crate::cards::{self, Event};
 use crate::db::{Db, Episode, NewShow, Show};
 use crate::jobs::{self, Jobs, Task};
 use crate::log::{Log, Sitting};
 use crate::mining::{self, Mining};
+use crate::names::{self, Names};
 use crate::scan;
 use crate::subs::Line;
 use crate::sync;
@@ -83,6 +85,10 @@ pub struct Backend {
     last_play: Mutex<Option<Instant>>,
     events: Mutex<(u64, VecDeque<Event>)>,
     pub mining: OnceLock<Arc<Mining>>,
+    /// Questions for Claude being answered (ask.rs).
+    pub asks: Asks,
+    /// The character dictionary's worker (names).
+    pub names: Names,
 }
 
 /// One line that just played, for the log.
@@ -188,6 +194,7 @@ fn mime_of(path: &Path) -> &'static str {
         Some("webp") => "image/webp",
         Some("avif") => "image/avif",
         Some("opus") => "audio/ogg",
+        Some("zip") => "application/zip",
         _ => "application/octet-stream",
     }
 }
@@ -251,6 +258,8 @@ impl Backend {
             last_play: Mutex::new(None),
             events: Mutex::new((0, VecDeque::new())),
             mining: OnceLock::new(),
+            asks: Asks::default(),
+            names: Names::default(),
         })
     }
 
@@ -260,6 +269,7 @@ impl Backend {
         let backend = self.clone();
         std::thread::Builder::new().name("telly-cards".into()).spawn(move || cards::worker(&backend)).ok();
         self.watch_folders();
+        names::start(self.clone());
     }
 
     /// Listens for Anki Beacon and polls AnkiConnect while the player is open.
@@ -374,7 +384,7 @@ impl Backend {
 
     fn activity(&self) -> Activity {
         let mut tasks = Vec::new();
-        for slot in [&self.jobs.media, &self.jobs.subs, &self.jobs.download] {
+        for slot in [&self.jobs.media, &self.jobs.subs, &self.jobs.download, &self.names.task] {
             if let Some(t) = slot.lock().ok().and_then(|t| t.clone()) {
                 tasks.push(t);
             }
@@ -411,7 +421,7 @@ impl Backend {
     }
 
     fn show_view(&self, id: i64) -> Result<Value> {
-        let show = self.db.show(id)?.ok_or_else(|| anyhow!("That show isn't in Telly any more"))?;
+        let show = self.db.show(id)?.ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?;
         let cards_by_show = self.db.cards_per_show().unwrap_or_default();
         let episodes = self.db.episodes(id)?;
         let next_id = jobs::next_episode(&episodes).map(|e| e.id);
@@ -447,7 +457,7 @@ impl Backend {
     /// Looks in a show's folder again for episodes that weren't there, or
     /// couldn't be read (still downloading), when it was added. Returns how many it added.
     pub fn rescan(&self, id: i64) -> Result<usize> {
-        let show = self.db.show(id)?.ok_or_else(|| anyhow!("That show isn't in Telly any more"))?;
+        let show = self.db.show(id)?.ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?;
         let existing = self.db.episodes(id)?;
         let known: std::collections::HashMap<String, f64> = existing.iter().map(|e| (e.path.clone(), e.duration)).collect();
         let taken: std::collections::HashSet<i64> = existing.iter().map(|e| e.number).collect();
@@ -544,7 +554,7 @@ impl Backend {
     }
 
     fn rematch(self: &Arc<Self>, id: i64, anilist_id: i64) -> Result<Value> {
-        let show = self.db.show(id)?.ok_or_else(|| anyhow!("That show isn't in Telly any more"))?;
+        let show = self.db.show(id)?.ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?;
         let anime = anilist::by_id(anilist_id)?;
         let new = Self::new_show_from(Some(&anime), NewShow { folder: show.folder.clone(), ..Default::default() });
         self.db.set_show_anilist(id, &new)?;
@@ -613,8 +623,8 @@ impl Backend {
     }
 
     fn episode_view(&self, id: i64) -> Result<Value> {
-        let episode = self.db.episode(id)?.ok_or_else(|| anyhow!("That episode isn't in Telly any more"))?;
-        let show = self.db.show(episode.show_id)?.ok_or_else(|| anyhow!("That show isn't in Telly any more"))?;
+        let episode = self.db.episode(id)?.ok_or_else(|| anyhow!("That episode isn’t in Telly any more"))?;
+        let show = self.db.show(episode.show_id)?.ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?;
         let episodes = self.db.episodes(show.id)?;
         let i = episodes.iter().position(|e| e.id == id).unwrap_or(0);
         let lite = |e: &Episode| json!({ "id": e.id, "number": e.number, "ready": e.media_state == "ready", "mediaState": e.media_state, "mediaProgress": e.media_progress });
@@ -632,8 +642,15 @@ impl Backend {
     }
 
     fn open_player(&self, id: i64) -> Result<Value> {
-        let episode = self.db.episode(id)?.ok_or_else(|| anyhow!("That episode isn't in Telly any more"))?;
+        let episode = self.db.episode(id)?.ok_or_else(|| anyhow!("That episode isn’t in Telly any more"))?;
+        // How long since the show was last open, for "Previously on".
+        let away = self.db.show(episode.show_id)?.and_then(|s| ask::away_ms(s.last_watched_at));
+        let first_time = self.db.show(episode.show_id)?.is_some_and(|s| s.last_watched_at.is_none());
         self.db.touch_show(episode.show_id)?;
+        // A show starting for the first time joins the character dictionary.
+        if first_time {
+            self.names.poke();
+        }
         if let Ok(mut p) = self.playing.lock() {
             self.end_sitting(p.take());
             let now = Instant::now();
@@ -643,7 +660,10 @@ impl Backend {
             m.watch(true);
         }
         self.jobs.poke();
-        self.episode_view(id)
+        let mut view = self.episode_view(id)?;
+        view["awayMs"] = json!(away);
+        view["recap"] = ask::recap_state(self, &episode);
+        Ok(view)
     }
 
     fn end_sitting(&self, p: Option<Playing>) {
@@ -652,7 +672,7 @@ impl Backend {
         }
     }
 
-    fn close_player(&self, id: i64, position: Option<f64>) -> Result<Value> {
+    fn close_player(self: &Arc<Self>, id: i64, position: Option<f64>) -> Result<Value> {
         if let Some(position) = position {
             self.db.save_position(id, position)?;
         }
@@ -669,12 +689,20 @@ impl Backend {
             m.watch(false);
         }
         self.jobs.poke();
+        // Leaving after most of an episode: write the recap for the next one now,
+        // so it's ready when you come back.
+        if let Ok(e) = self.episode_or_err(id) {
+            let seen = position.unwrap_or(e.position);
+            if e.watched_at.is_some() || (e.duration > 0.0 && seen >= e.duration * 0.8) {
+                ask::prepare_next_recap(self, id);
+            }
+        }
         Ok(json!({}))
     }
 
     fn tick(&self, a: TickArgs) -> Result<Value> {
-        let episode = self.db.episode(a.id)?.ok_or_else(|| anyhow!("That episode isn't in Telly any more"))?;
-        let show = self.db.show(episode.show_id)?.ok_or_else(|| anyhow!("That show isn't in Telly any more"))?;
+        let episode = self.db.episode(a.id)?.ok_or_else(|| anyhow!("That episode isn’t in Telly any more"))?;
+        let show = self.db.show(episode.show_id)?.ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?;
         let now = Instant::now();
         let mut became_watched = false;
         {
@@ -751,13 +779,14 @@ impl Backend {
                 self.db.requeue_subs(None, &["nokey", "none", "failed"])?;
                 self.jobs.poke();
             }
+            "names.enabled" | "names.spoilers" => self.names.poke(),
             _ => self.jobs.poke(),
         }
         Ok(json!({}))
     }
 
     fn episode_or_err(&self, id: i64) -> Result<Episode> {
-        self.db.episode(id)?.ok_or_else(|| anyhow!("That episode isn't in Telly any more"))
+        self.db.episode(id)?.ok_or_else(|| anyhow!("That episode isn’t in Telly any more"))
     }
 
     /// Answers one of the UI's requests.
@@ -789,7 +818,7 @@ impl Backend {
             "episode" => self.episode_view(arg(&args, "id")?),
             "openPlayer" => self.open_player(arg(&args, "id")?),
             "closePlayer" => self.close_player(arg(&args, "id")?, arg(&args, "position")?),
-            "tick" => self.tick(serde_json::from_value(args).context("the player's tick")?),
+            "tick" => self.tick(serde_json::from_value(args).context("the player’s tick")?),
             "markWatched" => {
                 let id: i64 = arg(&args, "id")?;
                 self.db.set_watched(id, arg(&args, "watched")?)?;
@@ -872,18 +901,53 @@ impl Backend {
                 Ok(json!({}))
             }
             "recentCards" => to_value(self.db.recent_mine_jobs(30)?),
+            "claudeStatus" => to_value(crate::claude::status()),
+            "explain" => ask::explain(self, arg(&args, "id")?, arg(&args, "index")?),
+            "ask" => Ok(self.asks.progress(arg(&args, "ask")?)),
+            "stopAsk" => {
+                self.asks.stop(arg(&args, "ask")?);
+                Ok(json!({}))
+            }
+            "recap" => ask::recap(self, arg(&args, "id")?, arg::<Option<bool>>(&args, "start")?.unwrap_or(false)),
+            "recapAnswer" => ask::recap_answer(self, arg(&args, "id")?, arg(&args, "ask")?),
+            "namesStatus" => Ok(names::status(self)),
+            "rebuildNames" => {
+                // Fetches every cast again.
+                let _ = self.db.set_setting("names.built", &Value::Null);
+                for show in self.db.shows()? {
+                    if let Some(id) = show.anilist_id {
+                        let _ = std::fs::remove_file(names::dir(self).join(format!("{id}.json")));
+                    }
+                }
+                self.names.poke();
+                Ok(names::status(self))
+            }
+            "showNames" => {
+                let show = self.db.show(arg(&args, "id")?)?.ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?;
+                to_value(names::show_names(self, &show))
+            }
             "ankiFields" => {
                 let url = cards::anki_url(self);
                 let model: String = arg(&args, "model")?;
                 to_value(crate::anki::model_field_names(&url, &model)?)
             }
-            _ => Err(anyhow!("Telly doesn't know the request \"{cmd}\"")),
+            _ => Err(anyhow!("Telly doesn’t know the request \"{cmd}\"")),
         }
     }
 
     /// A file the player or the library asks for: /ep/<id>, /cover/<show id> or /clip/<name>.
     pub fn serve(&self, path: &str, range: Option<&str>) -> Result<Served> {
-        let path = path.split('?').next().unwrap_or(path);
+        let (path, query) = path.split_once('?').unwrap_or((path, ""));
+        let json_reply = |v: Value| Served { bytes: v.to_string().into_bytes(), mime: "application/json", range: None };
+        // Hachidori's engine page asks for the character dictionary, and says how adding it went.
+        match path {
+            "/names/state" => return Ok(json_reply(names::state(self))),
+            "/names/imported" => {
+                names::imported(self, query)?;
+                return Ok(json_reply(json!({})));
+            }
+            _ => {}
+        }
         let decoded = percent_encoding::percent_decode_str(path).decode_utf8_lossy().into_owned();
         let parts: Vec<&str> = decoded.trim_start_matches('/').split('/').collect();
         let file = match parts.as_slice() {
@@ -893,6 +957,7 @@ impl Backend {
             }
             ["cover", id] => self.cover_path(id.parse().map_err(|_| anyhow!("bad show"))?),
             ["clip", name] if !name.contains("..") => self.dirs.clips().join(name),
+            ["names", "telly-characters.zip"] => names::zip_path(self),
             _ => return Err(anyhow!("nothing at {path}")),
         };
         read_range(&file, range)

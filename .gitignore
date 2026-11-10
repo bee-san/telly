@@ -19,4 +19,4 @@ vite.config.ts.timestamp-*
 /src-tauri/.hachidori-old-*
 
 # Throwaway data folders for the dev server and tests
-/dev-data/
+/dev-data*/

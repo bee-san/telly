@@ -188,9 +188,9 @@ pub fn probe(ffprobe: &Path, path: &Path) -> Result<Probe> {
         .output()
         .context("running ffprobe")?;
     if !out.status.success() {
-        return Err(anyhow!("ffprobe couldn't read {}: {}", path.display(), String::from_utf8_lossy(&out.stderr).trim()));
+        return Err(anyhow!("ffprobe couldn’t read {}: {}", path.display(), String::from_utf8_lossy(&out.stderr).trim()));
     }
-    let json: Value = serde_json::from_slice(&out.stdout).context("reading ffprobe's answer")?;
+    let json: Value = serde_json::from_slice(&out.stdout).context("reading ffprobe’s answer")?;
     Ok(parse_probe(&json))
 }
 
@@ -426,7 +426,7 @@ pub fn read_audio_filtered(
     let out = cmd.stdin(Stdio::null()).output().context("starting ffmpeg")?;
     if !out.status.success() {
         let text = String::from_utf8_lossy(&out.stderr);
-        return Err(anyhow!("ffmpeg couldn't read the audio: {}", text.lines().last().unwrap_or("")));
+        return Err(anyhow!("ffmpeg couldn’t read the audio: {}", text.lines().last().unwrap_or("")));
     }
     Ok(out.stdout.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect())
 }
@@ -441,7 +441,7 @@ pub fn read_subtitle_track(ffmpeg: &Path, path: &Path, stream_index: i64, format
         .output()
         .context("starting ffmpeg")?;
     if !out.status.success() {
-        return Err(anyhow!("ffmpeg couldn't read subtitle track {stream_index}"));
+        return Err(anyhow!("ffmpeg couldn’t read subtitle track {stream_index}"));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }

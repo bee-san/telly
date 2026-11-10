@@ -58,10 +58,10 @@ fn get_json(key: &str, url: &str) -> Result<Value> {
         .header("User-Agent", USER_AGENT)
         .header("Accept", "application/json")
         .call()
-        .map_err(|e| anyhow!("Jimaku isn't reachable ({e})"))?;
+        .map_err(|e| anyhow!("Jimaku isn’t reachable ({e})"))?;
     match response.status().as_u16() {
         200 => {}
-        401 | 403 => return Err(anyhow!("Jimaku didn't accept the API key. Check it in Settings.")),
+        401 | 403 => return Err(anyhow!("Jimaku didn’t accept the API key. Check it in Settings.")),
         429 => return Err(anyhow!("Jimaku asked Telly to slow down")),
         code => return Err(anyhow!("Jimaku answered {code}")),
     }
@@ -121,7 +121,7 @@ fn download(key: &str, url: &str, limit: u64) -> Result<Vec<u8>> {
         .header("Authorization", key)
         .header("User-Agent", USER_AGENT)
         .call()
-        .map_err(|e| anyhow!("Jimaku isn't reachable ({e})"))?;
+        .map_err(|e| anyhow!("Jimaku isn’t reachable ({e})"))?;
     if response.status().as_u16() != 200 {
         return Err(anyhow!("Jimaku answered {} for {url}", response.status().as_u16()));
     }

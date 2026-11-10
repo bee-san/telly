@@ -3,7 +3,7 @@
   import { page } from "$app/state";
   import { onDestroy, onMount, tick as nextTick } from "svelte";
   import Icon from "$lib/Icon.svelte";
-  import { call, errorText, mediaUrl, setFullscreen, setWindowTitle, type CardEvent, type Line, type PlayerView } from "$lib/api";
+  import { call, errorText, mediaUrl, setFullscreen, setWindowTitle, type AskProgress, type CardEvent, type CastName, type ClaudeStatus, type Line, type PlayerView, type Recap } from "$lib/api";
   import { clock } from "$lib/format";
   import { app } from "$lib/state.svelte";
   import { toast } from "$lib/toast-store.svelte";
@@ -31,6 +31,22 @@
   let subMenu = $state(false);
   let videoError = $state("");
   let settings = $state<Record<string, unknown>>({});
+
+  // Explain this line (E): Claude’s answer, shown as it’s written.
+  let explaining = $state<{ index: number; text: string; done: boolean; error: string; ask: number } | null>(null);
+  let explainResume = false;
+  let explainPoll: ReturnType<typeof setTimeout> | null = null;
+  // Previously on (P): the recap card, then the moments of the episode before.
+  let recap = $state<{ state: "writing" | "ready" | "error"; text: string; error: string; data: Recap | null } | null>(null);
+  let recapPoll: ReturnType<typeof setTimeout> | null = null;
+  let montage = $state<{ i: number; t: number } | null>(null);
+  let montageVideo = $state<HTMLVideoElement | null>(null);
+  /** The recap card is up: the episode waits for it. */
+  let holdPlay = false;
+  /** This episode started from the end card’s countdown: no recap for it. */
+  let cameByAutoplay = false;
+  // Characters' names in the subtitles, from the names dictionary.
+  let castNames = $state<CastName[]>([]);
 
   // This sitting, for the end card.
   let sat = $state({ lines: 0, chars: 0, cards: 0, seconds: 0 });
@@ -69,21 +85,70 @@
     return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c] as string);
   }
 
-  /** A line as HTML: furigana as ruby, breaks as <br>. */
+  /** The names to look for, by their first character, longest first. */
+  const namesByFirst = $derived.by(() => {
+    const map = new Map<string, { chars: string[]; name: CastName; kana: boolean }[]>();
+    if (settings["player.names"] === false) return map;
+    for (const n of castNames) {
+      const chars = [...n.term];
+      if (chars.length < 2) continue;
+      const list = map.get(chars[0]) ?? [];
+      list.push({ chars, name: n, kana: chars.every(isKatakana) });
+      map.set(chars[0], list);
+    }
+    for (const list of map.values()) list.sort((a, b) => b.chars.length - a.chars.length);
+    return map;
+  });
+
+  /** Katakana and its long-vowel mark: a katakana name only counts when it isn’t part of a longer katakana word. */
+  const isKatakana = (c: string | undefined) => !!c && /[ァ-ヺー]/.test(c);
+
+  /** Where characters' names are in a line: start → (end, who). A name never splits a furigana base. */
+  function nameMarks(chars: string[], ruby: [number, number, string][]): Map<number, { end: number; name: CastName }> {
+    const marks = new Map<number, { end: number; name: CastName }>();
+    if (!namesByFirst.size) return marks;
+    const crossesRuby = (a: number, b: number) => ruby.some(([at, len]) => (a > at && a < at + len) || (b > at && b < at + len));
+    for (let i = 0; i < chars.length; i++) {
+      const found = (namesByFirst.get(chars[i]) ?? []).find(
+        (n) =>
+          n.chars.every((c, k) => chars[i + k] === c) &&
+          !crossesRuby(i, i + n.chars.length) &&
+          !(n.kana && (isKatakana(chars[i - 1]) || isKatakana(chars[i + n.chars.length]))),
+      );
+      if (!found) continue;
+      marks.set(i, { end: i + found.chars.length, name: found.name });
+      i += found.chars.length - 1;
+    }
+    return marks;
+  }
+
+  /** A line as HTML: furigana as ruby, breaks as <br>, characters' names marked. */
   function lineHtml(l: Line): string {
     const chars = [...l.text];
     const ruby = new Map<number, [number, string]>((l.ruby ?? []).map(([at, len, r]) => [at, [len, r]]));
+    const marks = nameMarks(chars, l.ruby ?? []);
     let out = "";
+    let closeAt = -1;
     for (let i = 0; i < chars.length; ) {
+      const m = marks.get(i);
+      if (m) {
+        out += `<span class="nm" title="${esc(m.name.name)}">`;
+        closeAt = m.end;
+      }
       const r = ruby.get(i);
       if (r && r[0] > 0) {
         out += `<ruby>${esc(chars.slice(i, i + r[0]).join(""))}<rt>${esc(r[1])}</rt></ruby>`;
         i += r[0];
-        continue;
+      } else {
+        out += chars[i] === "\n" ? "<br>" : esc(chars[i]);
+        i++;
       }
-      out += chars[i] === "\n" ? "<br>" : esc(chars[i]);
-      i++;
+      if (closeAt >= 0 && i >= closeAt) {
+        out += "</span>";
+        closeAt = -1;
+      }
     }
+    if (closeAt >= 0) out += "</span>";
     return out;
   }
 
@@ -107,20 +172,42 @@
     endingFired = false;
     counted.clear();
     sat = { lines: 0, chars: 0, cards: 0, seconds: 0 };
+    closeExplain(false);
+    closeRecap(false);
+    const autoplayed = cameByAutoplay;
+    cameByAutoplay = false;
     try {
       settings = await call<Record<string, unknown>>("settings");
       const v = await call<PlayerView>("openPlayer", { id });
+      if (await wantRecap(v, autoplayed)) holdPlay = true;
       view = v;
+      castNames = [];
+      call<CastName[]>("showNames", { id: v.show.id }).then((n) => (castNames = n)).catch(() => {});
       nudge = v.episode.subsNudgeMs;
       subsOn = settings["player.subtitles"] !== false;
       blur = settings["player.blur"] === true;
       await setWindowTitle(`${v.show.title} · Episode ${v.episode.number} — Telly`);
       if (v.episode.mediaState !== "ready") {
-        error = v.episode.mediaState === "failed" ? `This episode couldn't be converted: ${v.episode.mediaError}` : "This episode isn't ready to play yet.";
+        error = v.episode.mediaState === "failed" ? `This episode couldn’t be converted: ${v.episode.mediaError}` : "This episode isn’t ready to play yet.";
+      } else if (holdPlay) {
+        openRecap();
       }
     } catch (e) {
       error = errorText(e);
     }
+  }
+
+  /** Whether to open on "Previously on": back after a while, at the start of an episode with one before it. */
+  async function wantRecap(v: PlayerView, autoplayed: boolean): Promise<boolean> {
+    if (autoplayed || settings["recap.enabled"] === false || !v.recap?.possible) return false;
+    const hours = Number(settings["recap.afterHours"] ?? 8) || 8;
+    if (v.awayMs == null || v.awayMs < hours * 3_600_000) return false;
+    const e = v.episode;
+    const resuming = e.watchedAt === null && e.position > 30 && (e.duration <= 0 || e.position < e.duration * 0.95);
+    if (resuming) return false;
+    if (v.recap.ready) return true;
+    const claude = await call<ClaudeStatus>("claudeStatus").catch(() => null);
+    return !!claude?.available;
   }
 
   function startAt(): number {
@@ -137,13 +224,14 @@
     if (at > 0) video.currentTime = at;
     lastT = video.currentTime;
     video.playbackRate = rate;
-    video.play().catch(() => {});
+    if (!holdPlay) video.play().catch(() => {});
   }
 
   // ---- the frame loop: subtitles and the lines that played -------------------
 
   function loop() {
     frame = requestAnimationFrame(loop);
+    montageTick();
     if (!video) return;
     const cur = video.currentTime;
     now = cur;
@@ -279,7 +367,7 @@
 
   async function setNudge(ms: number) {
     nudge = ms;
-    flash(ms === 0 ? "Subtitles as synced" : `Subtitles ${(Math.abs(ms) / 1000).toFixed(1)} s ${ms > 0 ? "later" : "earlier"}`);
+    flash(ms === 0 ? "Nudge reset" : `Subtitles ${(Math.abs(ms) / 1000).toFixed(1)} seconds ${ms > 0 ? "later" : "earlier"}`);
     if (view) await call("nudge", { id: view.episode.id, ms }).catch(() => {});
   }
 
@@ -289,7 +377,7 @@
     try {
       const updated = await call<Line[]>("lateFromHere", { id: view.episode.id, from: t - 1, ms });
       view.lines = updated;
-      flash(`Lines from here ${(Math.abs(ms) / 1000).toFixed(1)} s ${ms > 0 ? "later" : "earlier"}`);
+      flash(`Lines from here on ${(Math.abs(ms) / 1000).toFixed(1)} seconds ${ms > 0 ? "later" : "earlier"}`);
     } catch (e) {
       flash(errorText(e));
     }
@@ -305,7 +393,7 @@
       view.episode = v.episode;
       toast({ key: "resync", state: "done", title: "Subtitles changed", text: `${name} · ${Math.round((v.episode.subsScore ?? 0) * 100)}%` });
     } catch (e) {
-      toast({ key: "resync", state: "failed", title: "Couldn't use that file", text: errorText(e) });
+      toast({ key: "resync", state: "failed", title: "Couldn’t use that file", text: errorText(e) });
     }
   }
 
@@ -315,7 +403,7 @@
     try {
       await call("mineLine", { id: view.episode.id, start: l.start, end: l.end, text: l.text });
     } catch (e) {
-      toast({ key: "mineline", state: "failed", title: "Couldn't add the line", text: errorText(e) });
+      toast({ key: "mineline", state: "failed", title: "Couldn’t add the line", text: errorText(e) });
     }
   }
 
@@ -329,6 +417,162 @@
     app.fullscreen = !app.fullscreen;
     await setFullscreen(app.fullscreen).catch(() => {});
   }
+
+  // ---- explain this line (E) ---------------------------------------------------------
+
+  /** The line on screen, or the last one that played: its place in all the lines. */
+  function lineHere(): number {
+    const l = active[0] ?? dialogue[current];
+    return l ? lines.indexOf(l) : -1;
+  }
+
+  async function explainLine(index = lineHere()) {
+    if (!view) return;
+    if (index < 0) return flash("No line here to explain");
+    if (explaining?.index === index) return closeExplain();
+    stopExplain();
+    if (!explaining && video && !video.paused) {
+      explainResume = true;
+      video.pause();
+    }
+    pausedByHover = false;
+    clearResume();
+    explaining = { index, text: "", done: false, error: "", ask: 0 };
+    try {
+      const r = await call<AskProgress>("explain", { id: view.episode.id, index });
+      if (explaining?.index !== index) return;
+      if (r.done) explaining = { ...explaining, text: r.text ?? "", done: true };
+      else if (r.ask) {
+        explaining = { ...explaining, ask: r.ask };
+        followExplain(index, r.ask);
+      }
+    } catch (e) {
+      if (explaining?.index === index) explaining = { ...explaining, done: true, error: errorText(e) };
+    }
+  }
+
+  function followExplain(index: number, ask: number) {
+    explainPoll = setTimeout(async () => {
+      if (explaining?.index !== index) return;
+      try {
+        const r = await call<AskProgress>("ask", { ask });
+        if (explaining?.index !== index) return;
+        explaining = { ...explaining, text: r.text ?? "", done: !!r.done, error: r.error ?? "" };
+        if (!r.done) followExplain(index, ask);
+      } catch (e) {
+        if (explaining?.index === index) explaining = { ...explaining, done: true, error: errorText(e) };
+      }
+    }, 250);
+  }
+
+  /** Stops following an answer, and Claude writing it if it isn’t done. */
+  function stopExplain() {
+    if (explainPoll) clearTimeout(explainPoll);
+    explainPoll = null;
+    if (explaining && !explaining.done && explaining.ask) call("stopAsk", { ask: explaining.ask }).catch(() => {});
+  }
+
+  function closeExplain(resume = true) {
+    stopExplain();
+    explaining = null;
+    if (resume && explainResume && video) video.play().catch(() => {});
+    explainResume = false;
+  }
+
+  /** Claude’s answer: a translation, then "term (reading): note" lines. */
+  const explainRows = $derived.by(() => {
+    const rows = (explaining?.text ?? "")
+      .split("\n")
+      .map((r) => r.trim().replace(/^([-•・*]|\d+\.)\s+/, ""))
+      .filter(Boolean);
+    const notes = rows.slice(1).map((r) => {
+      const m = /^(.{1,48}?)\s*[:：]\s+(.+)$/.exec(r);
+      return m ? { term: m[1].trim(), text: m[2].trim() } : { term: "", text: r };
+    });
+    return { translation: rows[0] ?? "", notes };
+  });
+
+  // ---- previously on (P) --------------------------------------------------------------
+
+  async function openRecap() {
+    if (!view || recap) return;
+    holdPlay = true;
+    video?.pause();
+    recap = { state: "writing", text: "", error: "", data: null };
+    try {
+      settleRecap(await call<Recap>("recap", { id: view.episode.id, start: true }));
+    } catch (e) {
+      recap = { state: "error", text: "", error: errorText(e), data: null };
+    }
+  }
+
+  function settleRecap(r: Recap) {
+    if (!recap) return;
+    if (r.recap) recap = { state: "ready", text: r.recap, error: "", data: r };
+    else if (r.error) recap = { state: "error", text: "", error: r.error, data: null };
+    else if (r.ask) followRecap(r.ask);
+  }
+
+  function followRecap(ask: number) {
+    recapPoll = setTimeout(async () => {
+      if (!recap || !view) return;
+      try {
+        const r = await call<Recap>("recapAnswer", { id: view.episode.id, ask });
+        if (r.done) settleRecap(r);
+        else followRecap(ask);
+      } catch (e) {
+        if (recap) recap = { state: "error", text: "", error: errorText(e), data: null };
+      }
+    }, 1000);
+  }
+
+  /** Off the recap and into the episode. A recap still being written is kept for next time. */
+  function closeRecap(play = true) {
+    if (recapPoll) clearTimeout(recapPoll);
+    recapPoll = null;
+    const wasOpen = recap !== null;
+    recap = null;
+    montage = null;
+    holdPlay = false;
+    if (play && wasOpen && video) video.play().catch(() => {});
+  }
+
+  const moments = $derived(recap?.data?.moments ?? []);
+  const canMontage = $derived(recap?.state === "ready" && !!recap.data?.from?.playable && moments.length > 0);
+
+  function startMontage() {
+    if (canMontage) montage = { i: 0, t: moments[0].start };
+  }
+
+  function playMoment(i: number) {
+    const m = moments[i];
+    if (!m || !montageVideo) return endMontage(true);
+    montage = { i, t: m.start };
+    montageVideo.currentTime = m.start;
+    montageVideo.play().catch(() => {});
+  }
+
+  /** Follows the moment playing, and moves on at its end. Called every frame, and on the video's
+   *  time updates too, which carry on when the window is hidden and frames stop. */
+  function montageTick() {
+    if (!montage || !montageVideo) return;
+    const m = moments[montage.i];
+    montage.t = montageVideo.currentTime;
+    if (!m) endMontage(true);
+    else if (montageVideo.currentTime >= m.end) playMoment(montage.i + 1);
+  }
+
+  function endMontage(startEpisode: boolean) {
+    montage = null;
+    if (startEpisode) closeRecap(true);
+  }
+
+  const montageLines = $derived.by(() => {
+    if (!montage) return [];
+    const shift = (recap?.data?.from?.nudgeMs ?? 0) / 1000;
+    const t = montage.t;
+    return (moments[montage.i]?.lines ?? []).filter((l) => l.start + shift <= t && t < l.end + shift);
+  });
 
   // ---- the end of an episode -----------------------------------------------------
 
@@ -371,6 +615,7 @@
     if (!next) return;
     await close();
     closed = false;
+    cameByAutoplay = true;
     goto(`/watch?ep=${next.id}`, { replaceState: true });
   }
 
@@ -403,6 +648,18 @@
     if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     wake();
+    // The recap card, or its moments, takes Space, Enter, P and Esc.
+    if (recap) {
+      if (e.key === " " || e.key === "Enter" || e.key === "Escape") {
+        e.preventDefault();
+        if (montage) endMontage(true);
+        else closeRecap(true);
+      } else if ((e.key === "p" || e.key === "P") && !montage) {
+        if (canMontage) startMontage();
+        else closeRecap(true);
+      }
+      return;
+    }
     switch (e.key) {
       case " ":
       case "k":
@@ -430,7 +687,7 @@
       case "b":
       case "B":
         blur = !blur;
-        flash(blur ? "Blurred until you hover" : "Blur off");
+        flash(blur ? "Subtitles blurred until hovered" : "Blur off");
         call("setSetting", { key: "player.blur", value: blur }).catch(() => {});
         break;
       case "t":
@@ -459,8 +716,18 @@
       case "M":
         mineLine();
         break;
+      case "e":
+      case "E":
+        explainLine();
+        break;
+      case "p":
+      case "P":
+        if (view?.recap?.possible) openRecap();
+        else flash("No episode before this one to recap");
+        break;
       case "Escape":
-        if (countdown !== null) stopCountdown();
+        if (explaining) closeExplain();
+        else if (countdown !== null) stopCountdown();
         else if (subMenu) subMenu = false;
         else if (app.fullscreen) toggleFull();
         break;
@@ -507,6 +774,8 @@
   });
 
   onDestroy(() => {
+    closeExplain(false);
+    if (recapPoll) clearTimeout(recapPoll);
     cancelAnimationFrame(frame);
     if (tickTimer) clearInterval(tickTimer);
     stopCountdown();
@@ -553,7 +822,7 @@
         onseeked={() => video && (lastT = video.currentTime)}
         onended={finish}
         ondurationchange={() => video && (duration = video.duration)}
-        onerror={() => (videoError = video?.error?.message || "The video couldn't play.")}
+        onerror={() => (videoError = video?.error?.message || "The video couldn’t play.")}
       ></video>
     {/if}
   </div>
@@ -566,18 +835,18 @@
     {/each}
   </div>
 
-  {#if pausedByHover}<span class="paused-note">Paused while you read · move back to the picture to carry on</span>{/if}
+  {#if pausedByHover}<span class="paused-note">Paused for reading · Move back to the picture to continue</span>{/if}
   {#if note}<span class="flash">{note}</span>{/if}
 
   <div class="ptop">
-    <button type="button" class="pbtn" aria-label="Back to the library" onclick={() => leave("/")}><Icon name="back" /></button>
+    <button type="button" class="pbtn" aria-label="Back to library" title="Back to library" onclick={() => leave("/")}><Icon name="back" /></button>
     {#if view}
       <span class="ptitle"><b>{view.show.title}</b><span>Episode {view.episode.number} of {view.count}</span></span>
       <span class="grow"></span>
       <span class="subnote" title={view.episode.subsFile}>
         {#if view.episode.subsState === "synced"}<Icon name="check" />{/if}{syncNote}{#if nudge !== 0} · {nudge > 0 ? "+" : ""}{(nudge / 1000).toFixed(1)} s{/if}
       </span>
-      <button type="button" class="pbtn txt" onclick={() => leave(`/show?id=${view?.show.id}`)}>Episodes</button>
+      <button type="button" class="pbtn txt" onclick={() => leave(`/show?id=${view?.show.id}`)}>Show Episodes</button>
     {/if}
   </div>
 
@@ -586,7 +855,7 @@
       <p>{error || videoError}</p>
       <div class="end-actions">
         {#if videoError && view}
-          <button type="button" class="btn" onclick={async () => { if (view) { await call("retryMedia", { id: view.episode.id, force: true }); leave(`/show?id=${view.show.id}`); } }}>Convert this episode</button>
+          <button type="button" class="btn" onclick={async () => { if (view) { await call("retryMedia", { id: view.episode.id, force: true }); leave(`/show?id=${view.show.id}`); } }}>Convert This Episode</button>
         {/if}
         <button type="button" class="btn quiet" onclick={() => leave(view ? `/show?id=${view.show.id}` : "/")}>Back</button>
       </div>
@@ -609,22 +878,26 @@
       <span class="grow"></span>
       {#if rate !== 1}<button type="button" class="pbtn txt" title="Speed ([ and ])" onclick={() => setRate(1)}>{rate.toFixed(1)}×</button>{/if}
       <button type="button" class="pbtn" class:on={subsOn} aria-label="Subtitles" title="Subtitles (S)" onclick={() => (subsOn = !subsOn)}><Icon name="subs" /></button>
-      <button type="button" class="pbtn" class:on={blur} aria-label="Blur until hover" title="Blur until you hover (B)" onclick={() => (blur = !blur)}><Icon name="blur" /></button>
+      <button type="button" class="pbtn" class:on={blur} aria-label="Blur until hovered" title="Blur until hovered (B)" onclick={() => (blur = !blur)}><Icon name="blur" /></button>
       <button type="button" class="pbtn" class:on={transcript} aria-label="Transcript" title="Transcript (T)" onclick={() => (transcript = !transcript)}><Icon name="transcript" /></button>
+      <button type="button" class="pbtn txt" class:on={!!explaining} title="Explain the line with Claude (E)" onclick={() => explainLine()}>Explain</button>
+      {#if view?.recap?.possible}
+        <button type="button" class="pbtn txt" title="Previously on: a recap of Episode {view.recap.beforeNumber} (P)" onclick={openRecap}>Recap</button>
+      {/if}
       <span class="menuwrap">
-        <button type="button" class="pbtn txt" class:on={subMenu} onclick={() => (subMenu = !subMenu)}>Sync</button>
+        <button type="button" class="pbtn txt" class:on={subMenu} aria-haspopup="menu" aria-expanded={subMenu} title="Fix the subtitle timing" onclick={() => (subMenu = !subMenu)}>Sync ▾</button>
         {#if subMenu && view}
           <div class="submenu" role="menu">
-            <span class="sm-h">Nudge every line (Z and X)</span>
+            <span class="sm-h">Nudge every line by 0.1 seconds (Z and X)</span>
             <div class="sm-row">
-              <button type="button" onclick={() => setNudge(nudge - 100)}>−0.1 s</button>
+              <button type="button" onclick={() => setNudge(nudge - 100)}>Earlier</button>
               <button type="button" onclick={() => setNudge(0)}>Reset</button>
-              <button type="button" onclick={() => setNudge(nudge + 100)}>+0.1 s</button>
+              <button type="button" onclick={() => setNudge(nudge + 100)}>Later</button>
             </div>
-            <span class="sm-h">Lines from here on</span>
+            <span class="sm-h">Move the lines from here on by half a second</span>
             <div class="sm-row">
-              <button type="button" onclick={() => lateFromHere(-500)}>0.5 s earlier</button>
-              <button type="button" onclick={() => lateFromHere(500)}>0.5 s later</button>
+              <button type="button" onclick={() => lateFromHere(-500)}>Earlier</button>
+              <button type="button" onclick={() => lateFromHere(500)}>Later</button>
             </div>
             {#if view.tried.length}
               <span class="sm-h">Try another file</span>
@@ -641,7 +914,7 @@
     </div>
   </div>
 
-  {#if transcript}
+  {#if transcript && !explaining}
     <aside class="tx">
       <div class="tx-head"><b>Transcript</b><span>{dialogue.length} lines</span></div>
       <ol class="tx-list scroll" bind:this={txList}>
@@ -649,6 +922,7 @@
           <li data-i={i} class:cur={i === current}>
             <button type="button" class="tt" onclick={() => seekTo(lineStart(l))}>{clock(l.start)}</button>
             <p class="ln" lang="ja" onpointerenter={hoverText}>{@html lineHtml(l)}</p>
+            <button type="button" class="tx-ex" title="Explain this line" onclick={() => explainLine(lines.indexOf(l))}>Explain</button>
           </li>
         {:else}
           <li class="tx-empty">No subtitles for this episode yet.</li>
@@ -657,11 +931,73 @@
     </aside>
   {/if}
 
+  {#if explaining && view}
+    <aside class="tx ex" aria-label="Explain this line">
+      <div class="tx-head"><b>Explain Line</b><button type="button" class="ex-close" title="Close (E)" onclick={() => closeExplain()}>Close</button></div>
+      <div class="ex-body scroll">
+        {#if lines[explaining.index]}<p class="ex-line" lang="ja" onpointerenter={hoverText}>{@html lineHtml(lines[explaining.index])}</p>{/if}
+        {#if explaining.error}
+          <p class="ex-err">{explaining.error}</p>
+        {:else if !explaining.text}
+          <p class="ex-wait">Asking Claude…</p>
+        {:else}
+          <p class="ex-tr">{explainRows.translation}</p>
+          {#if explainRows.notes.length}
+            <dl class="ex-notes">
+              {#each explainRows.notes as n, k (k)}
+                {#if n.term}<dt lang="ja" onpointerenter={hoverText}>{n.term}</dt>{/if}
+                <dd class:solo={!n.term}>{n.text}</dd>
+              {/each}
+            </dl>
+          {/if}
+          {#if !explaining.done}<p class="ex-wait">…</p>{/if}
+        {/if}
+      </div>
+      <div class="ex-foot">Answered by Claude, through Claude Code{explaining.done && !explaining.error ? " · saved for next time" : ""}</div>
+    </aside>
+  {/if}
+
+  {#if recap && view && !montage}
+    <div class="endov recapov">
+      <div class="end-card recap-card">
+        <span class="small">Previously on</span>
+        <h3>{view.show.title}</h3>
+        {#if recap.state === "writing"}
+          <p class="recap-text wait">Claude is writing a recap of Episode {view.recap?.beforeNumber ?? ""} from its subtitles…</p>
+        {:else if recap.state === "error"}
+          <p class="recap-text wait">{recap.error}</p>
+        {:else}
+          <p class="recap-text">{recap.text}</p>
+        {/if}
+        <div class="end-actions">
+          {#if canMontage}
+            <button type="button" class="btn quiet" title="Watch the moments (P)" onclick={startMontage}>Watch the Moments</button>
+          {/if}
+          <button type="button" class="btn" title="Start the episode (Enter)" onclick={() => closeRecap(true)}><Icon name="play" /><span>Start Episode {view.episode.number}</span></button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if montage && recap?.data?.from && view}
+    <div class="montage">
+      <!-- svelte-ignore a11y_media_has_caption -->
+      <video bind:this={montageVideo} src={mediaUrl(recap.data.from.src)} preload="auto" onloadedmetadata={() => playMoment(0)} ontimeupdate={montageTick} onerror={() => endMontage(false)}></video>
+      <span class="montage-label">Previously on {view.show.title} · Episode {recap.data.from.number} · {montage.i + 1} of {moments.length}</span>
+      <div class="subs montage-subs" style:--sub-size="{subSize}px">
+        {#each montageLines as l (l.start + l.text)}
+          <p class="sub-line" lang="ja">{@html lineHtml(l)}</p>
+        {/each}
+      </div>
+      <button type="button" class="pbtn txt montage-skip" title="Start the episode (Enter)" onclick={() => endMontage(true)}>Start Episode {view.episode.number}</button>
+    </div>
+  {/if}
+
   {#if ended && view}
     <div class="endov">
       <div class="end-card">
         <span class="small">Episode {view.episode.number} done{sat.seconds > 30 ? ` · logged to Tidepool` : ""}</span>
-        <h3>{view.next ? `Next: Episode ${view.next.number}` : `That's the last episode here`}</h3>
+        <h3>{view.next ? `Next: Episode ${view.next.number}` : `That’s the Last Episode Here`}</h3>
         <div class="end-stats">
           <div><b>{Math.round(sat.seconds / 60)}</b><span>minutes</span></div>
           <div><b>{sat.lines}</b><span>lines</span></div>
@@ -669,13 +1005,13 @@
           <div><b>{sat.cards}</b><span>cards</span></div>
         </div>
         {#if view.next && !view.next.ready}
-          <p class="small">Episode {view.next.number} is getting ready{view.next.mediaState === "working" ? ` · ${Math.round(view.next.mediaProgress * 100)}%` : ""}. It'll start when it can.</p>
+          <p class="small">Episode {view.next.number} is getting ready{view.next.mediaState === "working" ? ` · ${Math.round(view.next.mediaProgress * 100)}%` : ""}. It’ll start when it can.</p>
         {/if}
         <div class="end-actions">
-          <button type="button" class="btn quiet" onclick={() => leave("/")}>Library</button>
+          <button type="button" class="btn quiet" onclick={() => leave("/")}>Open Library</button>
           {#if view.next}
             <button type="button" class="btn quiet" onclick={stopCountdown} disabled={countdown === null}>Stop</button>
-            <button type="button" class="btn" onclick={playNext} disabled={!view.next.ready}><Icon name="play" /><span>Play now</span></button>
+            <button type="button" class="btn" onclick={playNext} disabled={!view.next.ready}><Icon name="play" /><span>Play Now</span></button>
           {/if}
         </div>
         {#if countdown !== null}
@@ -768,4 +1104,33 @@
   .cd .cd-fg { stroke: var(--vid-ink); stroke-linecap: round; stroke-dasharray: 113.1; animation: cd 8s linear forwards; }
   @keyframes cd { to { stroke-dashoffset: 113.1; } }
   .cd b { position: absolute; inset: 0; display: grid; place-items: center; font: 600 15px/1 var(--font-ui); font-variant-numeric: tabular-nums; }
+  /* Characters' names, from the names dictionary. */
+  .sub-line :global(.nm), .ln :global(.nm), .ex-line :global(.nm) { color: var(--sub-name, #9fd0ff); }
+  .tx-list li { grid-template-columns: 46px 1fr auto; }
+  .tx-ex { all: unset; cursor: pointer; align-self: start; font: 600 11.5px/2.1 var(--font-ui); color: var(--vid-ink-2); visibility: hidden; padding: 0 4px; }
+  .tx-list li:hover .tx-ex { visibility: visible; }
+  .tx-ex:hover { color: var(--vid-ink); }
+  .ex-close { all: unset; cursor: pointer; font: 600 12px/1 var(--font-ui); color: var(--vid-ink-2); }
+  .ex-close:hover { color: var(--vid-ink); }
+  .ex-body { flex: 1; overflow: auto; padding: 14px 16px; display: grid; align-content: start; gap: 12px; }
+  .ex-line { margin: 0; font: 600 21px/1.55 var(--font-jp); user-select: text; -webkit-user-select: text; cursor: text; }
+  .ex-line :global(rt) { font-size: .45em; }
+  .ex-tr { margin: 0; font: 500 15.5px/1.5 var(--font-ui); }
+  .ex-notes { margin: 0; display: grid; gap: 4px; border-top: 1px solid var(--vid-edge); padding-top: 12px; }
+  .ex-notes dt { font: 600 15px/1.4 var(--font-jp); margin-top: 8px; user-select: text; -webkit-user-select: text; }
+  .ex-notes dd { margin: 0; font: 400 13.5px/1.5 var(--font-ui); color: var(--vid-ink-2); }
+  .ex-notes dd.solo { margin-top: 8px; color: var(--vid-ink); }
+  .ex-wait { margin: 0; font: 500 13.5px/1.5 var(--font-ui); color: var(--vid-ink-2); }
+  .ex-err { margin: 0; font: 500 13.5px/1.5 var(--font-ui); color: #ffb4a8; }
+  .ex-foot { padding: 9px 14px; border-top: 1px solid var(--vid-edge); font-size: 11.5px; color: var(--vid-ink-2); }
+  .recapov { z-index: 8; background: rgba(0, 0, 0, .72); }
+  .recap-card h3 { padding-right: 0; }
+  .recap-text { margin: 0; font: 400 16px/1.6 var(--font-ui); white-space: pre-line; }
+  .recap-text.wait { color: var(--vid-ink-2); font-size: 14.5px; }
+  .montage { position: absolute; inset: 0; z-index: 9; background: var(--vid); }
+  .montage video { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .montage-label { position: absolute; top: 18px; left: 20px; font: 600 13px/1 var(--font-ui); letter-spacing: .02em; color: var(--vid-ink); text-shadow: 0 1px 3px rgba(0, 0, 0, .9); }
+  .montage-subs { bottom: 72px; }
+  .montage-subs .sub-line { pointer-events: none; }
+  .montage-skip { position: absolute; right: 18px; bottom: 18px; background: var(--vid-panel); border: 1px solid var(--vid-edge); }
 </style>

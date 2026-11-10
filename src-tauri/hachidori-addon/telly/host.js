@@ -17,6 +17,12 @@
 //    If the relay is not running yet, it tries again every poll. A link you
 //    set up yourself to another address in Hachidori's settings is left alone.
 //    ?link=0 unlinks it, once, when the page opens.
+// 3. Character names. Telly makes a dictionary of the casts of the shows you're
+//    watching (src-tauri/src/names) and serves it at /names on its media
+//    protocol. Each poll this page asks whether there's a copy Hachidori hasn't
+//    had, and sends it through Hachidori's upload requests, as SubMiner sends
+//    its own: a linked Hachidori passes it to the Hachidori in your browser,
+//    an unlinked one imports it itself. It replaces the last copy by title.
 //
 // Telly watches this page's title for its state:
 // "telly-hachidori:" + JSON {state, detail, host}, where state is one of
@@ -24,11 +30,14 @@
 
 import { extensionApi as chrome } from "../browser-api.js";
 import { chromeOffscreenSupported, ensureChromeOffscreen } from "../chrome-offscreen.js";
+import { uploadDictionary } from "../linked-import.js";
 
 const SHARING = "hachidori-sharing";
 const PREFIX = "telly-hachidori:";
 const ENGINE = "offscreen.html";
 const POLL_MS = 15_000;
+// Telly's own files: the media protocol, as WebView2 names it.
+const TELLY = "http://media.localhost";
 
 const wantLink = new URLSearchParams(location.search).get("link") !== "0";
 
@@ -111,6 +120,53 @@ async function step(first) {
   }
 }
 
+/** Waits for this Hachidori's engine to finish loading (SubMiner's waitForEngineReady). */
+async function engineReady() {
+  const deadline = Date.now() + 120_000;
+  for (;;) {
+    const reply = await chrome.runtime.sendMessage({ target: "hoshidicts-offscreen", type: "hd_status", requestId: crypto.randomUUID() }).catch(() => null);
+    if (reply?.ready === true && reply.loading !== true) return;
+    if (Date.now() >= deadline) throw new Error("Hachidori's dictionaries are still loading");
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+}
+
+let addingNames = false;
+
+/** Sends Telly's character dictionary to Hachidori when there's a copy it hasn't had. */
+async function syncNames() {
+  if (addingNames) return;
+  let state;
+  try {
+    state = await (await fetch(`${TELLY}/names/state`)).json();
+  } catch {
+    return;
+  }
+  if (!state?.due) return;
+  const client = await status().catch(() => null);
+  // Linked, but the browser isn't there yet: next poll.
+  if (client?.linked && !client.connected) return;
+  addingNames = true;
+  const tell = (fields) => fetch(`${TELLY}/names/imported?${new URLSearchParams({ rev: state.revision, ...fields })}`).catch(() => {});
+  try {
+    if (!client?.linked) await engineReady();
+    const archive = await fetch(`${TELLY}${state.url}`);
+    if (!archive.ok) throw new Error("Telly's character dictionary wasn't there");
+    const reply = await uploadDictionary({
+      blob: await archive.blob(),
+      fileName: "telly-characters.zip",
+      replace: true,
+      send: (type, fields) => chrome.runtime.sendMessage({ target: "hachidori-linked-import", type, requestId: crypto.randomUUID(), ...fields }),
+    });
+    if (reply?.report?.success !== true) throw new Error(reply?.report?.error || reply?.error || "Hachidori didn't take the dictionary");
+    await tell({ ok: "1", to: client?.linked ? (client.host?.name || "your browser") : "telly" });
+  } catch (error) {
+    await tell({ ok: "0", error: errorText(error) });
+  } finally {
+    addingNames = false;
+  }
+}
+
 async function main() {
   try {
     await startEngine();
@@ -119,7 +175,11 @@ async function main() {
     return;
   }
   await step(true);
-  setInterval(() => step(false), POLL_MS);
+  void syncNames();
+  setInterval(() => {
+    void step(false);
+    void syncNames();
+  }, POLL_MS);
 }
 
 main();

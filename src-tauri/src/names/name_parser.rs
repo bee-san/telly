@@ -1,0 +1,971 @@
+// Copied from bee-san/Japanese_Character_Name_Dictionary (characterdictionary.tokyo),
+// yomitan-dict-builder/src/name_parser.rs at 2e3949d. MIT licence, Copyright (c) 2026 Autumn (Bee).
+// Telly's changes are marked "Telly:".
+
+/// Name handling: splitting Japanese names, generating readings, and honorific data.
+///
+/// Uses low-level kana utilities from `crate::kana`.
+use super::kana;
+
+/// Name parts result from splitting a Japanese name.
+#[derive(Debug, Clone)]
+pub struct JapaneseNameParts {
+    pub has_space: bool,
+    pub original: String,
+    pub combined: String,
+    pub family: Option<String>,
+    pub given: Option<String>,
+}
+
+/// Name reading results.
+#[derive(Debug, Clone)]
+pub struct NameReadings {
+    pub full: String,   // Full hiragana reading (family + given)
+    pub family: String, // Family name hiragana reading
+    pub given: String,  // Given name hiragana reading
+}
+
+/// Honorific suffixes: (display form, hiragana reading, English description)
+pub const HONORIFIC_SUFFIXES: &[(&str, &str, &str)] = &[
+    // ===== Respectful / Formal =====
+    ("さん", "さん", "Generic polite suffix (Mr./Ms./Mrs.)"),
+    ("様", "さま", "Very formal/respectful (Lord/Lady/Dear)"),
+    ("さま", "さま", "Kana form of 様 — very formal/respectful"),
+    ("氏", "し", "Formal written suffix (Mr./Ms.)"),
+    (
+        "殿",
+        "どの",
+        "Formal/archaic (Lord, used in official documents)",
+    ),
+    ("殿", "てん", "Alternate reading of 殿 (rare)"),
+    ("御前", "おまえ", "Archaic respectful (Your Presence)"),
+    (
+        "御前",
+        "ごぜん",
+        "Alternate reading of 御前 (Your Excellency)",
+    ),
+    ("貴殿", "きでん", "Very formal written (Your Honor)"),
+    ("閣下", "かっか", "Your Excellency (diplomatic/military)"),
+    ("陛下", "へいか", "Your Majesty (royalty)"),
+    ("殿下", "でんか", "Your Highness (royalty)"),
+    (
+        "妃殿下",
+        "ひでんか",
+        "Her Royal Highness (princess consort)",
+    ),
+    ("親王", "しんのう", "Prince of the Blood (Imperial family)"),
+    (
+        "内親王",
+        "ないしんのう",
+        "Princess of the Blood (Imperial family)",
+    ),
+    ("宮", "みや", "Prince/Princess (Imperial branch family)"),
+    ("上", "うえ", "Archaic superior address (e.g. 父上)"),
+    ("公", "こう", "Duke / Lord (nobility)"),
+    (
+        "卿",
+        "きょう",
+        "Lord (archaic nobility, also used in fantasy)",
+    ),
+    ("侯", "こう", "Marquis (nobility)"),
+    ("伯", "はく", "Count/Earl (nobility)"),
+    ("子", "し", "Viscount (nobility) / Master (classical)"),
+    ("男", "だん", "Baron (nobility)"),
+    // ===== Casual / Friendly =====
+    ("君", "くん", "Familiar suffix (usually male, junior)"),
+    ("くん", "くん", "Kana form of 君 — familiar (usually male)"),
+    (
+        "ちゃん",
+        "ちゃん",
+        "Endearing suffix (children, close friends, girls)",
+    ),
+    ("たん", "たん", "Baby-talk version of ちゃん"),
+    ("ちん", "ちん", "Cutesy/playful variant of ちゃん"),
+    ("ちょ", "ちょ", "Playful/cutesy clipped nickname suffix"),
+    ("ちょる", "ちょる", "Playful/cutesy nickname suffix"),
+    ("りん", "りん", "Cutesy suffix (internet/otaku culture)"),
+    ("っち", "っち", "Playful/affectionate suffix"),
+    ("ぴょん", "ぴょん", "Cutesy/bouncy suffix"),
+    ("にゃん", "にゃん", "Cat-like cutesy suffix"),
+    ("みん", "みん", "Cutesy diminutive suffix"),
+    ("ぽん", "ぽん", "Playful suffix"),
+    ("坊", "ぼう", "Young boy / little one"),
+    ("坊ちゃん", "ぼっちゃん", "Young master / rich boy"),
+    ("嬢", "じょう", "Young lady"),
+    ("嬢ちゃん", "じょうちゃん", "Little miss"),
+    ("お嬢", "おじょう", "Young lady (polite)"),
+    (
+        "お嬢様",
+        "おじょうさま",
+        "Young lady (very polite/rich girl)",
+    ),
+    ("姫", "ひめ", "Princess (also used affectionately)"),
+    ("姫様", "ひめさま", "Princess (formal)"),
+    ("王子", "おうじ", "Prince"),
+    ("王子様", "おうじさま", "Prince (formal/fairy-tale)"),
+    ("王女", "おうじょ", "Princess (royal daughter)"),
+    // ===== Academic / Educational =====
+    ("先生", "せんせい", "Teacher/Doctor/Master"),
+    ("先輩", "せんぱい", "Senior (school/work)"),
+    ("後輩", "こうはい", "Junior (school/work)"),
+    ("教授", "きょうじゅ", "Professor"),
+    ("准教授", "じゅんきょうじゅ", "Associate Professor"),
+    ("助教", "じょきょう", "Assistant Professor"),
+    ("講師", "こうし", "Lecturer"),
+    ("博士", "はかせ", "Doctor (academic/scientist)"),
+    ("博士", "はくし", "Doctor (alternate formal reading)"),
+    ("師匠", "ししょう", "Master/Mentor (arts, martial arts)"),
+    ("師範", "しはん", "Master instructor (martial arts)"),
+    ("老師", "ろうし", "Venerable teacher / Zen master"),
+    ("塾長", "じゅくちょう", "Cram school principal"),
+    ("校長", "こうちょう", "School principal"),
+    ("学長", "がくちょう", "University president"),
+    ("園長", "えんちょう", "Kindergarten/zoo director"),
+    (
+        "生徒",
+        "せいと",
+        "Student (used as address in some contexts)",
+    ),
+    // ===== Corporate / Business =====
+    ("社長", "しゃちょう", "Company president/CEO"),
+    ("副社長", "ふくしゃちょう", "Vice president"),
+    ("会長", "かいちょう", "Chairman"),
+    ("部長", "ぶちょう", "Department head/Director"),
+    ("副部長", "ふくぶちょう", "Deputy department head"),
+    ("課長", "かちょう", "Section chief/Manager"),
+    ("係長", "かかりちょう", "Subsection chief"),
+    ("主任", "しゅにん", "Chief/Senior staff"),
+    ("店長", "てんちょう", "Store manager"),
+    ("支配人", "しはいにん", "Manager (hotel/theater)"),
+    ("専務", "せんむ", "Senior Managing Director"),
+    ("常務", "じょうむ", "Managing Director"),
+    ("取締役", "とりしまりやく", "Board Director"),
+    ("監督", "かんとく", "Director/Supervisor/Coach"),
+    ("所長", "しょちょう", "Office/institute director"),
+    ("局長", "きょくちょう", "Bureau director"),
+    ("室長", "しつちょう", "Office chief / Lab head"),
+    ("班長", "はんちょう", "Squad leader / Team leader"),
+    ("組長", "くみちょう", "Group leader (also yakuza boss)"),
+    ("番頭", "ばんとう", "Head clerk (traditional business)"),
+    ("頭取", "とうどり", "Bank president"),
+    ("理事長", "りじちょう", "Board chairman"),
+    ("理事", "りじ", "Board member/Trustee"),
+    ("総裁", "そうさい", "Governor/President (of institution)"),
+    ("代表", "だいひょう", "Representative"),
+    // ===== Government / Political =====
+    ("大臣", "だいじん", "Minister (government)"),
+    ("総理", "そうり", "Prime Minister (short form)"),
+    ("総理大臣", "そうりだいじん", "Prime Minister (full)"),
+    ("長官", "ちょうかん", "Director-General / Commissioner"),
+    ("知事", "ちじ", "Governor (prefecture)"),
+    ("市長", "しちょう", "Mayor"),
+    ("町長", "ちょうちょう", "Town mayor"),
+    ("村長", "そんちょう", "Village chief"),
+    ("区長", "くちょう", "Ward mayor"),
+    ("議長", "ぎちょう", "Chairman (assembly/parliament)"),
+    ("議員", "ぎいん", "Legislator/Councilmember"),
+    ("大使", "たいし", "Ambassador"),
+    ("公使", "こうし", "Minister (diplomatic)"),
+    ("領事", "りょうじ", "Consul"),
+    ("奉行", "ぶぎょう", "Magistrate (Edo period)"),
+    ("代官", "だいかん", "Magistrate/Intendant (historical)"),
+    // ===== Military / Law Enforcement =====
+    ("大将", "たいしょう", "General/Admiral"),
+    ("中将", "ちゅうじょう", "Lieutenant General"),
+    ("少将", "しょうしょう", "Major General"),
+    ("大佐", "たいさ", "Colonel"),
+    ("中佐", "ちゅうさ", "Lieutenant Colonel"),
+    ("少佐", "しょうさ", "Major"),
+    ("大尉", "たいい", "Captain (military)"),
+    ("中尉", "ちゅうい", "First Lieutenant"),
+    ("少尉", "しょうい", "Second Lieutenant"),
+    ("軍曹", "ぐんそう", "Sergeant"),
+    ("伍長", "ごちょう", "Corporal"),
+    ("兵長", "へいちょう", "Lance Corporal / Senior Private"),
+    ("上等兵", "じょうとうへい", "Private First Class"),
+    ("元帥", "げんすい", "Marshal/Fleet Admiral"),
+    ("提督", "ていとく", "Admiral (naval, common in anime)"),
+    ("司令", "しれい", "Commander"),
+    ("司令官", "しれいかん", "Commanding Officer"),
+    ("総司令", "そうしれい", "Supreme Commander"),
+    ("参謀", "さんぼう", "Staff Officer / Strategist"),
+    ("隊長", "たいちょう", "Squad/Unit captain"),
+    ("団長", "だんちょう", "Regiment/Group commander"),
+    ("師団長", "しだんちょう", "Division commander"),
+    ("艦長", "かんちょう", "Ship captain"),
+    ("船長", "せんちょう", "Ship captain (civilian)"),
+    ("機長", "きちょう", "Aircraft captain/Pilot in command"),
+    ("警部", "けいぶ", "Police Inspector"),
+    ("警視", "けいし", "Superintendent (police)"),
+    ("巡査", "じゅんさ", "Police officer (patrol)"),
+    ("刑事", "けいじ", "Detective"),
+    ("署長", "しょちょう", "Police station chief"),
+    ("長官", "ちょうかん", "Commissioner (police/agency)"),
+    ("将軍", "しょうぐん", "Shogun / General (historical)"),
+    ("大名", "だいみょう", "Feudal lord (historical)"),
+    // ===== Religious / Spiritual =====
+    ("神", "かみ", "God"),
+    ("神様", "かみさま", "God (respectful)"),
+    ("上人", "しょうにん", "Holy person (Buddhist)"),
+    ("聖人", "せいじん", "Saint"),
+    ("法師", "ほうし", "Buddhist priest"),
+    ("坊主", "ぼうず", "Buddhist monk (casual)"),
+    ("和尚", "おしょう", "Buddhist priest/monk"),
+    ("住職", "じゅうしょく", "Head priest (temple)"),
+    ("禅師", "ぜんじ", "Zen master"),
+    ("大師", "だいし", "Great master (Buddhist title)"),
+    ("上座", "じょうざ", "Senior monk"),
+    ("尼", "あま", "Buddhist nun"),
+    ("巫女", "みこ", "Shrine maiden"),
+    ("宮司", "ぐうじ", "Chief Shinto priest"),
+    ("神主", "かんぬし", "Shinto priest"),
+    ("神父", "しんぷ", "Catholic priest / Father"),
+    ("牧師", "ぼくし", "Protestant pastor"),
+    ("司祭", "しさい", "Priest (Christian)"),
+    ("司教", "しきょう", "Bishop"),
+    ("枢機卿", "すうききょう", "Cardinal"),
+    ("教皇", "きょうこう", "Pope"),
+    ("法王", "ほうおう", "Pope (alternate) / Dharma King"),
+    ("猊下", "げいか", "Your Holiness/Eminence"),
+    // ===== Medical =====
+    ("医師", "いし", "Doctor/Physician"),
+    ("医者", "いしゃ", "Doctor (colloquial)"),
+    ("看護師", "かんごし", "Nurse"),
+    ("薬剤師", "やくざいし", "Pharmacist"),
+    ("歯科医", "しかい", "Dentist"),
+    ("獣医", "じゅうい", "Veterinarian"),
+    ("院長", "いんちょう", "Hospital director"),
+    // ===== Martial Arts / Traditional =====
+    ("師範", "しはん", "Master instructor"),
+    ("範士", "はんし", "Grand master (martial arts)"),
+    ("教士", "きょうし", "Senior teacher (martial arts)"),
+    ("達人", "たつじん", "Master/Expert"),
+    ("名人", "めいじん", "Grand master (go, shogi, etc.)"),
+    ("棋士", "きし", "Professional go/shogi player"),
+    ("横綱", "よこづな", "Grand champion (sumo)"),
+    ("大関", "おおぜき", "Champion (sumo)"),
+    ("関脇", "せきわけ", "Junior champion (sumo)"),
+    ("小結", "こむすび", "Junior champion 2nd (sumo)"),
+    (
+        "親方",
+        "おやかた",
+        "Stable master (sumo) / Boss (craftsman)",
+    ),
+    ("力士", "りきし", "Sumo wrestler"),
+    // ===== Family / Kinship (used as honorific address) =====
+    ("兄", "にい", "Older brother (short)"),
+    ("兄さん", "にいさん", "Older brother"),
+    ("お兄さん", "おにいさん", "Older brother (polite)"),
+    ("お兄ちゃん", "おにいちゃん", "Big bro (affectionate)"),
+    ("兄ちゃん", "にいちゃん", "Big bro (casual)"),
+    ("兄貴", "あにき", "Big bro (rough/yakuza)"),
+    ("兄上", "あにうえ", "Older brother (archaic/formal)"),
+    ("姉", "ねえ", "Older sister (short)"),
+    ("姉さん", "ねえさん", "Older sister"),
+    ("お姉さん", "おねえさん", "Older sister (polite)"),
+    ("お姉ちゃん", "おねえちゃん", "Big sis (affectionate)"),
+    ("姉ちゃん", "ねえちゃん", "Big sis (casual)"),
+    ("姉貴", "あねき", "Big sis (rough)"),
+    ("姉上", "あねうえ", "Older sister (archaic/formal)"),
+    ("弟", "おとうと", "Younger brother"),
+    ("妹", "いもうと", "Younger sister"),
+    ("父上", "ちちうえ", "Father (archaic/formal)"),
+    ("母上", "ははうえ", "Mother (archaic/formal)"),
+    ("お父さん", "おとうさん", "Father"),
+    ("お母さん", "おかあさん", "Mother"),
+    ("おじさん", "おじさん", "Uncle / Middle-aged man"),
+    ("おばさん", "おばさん", "Aunt / Middle-aged woman"),
+    ("おじいさん", "おじいさん", "Grandfather / Old man"),
+    ("おばあさん", "おばあさん", "Grandmother / Old woman"),
+    ("じいちゃん", "じいちゃん", "Grandpa (casual)"),
+    ("ばあちゃん", "ばあちゃん", "Grandma (casual)"),
+    ("お嫁さん", "およめさん", "Bride / Wife (polite)"),
+    ("奥様", "おくさま", "Wife (very polite)"),
+    ("奥さん", "おくさん", "Wife (polite)"),
+    ("旦那", "だんな", "Husband / Master"),
+    ("旦那様", "だんなさま", "Husband / Master (formal)"),
+    // ===== Historical / Feudal =====
+    ("御所", "ごしょ", "Imperial Palace / Emperor (by metonymy)"),
+    ("関白", "かんぱく", "Imperial Regent"),
+    ("摂政", "せっしょう", "Regent"),
+    ("太閤", "たいこう", "Retired regent (Hideyoshi's title)"),
+    ("太政大臣", "だいじょうだいじん", "Grand Chancellor"),
+    ("征夷大将軍", "せいいたいしょうぐん", "Shogun (full title)"),
+    ("守護", "しゅご", "Provincial governor (medieval)"),
+    ("地頭", "じとう", "Land steward (medieval)"),
+    ("家老", "かろう", "Chief retainer (samurai)"),
+    ("侍", "さむらい", "Samurai"),
+    ("武士", "ぶし", "Warrior"),
+    ("浪人", "ろうにん", "Masterless samurai"),
+    ("忍", "しのび", "Ninja (short form)"),
+    ("殿様", "とのさま", "Lord (feudal)"),
+    ("お殿様", "おとのさま", "Lord (very polite)"),
+    ("お館様", "おやかたさま", "Lord of the castle"),
+    ("若", "わか", "Young lord/master"),
+    ("若様", "わかさま", "Young lord (formal)"),
+    ("若殿", "わかとの", "Young lord"),
+    // ===== Fantasy / Fictional (common in VN/anime) =====
+    ("王", "おう", "King"),
+    ("王様", "おうさま", "King (polite)"),
+    ("女王", "じょおう", "Queen"),
+    ("女王様", "じょおうさま", "Queen (formal)"),
+    ("皇帝", "こうてい", "Emperor"),
+    ("皇后", "こうごう", "Empress"),
+    ("天皇", "てんのう", "Emperor (Japanese)"),
+    ("魔王", "まおう", "Demon King"),
+    ("魔王様", "まおうさま", "Demon King (respectful)"),
+    ("勇者", "ゆうしゃ", "Hero/Brave"),
+    ("勇者様", "ゆうしゃさま", "Hero (respectful)"),
+    ("聖女", "せいじょ", "Holy maiden / Saintess"),
+    ("魔女", "まじょ", "Witch"),
+    ("賢者", "けんじゃ", "Sage/Wise one"),
+    ("導師", "どうし", "Guide/Mentor (fantasy)"),
+    ("騎士", "きし", "Knight"),
+    ("団長", "だんちょう", "Commander (guild/order)"),
+    ("長老", "ちょうろう", "Elder"),
+    ("族長", "ぞくちょう", "Clan chief / Tribal leader"),
+    ("頭領", "とうりょう", "Boss / Chief (bandits, guilds)"),
+    ("首領", "しゅりょう", "Leader / Boss"),
+    ("大王", "だいおう", "Great King"),
+    ("姫君", "ひめぎみ", "Princess (literary)"),
+    ("御方", "おかた", "That person (very respectful)"),
+    ("主", "ぬし", "Master/Lord (archaic)"),
+    ("主", "あるじ", "Master/Lord (alternate reading)"),
+    ("主人", "しゅじん", "Master/Head of household"),
+    ("ご主人", "ごしゅじん", "Master (polite)"),
+    (
+        "ご主人様",
+        "ごしゅじんさま",
+        "Master (very polite, maid usage)",
+    ),
+    ("お方", "おかた", "Person (respectful)"),
+    // ===== Otaku / Internet / Modern Slang =====
+    ("氏", "うじ", "Alternate reading of 氏 (internet)"),
+    ("師", "し", "Master/Teacher (respectful, online)"),
+    ("大先生", "だいせんせい", "Great teacher (sometimes ironic)"),
+    ("御大", "おんたい", "The great one / Big boss"),
+    ("大御所", "おおごしょ", "Grand old master / Authority"),
+    ("パイセン", "ぱいせん", "Senpai (slang reversal)"),
+    ("っす", "っす", "Casual desu (used as address marker)"),
+    ("どの", "どの", "Kana form of 殿"),
+    ("さま", "さま", "Kana form of 様 (duplicate)"),
+];
+
+/// Split a Japanese name on the first space (internal helper).
+/// Returns (family, given, combined, original, has_space)
+fn split_japanese_name(name_original: &str) -> JapaneseNameParts {
+    if name_original.is_empty() || !name_original.contains(' ') {
+        return JapaneseNameParts {
+            has_space: false,
+            original: name_original.to_string(),
+            combined: name_original.to_string(),
+            family: None,
+            given: None,
+        };
+    }
+
+    // Split on first space only
+    let pos = name_original.find(' ').unwrap();
+    let family = name_original[..pos].to_string();
+    let given = name_original[pos + 1..].to_string();
+    let combined = format!("{}{}", family, given);
+
+    JapaneseNameParts {
+        has_space: true,
+        original: name_original.to_string(),
+        combined,
+        family: Some(family),
+        given: Some(given),
+    }
+}
+
+/// Generate hiragana readings for a name using positional romaji mapping (internal helper).
+///
+/// For each name part (family, given) independently:
+/// - If part contains kanji → convert corresponding romanized part via alphabet_to_kana
+/// - If part is kana only → use kata_to_hira directly on the Japanese text
+///
+/// IMPORTANT: Romanized names from VNDB are Western order ("Given Family").
+/// Japanese names are Japanese order ("Family Given").
+/// romanized_parts[0] maps to Japanese family; romanized_parts[1] maps to Japanese given.
+fn generate_mixed_name_readings(name_original: &str, romanized_name: &str) -> NameReadings {
+    // Handle empty names
+    if name_original.is_empty() {
+        return NameReadings {
+            full: String::new(),
+            family: String::new(),
+            given: String::new(),
+        };
+    }
+
+    // For single-word names (no space)
+    if !name_original.contains(' ') {
+        if kana::contains_kanji(name_original) {
+            // Has kanji — use romanized reading
+            let full = kana::alphabet_to_kana(romanized_name);
+            return NameReadings {
+                full: full.clone(),
+                family: full.clone(),
+                given: full,
+            };
+        } else {
+            // Pure kana — use kata_to_hira on the Japanese text itself
+            let full = kana::kata_to_hira(&name_original.replace(' ', ""));
+            return NameReadings {
+                full: full.clone(),
+                family: full.clone(),
+                given: full,
+            };
+        }
+    }
+
+    // Two-part name: split Japanese (Family Given order)
+    let jp_parts = split_japanese_name(name_original);
+    let family_jp = jp_parts.family.as_deref().unwrap_or("");
+    let given_jp = jp_parts.given.as_deref().unwrap_or("");
+
+    let family_has_kanji = kana::contains_kanji(family_jp);
+    let given_has_kanji = kana::contains_kanji(given_jp);
+
+    // Split romanized name (Western order: first_word second_word)
+    let rom_parts: Vec<&str> = romanized_name.splitn(2, ' ').collect();
+    let rom_first = rom_parts.first().copied().unwrap_or(""); // romanized_parts[0]
+    let rom_second = rom_parts.get(1).copied().unwrap_or(""); // romanized_parts[1]
+
+    // Family reading: if kanji, use rom_first (romanized_parts[0]) via alphabet_to_kana
+    //                 if kana, use Japanese family text via kata_to_hira
+    let family_reading = if family_has_kanji {
+        kana::alphabet_to_kana(rom_first)
+    } else {
+        kana::kata_to_hira(family_jp)
+    };
+
+    // Given reading: if kanji, use rom_second (romanized_parts[1]) via alphabet_to_kana
+    //                if kana, use Japanese given text via kata_to_hira
+    let given_reading = if given_has_kanji {
+        kana::alphabet_to_kana(rom_second)
+    } else {
+        kana::kata_to_hira(given_jp)
+    };
+
+    let full_reading = format!("{}{}", family_reading, given_reading);
+
+    NameReadings {
+        full: full_reading,
+        family: family_reading,
+        given: given_reading,
+    }
+}
+
+/// Split a Japanese name into family/given parts.
+///
+/// This is the primary name splitting function. It accepts optional romaji hints
+/// from AniList (first=given, last=family in Western order) to split native names
+/// that have no space separator.
+///
+/// Behavior:
+/// - Native has space → splits on space (hints ignored for splitting, used for readings)
+/// - Native has no space + both hints provided → uses reading lengths to find split point
+/// - Native has no space + missing hints → returns as single unsplit block
+/// - Katakana with middle dot (・) → never split (foreign names)
+///
+/// For VNDB characters, pass `None` for both hints — falls back to space-based splitting.
+/// For AniList characters, pass `first_name_hint` (given) and `last_name_hint` (family).
+pub fn split_japanese_name_with_hints(
+    name_original: &str,
+    first_name_hint: Option<&str>,
+    last_name_hint: Option<&str>,
+) -> JapaneseNameParts {
+    // If native already has a space, use the existing split logic
+    if name_original.contains(' ') {
+        return split_japanese_name(name_original);
+    }
+
+    // Trim hints and treat empty as None
+    let first = first_name_hint.map(|s| s.trim()).filter(|s| !s.is_empty());
+    let last = last_name_hint.map(|s| s.trim()).filter(|s| !s.is_empty());
+
+    // Need both hints to attempt a split on a spaceless name
+    let (first_hint, last_hint) = match (first, last) {
+        (Some(f), Some(l)) => (f, l),
+        _ => return split_japanese_name(name_original),
+    };
+
+    // Don't try to split katakana names with middle dots (foreign names)
+    if name_original.contains('・') {
+        return split_japanese_name(name_original);
+    }
+
+    // Convert hints to kana to estimate character boundaries
+    let family_kana = kana::alphabet_to_kana(last_hint);
+    let given_kana = kana::alphabet_to_kana(first_hint);
+
+    // Try to find the split point in the native name.
+    // Strategy: the family name comes first in Japanese order.
+    // We try to find where the family portion ends by matching
+    // kana/kanji character counts against the family reading length.
+    if let Some((family_str, given_str)) =
+        find_split_point(name_original, &family_kana, &given_kana)
+    {
+        let combined = format!("{}{}", family_str, given_str);
+        JapaneseNameParts {
+            has_space: false,
+            original: name_original.to_string(),
+            combined,
+            family: Some(family_str),
+            given: Some(given_str),
+        }
+    } else {
+        // Couldn't determine split point — return as single block
+        split_japanese_name(name_original)
+    }
+}
+
+/// Try to find where to split a spaceless Japanese name into family/given parts.
+///
+/// Uses the kana readings of family and given names to estimate the character
+/// boundary. For mixed kanji/kana names, detects the transition point between
+/// kanji and kana characters as a likely boundary.
+fn find_split_point(native: &str, family_kana: &str, given_kana: &str) -> Option<(String, String)> {
+    let chars: Vec<char> = native.chars().collect();
+    if chars.is_empty() {
+        return None;
+    }
+
+    let family_kana_len = family_kana.chars().count();
+    let given_kana_len = given_kana.chars().count();
+
+    // Strategy 1: Look for a kanji→kana transition point.
+    // Many Japanese names have kanji family + kana given (e.g., 薙切えりな).
+    // Find the first transition from kanji to non-kanji (hiragana/katakana).
+    let mut last_kanji_idx = None;
+    let mut first_kana_after_kanji = None;
+    for (i, &c) in chars.iter().enumerate() {
+        if kana::contains_kanji(&c.to_string()) {
+            last_kanji_idx = Some(i);
+        } else if last_kanji_idx.is_some() && first_kana_after_kanji.is_none() {
+            first_kana_after_kanji = Some(i);
+        }
+    }
+
+    // If we found a kanji→kana boundary, check if the kana portion matches
+    // the given name reading length
+    if let Some(boundary) = first_kana_after_kanji {
+        let candidate_given: String = chars[boundary..].iter().collect();
+        let candidate_given_hira = kana::kata_to_hira(&candidate_given);
+
+        // Check if the kana portion matches the given name reading
+        if candidate_given_hira.chars().count() == given_kana_len
+            || candidate_given_hira == kana::kata_to_hira(given_kana)
+        {
+            let family_str: String = chars[..boundary].iter().collect();
+            return Some((family_str, candidate_given));
+        }
+    }
+
+    // Strategy 2: For all-kanji names, use the reading lengths to estimate
+    // the split point. Each kanji typically maps to 1-3 kana.
+    // We try each possible split position and check if the resulting
+    // character counts are plausible given the reading lengths.
+    let total_chars = chars.len();
+    if total_chars < 2 {
+        return None;
+    }
+
+    // For all-kanji names, try to find the split by testing each position.
+    // A kanji character typically produces 1-3 kana. We look for a split
+    // where family_chars * avg_kana_per_kanji ≈ family_kana_len.
+    let total_kana = family_kana_len + given_kana_len;
+    if total_kana == 0 {
+        return None;
+    }
+
+    // Try each possible split position
+    let mut best_split = None;
+    let mut best_score = f64::MAX;
+
+    for split_pos in 1..total_chars {
+        let family_chars = split_pos;
+        let given_chars = total_chars - split_pos;
+
+        // Expected kana per character for each part
+        let family_ratio = family_kana_len as f64 / family_chars as f64;
+        let given_ratio = given_kana_len as f64 / given_chars as f64;
+
+        // Kanji typically produce 1-3 kana (most commonly 2)
+        // Penalize ratios outside this range
+        if !(0.5..=4.0).contains(&family_ratio) {
+            continue;
+        }
+        if !(0.5..=4.0).contains(&given_ratio) {
+            continue;
+        }
+
+        // Score: penalize kana-per-kanji ratios outside the [1.0, 2.0] sweet spot
+        // (1 mora per kanji is common in names using ateji like 亜/耶/美,
+        //  2 mora per kanji is the most typical on-yomi/kun-yomi length).
+        // Use a small balance tie-breaker to prefer more even splits when
+        // ratio penalties are equal.
+        let family_penalty = if family_ratio < 1.0 {
+            1.0 - family_ratio
+        } else if family_ratio > 2.0 {
+            family_ratio - 2.0
+        } else {
+            0.0
+        };
+        let given_penalty = if given_ratio < 1.0 {
+            1.0 - given_ratio
+        } else if given_ratio > 2.0 {
+            given_ratio - 2.0
+        } else {
+            0.0
+        };
+        let balance = (family_chars as f64 - given_chars as f64).abs();
+        let score = family_penalty + given_penalty + balance * 0.01;
+
+        if score < best_score {
+            best_score = score;
+            best_split = Some(split_pos);
+        }
+    }
+
+    if let Some(pos) = best_split {
+        let family_str: String = chars[..pos].iter().collect();
+        let given_str: String = chars[pos..].iter().collect();
+        Some((family_str, given_str))
+    } else {
+        None
+    }
+}
+
+/// Find ALL plausible split points for a spaceless Japanese name.
+///
+/// Returns every split position whose score is within a small epsilon of the
+/// best score. For most names only one position wins clearly; for names with
+/// symmetric kana lengths (e.g., "石井守" where family and given both have 3
+/// kana) multiple tied positions are returned so the caller can generate
+/// dictionary entries for all of them.
+fn find_all_split_points(
+    native: &str,
+    family_kana: &str,
+    given_kana: &str,
+) -> Vec<(String, String)> {
+    let chars: Vec<char> = native.chars().collect();
+    if chars.is_empty() {
+        return Vec::new();
+    }
+
+    let family_kana_len = family_kana.chars().count();
+    let given_kana_len = given_kana.chars().count();
+
+    // Strategy 1: kanji→kana transition (unambiguous — returns at most one result)
+    let mut last_kanji_idx = None;
+    let mut first_kana_after_kanji = None;
+    for (i, &c) in chars.iter().enumerate() {
+        if kana::contains_kanji(&c.to_string()) {
+            last_kanji_idx = Some(i);
+        } else if last_kanji_idx.is_some() && first_kana_after_kanji.is_none() {
+            first_kana_after_kanji = Some(i);
+        }
+    }
+
+    if let Some(boundary) = first_kana_after_kanji {
+        let candidate_given: String = chars[boundary..].iter().collect();
+        let candidate_given_hira = kana::kata_to_hira(&candidate_given);
+
+        if candidate_given_hira.chars().count() == given_kana_len
+            || candidate_given_hira == kana::kata_to_hira(given_kana)
+        {
+            let family_str: String = chars[..boundary].iter().collect();
+            return vec![(family_str, candidate_given)];
+        }
+    }
+
+    // Strategy 2: ratio-based scoring — collect ALL positions within epsilon of best
+    let total_chars = chars.len();
+    if total_chars < 2 {
+        return Vec::new();
+    }
+
+    let total_kana = family_kana_len + given_kana_len;
+    if total_kana == 0 {
+        return Vec::new();
+    }
+
+    let mut scored: Vec<(usize, f64)> = Vec::new();
+
+    for split_pos in 1..total_chars {
+        let family_chars = split_pos;
+        let given_chars = total_chars - split_pos;
+
+        let family_ratio = family_kana_len as f64 / family_chars as f64;
+        let given_ratio = given_kana_len as f64 / given_chars as f64;
+
+        if !(0.5..=4.0).contains(&family_ratio) {
+            continue;
+        }
+        if !(0.5..=4.0).contains(&given_ratio) {
+            continue;
+        }
+
+        let family_penalty = if family_ratio < 1.0 {
+            1.0 - family_ratio
+        } else if family_ratio > 2.0 {
+            family_ratio - 2.0
+        } else {
+            0.0
+        };
+        let given_penalty = if given_ratio < 1.0 {
+            1.0 - given_ratio
+        } else if given_ratio > 2.0 {
+            given_ratio - 2.0
+        } else {
+            0.0
+        };
+        let balance = (family_chars as f64 - given_chars as f64).abs();
+        let score = family_penalty + given_penalty + balance * 0.01;
+
+        scored.push((split_pos, score));
+    }
+
+    if scored.is_empty() {
+        return Vec::new();
+    }
+
+    let best_score = scored.iter().map(|(_, s)| *s).fold(f64::MAX, f64::min);
+    let epsilon = 1e-6;
+
+    scored
+        .into_iter()
+        .filter(|(_, s)| (s - best_score).abs() < epsilon)
+        .map(|(pos, _)| {
+            let family_str: String = chars[..pos].iter().collect();
+            let given_str: String = chars[pos..].iter().collect();
+            (family_str, given_str)
+        })
+        .collect()
+}
+
+/// Return all plausible name splits for a Japanese name, given optional hints.
+///
+/// Like [`split_japanese_name_with_hints`] but returns multiple candidates when
+/// the split is ambiguous (e.g., symmetric kana lengths in an all-kanji name).
+/// The dict builder uses this to generate entries for every candidate so that
+/// lookup works regardless of which split is correct.
+pub fn split_japanese_name_all_candidates(
+    name_original: &str,
+    first_name_hint: Option<&str>,
+    last_name_hint: Option<&str>,
+) -> Vec<JapaneseNameParts> {
+    // Space, middle-dot, or missing hints → single unambiguous result
+    if name_original.contains(' ') || name_original.contains('・') {
+        return vec![split_japanese_name(name_original)];
+    }
+
+    let first = first_name_hint.map(|s| s.trim()).filter(|s| !s.is_empty());
+    let last = last_name_hint.map(|s| s.trim()).filter(|s| !s.is_empty());
+
+    let (first_hint, last_hint) = match (first, last) {
+        (Some(f), Some(l)) => (f, l),
+        _ => return vec![split_japanese_name(name_original)],
+    };
+
+    let family_kana = kana::alphabet_to_kana(last_hint);
+    let given_kana = kana::alphabet_to_kana(first_hint);
+
+    let splits = find_all_split_points(name_original, &family_kana, &given_kana);
+
+    if splits.is_empty() {
+        return vec![split_japanese_name(name_original)];
+    }
+
+    splits
+        .into_iter()
+        .map(|(family_str, given_str)| {
+            let combined = format!("{}{}", family_str, given_str);
+            JapaneseNameParts {
+                has_space: false,
+                original: name_original.to_string(),
+                combined,
+                family: Some(family_str),
+                given: Some(given_str),
+            }
+        })
+        .collect()
+}
+
+/// Generate hiragana readings for a character name.
+///
+/// This is the primary reading generation function. It accepts optional romaji hints
+/// from AniList to correctly map family/given readings even when the native name
+/// has no space separator.
+///
+/// Parameters:
+/// - `name_original`: Japanese name (native script)
+/// - `romanized_name`: Full romanized name (used as fallback when no hints)
+/// - `first_name_hint`: Given name in romaji (AniList "first"), Western order
+/// - `last_name_hint`: Family name in romaji (AniList "last"), Western order
+///
+/// Behavior:
+/// - Empty native → empty readings
+/// - Katakana with middle dot → kata_to_hira on whole name (no split)
+/// - No last hint → single-name treatment
+/// - Native has space + hints → space-based split, hints for readings
+/// - Native no space + hints → hint-based split and readings
+/// - No hints at all → VNDB-style positional romaji mapping
+///
+/// For VNDB characters, pass `None` for both hints.
+/// For AniList characters, pass the `first` and `last` fields from the API.
+/// For future sources, pass whatever name hints are available.
+pub fn generate_name_readings(
+    name_original: &str,
+    romanized_name: &str,
+    first_name_hint: Option<&str>,
+    last_name_hint: Option<&str>,
+) -> NameReadings {
+    let mut readings = generate_name_readings_inner(
+        name_original,
+        romanized_name,
+        first_name_hint,
+        last_name_hint,
+    );
+
+    // Strip internal whitespace from readings — romaji→kana conversion can
+    // introduce spaces from multi-word romanized names (e.g. "Elaina no Haha"
+    // would produce "えらいな の はは" instead of "えらいなのはは").
+    readings.full = readings.full.split_whitespace().collect();
+    readings.family = readings.family.split_whitespace().collect();
+    readings.given = readings.given.split_whitespace().collect();
+
+    readings
+}
+
+fn generate_name_readings_inner(
+    name_original: &str,
+    romanized_name: &str,
+    first_name_hint: Option<&str>,
+    last_name_hint: Option<&str>,
+) -> NameReadings {
+    // Handle empty native name
+    if name_original.is_empty() {
+        return NameReadings {
+            full: String::new(),
+            family: String::new(),
+            given: String::new(),
+        };
+    }
+
+    // Trim hints and treat empty as None
+    let first = first_name_hint.map(|s| s.trim()).filter(|s| !s.is_empty());
+    let last = last_name_hint.map(|s| s.trim()).filter(|s| !s.is_empty());
+
+    // If no hints provided, fall back to existing behavior
+    if first.is_none() && last.is_none() {
+        return generate_mixed_name_readings(name_original, romanized_name);
+    }
+
+    // Katakana names with middle dot — just convert to hiragana, don't split
+    if name_original.contains('・') {
+        let full = kana::kata_to_hira(name_original);
+        return NameReadings {
+            full: full.clone(),
+            family: full.clone(),
+            given: full,
+        };
+    }
+
+    // Single-name character (no last name hint)
+    if last.is_none() {
+        // Only first_name_hint — treat as single name
+        if kana::contains_kanji(name_original) {
+            let reading = kana::alphabet_to_kana(first.unwrap_or(romanized_name));
+            return NameReadings {
+                full: reading.clone(),
+                family: reading.clone(),
+                given: reading,
+            };
+        } else {
+            let full = kana::kata_to_hira(name_original);
+            return NameReadings {
+                full: full.clone(),
+                family: full.clone(),
+                given: full,
+            };
+        }
+    }
+
+    // We have at least a last_name_hint (family)
+    let last_hint = last.unwrap();
+    let first_hint = first.unwrap_or("");
+
+    // If native name has a space, split on it and use hints for readings
+    if name_original.contains(' ') {
+        let parts = split_japanese_name(name_original);
+        let family_jp = parts.family.as_deref().unwrap_or("");
+        let given_jp = parts.given.as_deref().unwrap_or("");
+
+        let family_reading = if kana::contains_kanji(family_jp) {
+            kana::alphabet_to_kana(last_hint)
+        } else {
+            kana::kata_to_hira(family_jp)
+        };
+
+        let given_reading = if kana::contains_kanji(given_jp) {
+            kana::alphabet_to_kana(first_hint)
+        } else {
+            kana::kata_to_hira(given_jp)
+        };
+
+        let full = format!("{}{}", family_reading, given_reading);
+        return NameReadings {
+            full,
+            family: family_reading,
+            given: given_reading,
+        };
+    }
+
+    // No space in native name — use hints to generate readings
+    let family_kana = kana::alphabet_to_kana(last_hint);
+    let given_kana = if !first_hint.is_empty() {
+        kana::alphabet_to_kana(first_hint)
+    } else {
+        String::new()
+    };
+
+    // Try to split the native name using hints
+    let parts = split_japanese_name_with_hints(name_original, first_name_hint, last_name_hint);
+
+    if parts.family.is_some() && parts.given.is_some() {
+        let family_jp = parts.family.as_deref().unwrap();
+        let given_jp = parts.given.as_deref().unwrap();
+
+        // For each part: if it's kana, use it directly; if kanji, use hint reading
+        let family_reading = if kana::contains_kanji(family_jp) {
+            family_kana
+        } else {
+            kana::kata_to_hira(family_jp)
+        };
+
+        let given_reading = if kana::contains_kanji(given_jp) {
+            given_kana
+        } else {
+            kana::kata_to_hira(given_jp)
+        };
+
+        let full = format!("{}{}", family_reading, given_reading);
+        NameReadings {
+            full,
+            family: family_reading,
+            given: given_reading,
+        }
+    } else {
+        // Couldn't split — use hint readings directly
+        let full = format!("{}{}", family_kana, given_kana);
+        NameReadings {
+            full,
+            family: family_kana,
+            given: given_kana,
+        }
+    }
+}
+

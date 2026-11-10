@@ -175,6 +175,62 @@ export interface PlayerView {
   next: EpisodeLite | null;
   count: number;
   tried: Tried[];
+  /** openPlayer only: how long since the show was last open, in ms (null the first time). */
+  awayMs?: number | null;
+  /** openPlayer only: whether there's an episode before this one to recap, and whether its recap is written. */
+  recap?: { possible: boolean; ready?: boolean; beforeNumber?: number };
+}
+
+/** An answer from Claude being written (ask), or written (text, done). */
+export interface AskProgress {
+  ask?: number;
+  text?: string;
+  done?: boolean;
+  error?: string;
+  seconds?: number;
+  line?: string;
+}
+
+/** A stretch of the episode before, played in "Previously on". */
+export interface Moment {
+  start: number;
+  end: number;
+  lines: Line[];
+}
+
+export interface Recap {
+  ask?: number;
+  done?: boolean;
+  error?: string;
+  recap?: string;
+  moments?: Moment[];
+  from?: { id: number; number: number; src: string; playable: boolean; nudgeMs: number };
+}
+
+export interface ClaudeStatus {
+  available: boolean;
+  version: string;
+  detail: string;
+}
+
+/** A character's name as the show writes it, from the names dictionary. */
+export interface CastName {
+  term: string;
+  name: string;
+  role: string;
+}
+
+export interface NamesStatus {
+  enabled: boolean;
+  spoilers: boolean;
+  summary: { shows: string[]; characters: number; bytes: number } | null;
+  built: boolean;
+  imported: boolean;
+  importedAt: number;
+  importedTo: string;
+  error: string;
+  buildError: string;
+  working: Task | null;
 }
 
 export interface CardEvent {

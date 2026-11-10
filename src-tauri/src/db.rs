@@ -71,7 +71,29 @@ CREATE TABLE mine_jobs (
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL
 );
+", "
+-- What Claude said: a line explained, or the recap shown before an episode.
+CREATE TABLE answers (
+  episode_id  INTEGER NOT NULL REFERENCES episodes (id) ON DELETE CASCADE,
+  kind        TEXT NOT NULL,                 -- line or recap
+  line        INTEGER NOT NULL DEFAULT -1,   -- the line's place in the subtitles, for line
+  about       TEXT NOT NULL DEFAULT '',      -- the line's text, or what the recap was made from
+  text        TEXT NOT NULL,
+  extra       TEXT NOT NULL DEFAULT '',      -- JSON: the recap's moments
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (episode_id, kind, line)
+);
 "];
+
+/// Something Claude said, kept so it's there instantly next time.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Answer {
+    pub about: String,
+    pub text: String,
+    pub extra: String,
+    pub created_at: i64,
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -416,6 +438,25 @@ impl Db {
 
     pub fn set_jimaku_id(&self, show_id: i64, jimaku_id: Option<i64>) -> Result<()> {
         self.conn()?.execute("UPDATE shows SET jimaku_id = ?2 WHERE id = ?1", params![show_id, jimaku_id])?;
+        Ok(())
+    }
+
+    pub fn answer(&self, episode_id: i64, kind: &str, line: i64) -> Result<Option<Answer>> {
+        Ok(self
+            .conn()?
+            .query_row(
+                "SELECT about, text, extra, created_at FROM answers WHERE episode_id = ?1 AND kind = ?2 AND line = ?3",
+                params![episode_id, kind, line],
+                |r| Ok(Answer { about: r.get(0)?, text: r.get(1)?, extra: r.get(2)?, created_at: r.get(3)? }),
+            )
+            .optional()?)
+    }
+
+    pub fn save_answer(&self, episode_id: i64, kind: &str, line: i64, about: &str, text: &str, extra: &str) -> Result<()> {
+        self.conn()?.execute(
+            "INSERT OR REPLACE INTO answers (episode_id, kind, line, about, text, extra, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![episode_id, kind, line, about, text, extra, now_ms()],
+        )?;
         Ok(())
     }
 

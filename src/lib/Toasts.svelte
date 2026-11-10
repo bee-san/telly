@@ -20,7 +20,7 @@
           <span class="t-act"><button type="button" class="btn small quiet" onclick={() => { t.action?.run(); dismiss(t.key); }}>{t.action.label}</button></span>
         {/if}
       </span>
-      <button type="button" class="t-x" aria-label="Dismiss" onclick={() => dismiss(t.key)}><Icon name="x" /></button>
+      <button type="button" class="t-x" aria-label="Dismiss" title="Dismiss" onclick={() => dismiss(t.key)}><Icon name="x" /></button>
     </div>
   {/each}
 </div>

@@ -27,18 +27,18 @@ export function plural(n: number, one: string, many = one + "s"): string {
   return `${n} ${n === 1 ? one : many}`;
 }
 
-/** The two lines under a show's title: what's next, and a detail. */
+/** The two lines under a show’s title: what’s next, and a detail. */
 export function statusOf(s: ShowCard): { text: string; sub: string; ok?: boolean } {
   const n = s.next;
   if (s.status === "finished") return { text: "Finished", sub: `${plural(s.episodes, "episode")} · ${plural(s.cards, "card")}`, ok: true };
   if (!n) return { text: "No episodes", sub: "" };
   if (n.resume) {
     const left = Math.max(1, Math.round((n.duration - n.position) / 60));
-    return { text: `Resume Episode ${n.number}`, sub: n.ready ? `${left} min left` : gettingSub(s) };
+    return { text: `Resume Episode ${n.number}`, sub: n.ready ? `${plural(left, "minute")} left` : gettingSub(s) };
   }
   const text = `Next: Episode ${n.number}`;
   if (!n.ready) return { text: s.watched > 0 || s.status === "getting" ? text : `Episode ${n.number}`, sub: gettingSub(s) };
-  if (s.watched > 0) return { text, sub: `${plural(s.watched, "episode")} watched of ${s.episodes}` };
+  if (s.watched > 0) return { text, sub: `${s.watched} of ${plural(s.episodes, "episode")} watched` };
   return { text, sub: plural(s.episodes, "episode") };
 }
 
@@ -46,7 +46,7 @@ function gettingSub(s: ShowCard): string {
   const n = s.next;
   if (!n) return "";
   if (n.mediaState === "working") return `Getting Episode ${n.number} ready · ${Math.round(n.mediaProgress * 100)}%`;
-  if (n.mediaState === "failed") return `Episode ${n.number} couldn't be converted`;
+  if (n.mediaState === "failed") return `Episode ${n.number} couldn’t be converted`;
   return `Getting Episode ${n.number} ready`;
 }
 
@@ -63,7 +63,7 @@ export function subsLabel(state: string, score: number | null): { text: string; 
     case "none":
       return { text: "None on Jimaku", tone: "bad" };
     case "nokey":
-      return { text: "Needs Jimaku key", tone: "bad" };
+      return { text: "Needs a Jimaku key", tone: "bad" };
     case "whisper":
       return { text: "Waiting for Whisper", tone: "wait" };
     case "failed":

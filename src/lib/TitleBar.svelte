@@ -42,9 +42,9 @@
   <span class="grow" data-tauri-drag-region></span>
   {#if inTauri}
     <span class="wt-caps">
-      <button type="button" aria-label="Minimise" onclick={() => win("minimize")}><Icon name="min" /></button>
-      <button type="button" aria-label="Maximise" onclick={() => win("toggleMaximize")}><Icon name="max" /></button>
-      <button type="button" class="close" aria-label="Close" onclick={() => win("close")}><Icon name="close" /></button>
+      <button type="button" aria-label="Minimise" title="Minimise" onclick={() => win("minimize")}><Icon name="min" /></button>
+      <button type="button" aria-label="Maximise" title="Maximise" onclick={() => win("toggleMaximize")}><Icon name="max" /></button>
+      <button type="button" class="close" aria-label="Close" title="Close" onclick={() => win("close")}><Icon name="close" /></button>
     </span>
   {/if}
 </header>

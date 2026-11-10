@@ -87,7 +87,7 @@ pub struct Word {
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct List {
-    /// Episodes that have no subtitles yet. Until there are none, there are no words.
+    /// Episodes that have no subtitles yet, so aren't counted.
     pub without_subs: Vec<i64>,
     /// Words you don't know yet, most used first.
     pub words: Vec<Word>,
@@ -118,6 +118,7 @@ pub struct Status {
 pub struct Premining {
     status: Mutex<Status>,
     /// Hachidori's answers, by the text asked, for as long as Telly is open.
+    /// Each episode's words are also saved, when its subtitles sync.
     terms: Mutex<HashMap<String, Option<Term>>>,
 }
 
@@ -470,55 +471,118 @@ struct Use {
     to: usize,
 }
 
+/// One use of a word in an episode, as Hachidori sees it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct SavedUse {
+    /// Its line, counting only spoken lines (not signs), and its byte range there.
+    line: usize,
+    from: usize,
+    to: usize,
+    headword: String,
+    reading: String,
+    rank: Option<i64>,
+}
+
+/// An episode's words, worked out when its subtitles sync, for the lines they
+/// were found in.
+#[derive(Serialize, Deserialize)]
+struct Saved {
+    lines: u64,
+    uses: Vec<SavedUse>,
+}
+
+pub fn words_path(backend: &Backend, episode_id: i64) -> std::path::PathBuf {
+    backend.dirs.subs().join(format!("{episode_id}.words.json"))
+}
+
+/// Stands for the lines' text: when it changes, the saved words are redone.
+fn fingerprint(lines: &[Line]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for line in lines {
+        line.text.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn spoken_lines(backend: &Backend, episode_id: i64) -> Vec<Line> {
+    jobs::read_lines(backend, episode_id).into_iter().filter(|l| !l.sign).collect()
+}
+
+/// An episode's words: saved ones, or worked out (by Lindera and Hachidori) and saved.
+fn episode_uses(backend: &Backend, episode_id: i64, lines: &[Line]) -> Result<Vec<SavedUse>> {
+    let print = fingerprint(lines);
+    let path = words_path(backend, episode_id);
+    if let Some(saved) = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice::<Saved>(&b).ok()) {
+        if saved.lines == print {
+            return Ok(saved.uses);
+        }
+    }
+    let mut found: Vec<(usize, Candidate)> = Vec::new();
+    for (l, line) in lines.iter().enumerate() {
+        for candidate in candidates(&line.text)? {
+            found.push((l, candidate));
+        }
+    }
+    let texts: Vec<String> = found.iter().flat_map(|(l, c)| c.texts(&lines[*l].text)).collect();
+    look_up(backend, &texts, &|_| {})?;
+    let terms = backend.premining.terms.lock().map_err(|_| anyhow!("premining stopped"))?;
+    let mut uses = Vec::new();
+    for (l, candidate) in found {
+        for (asked, from, to) in candidate.words(&lines[l].text, |t| matches!(terms.get(t), Some(Some(_)))) {
+            if let Some(Some(term)) = terms.get(&asked) {
+                uses.push(SavedUse { line: l, from, to, headword: term.headword.clone(), reading: term.reading.clone(), rank: term.rank });
+            }
+        }
+    }
+    drop(terms);
+    std::fs::create_dir_all(backend.dirs.subs())?;
+    std::fs::write(&path, serde_json::to_vec(&Saved { lines: print, uses: uses.clone() })?)?;
+    Ok(uses)
+}
+
+/// Works out and saves an episode's words once its subtitles have synced, so
+/// premining doesn't have to.
+pub fn prepare(backend: &Backend, episode_id: i64) {
+    let lines = spoken_lines(backend, episode_id);
+    if lines.is_empty() {
+        return;
+    }
+    if let Err(e) = episode_uses(backend, episode_id, &lines) {
+        eprintln!("premining words for episode {episode_id} not saved: {e}");
+    }
+}
+
 /// The words to premine in `show`.
 fn make_list(backend: &Backend, show: &Show, step: &dyn Fn(&str, f64)) -> Result<List> {
     let mut episodes: Vec<Episode> = backend.db.episodes(show.id)?;
     episodes.sort_by_key(|e| e.number);
     let deck = premined_deck(backend, show);
 
-    // Every episode's lines; an episode without subtitles adds none.
-    let mut lines: Vec<Vec<Line>> = Vec::new();
-    let mut without_subs = Vec::new();
-    for (e, episode) in episodes.iter().enumerate() {
-        step(&format!("Reading Episode {}", episode.number), 0.15 * e as f64 / episodes.len() as f64);
-        let episode_lines: Vec<Line> = jobs::read_lines(backend, episode.id).into_iter().filter(|l| !l.sign).collect();
-        if episode_lines.is_empty() {
-            without_subs.push(episode.number);
-        }
-        lines.push(episode_lines);
-    }
-
-    step("Reading your card format", 0.15);
+    step("Reading your card format", 0.0);
     let format = card_format(backend)?;
     let field = format.word_field();
     let cast: HashSet<String> = names::show_names(backend, show).into_iter().map(|n| n.term).collect();
 
-    // The words in every line.
-    let mut found: Vec<(usize, usize, Candidate)> = Vec::new();
-    for (e, episode_lines) in lines.iter().enumerate() {
-        for (l, line) in episode_lines.iter().enumerate() {
-            for candidate in candidates(&line.text)? {
-                found.push((e, l, candidate));
-            }
-        }
-    }
-
-    // What Hachidori makes of them.
-    let texts: Vec<String> = found.iter().flat_map(|(e, l, c)| c.texts(&lines[*e][*l].text)).collect();
-    look_up(backend, &texts, &|p| step("Looking up the words in Hachidori", 0.2 + 0.6 * p))?;
-    let terms = backend.premining.terms.lock().map_err(|_| anyhow!("premining stopped"))?.clone();
-
-    // Each use of each word.
+    // Each use of each word, episode by episode; an episode without subtitles adds none.
+    let mut lines: Vec<Vec<Line>> = Vec::new();
+    let mut without_subs = Vec::new();
     let mut uses: Vec<(Term, Use)> = Vec::new();
-    for (episode, line, candidate) in found {
-        let text = &lines[episode][line].text;
-        for (asked, from, to) in candidate.words(text, |t| matches!(terms.get(t), Some(Some(_)))) {
-            if let Some(Some(term)) = terms.get(&asked) {
-                if !cast.contains(&term.headword) && !cast.contains(&text[from..to]) {
-                    uses.push((term.clone(), Use { episode, line, from, to }));
-                }
+    for (episode, e) in episodes.iter().enumerate() {
+        step(&format!("Finding the words in Episode {}", e.number), 0.8 * episode as f64 / episodes.len() as f64);
+        let episode_lines = spoken_lines(backend, e.id);
+        if episode_lines.is_empty() {
+            without_subs.push(e.number);
+            lines.push(episode_lines);
+            continue;
+        }
+        for u in episode_uses(backend, e.id, &episode_lines)? {
+            if !cast.contains(&u.headword) && !cast.contains(&episode_lines[u.line].text[u.from..u.to]) {
+                let term = Term { headword: u.headword, reading: u.reading, rank: u.rank };
+                uses.push((term, Use { episode, line: u.line, from: u.from, to: u.to }));
             }
         }
+        lines.push(episode_lines);
     }
 
     // One row per word, with how often it comes up and its first line.

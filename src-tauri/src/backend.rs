@@ -600,6 +600,7 @@ impl Backend {
         let _ = std::fs::remove_dir_all(self.dirs.media().join(id.to_string()));
         for e in episodes {
             let _ = std::fs::remove_file(jobs::lines_path(self, e.id));
+            let _ = std::fs::remove_file(premine::words_path(self, e.id));
         }
         let _ = std::fs::remove_file(self.cover_path(id));
         Ok(json!({}))

@@ -413,6 +413,7 @@ fn whisper_subtitles(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, whisper: 
     let lines = without_repeats(subs::parse("whisper.srt", &bytes)?);
     write_lines(backend, episode.id, &lines)?;
     backend.db.set_subs(episode.id, "synced", "Made by Whisper (machine-made)", "Whisper", None, None)?;
+    crate::premine::prepare(backend, episode.id);
     Ok(())
 }
 
@@ -916,6 +917,7 @@ fn find_subtitles(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, show: &Show,
     let state = if synced.score >= GOOD_SYNC { "synced" } else { "check" };
     let detail = format!("{} · matched to {}", describe(&synced), timing.against);
     backend.db.set_subs(episode.id, state, &detail, &name, Some(synced.score), Some(synced.offset_ms))?;
+    crate::premine::prepare(backend, episode.id);
     Ok(())
 }
 
@@ -950,6 +952,7 @@ pub fn use_file(backend: &Backend, episode: &Episode, path: &Path, name: &str) -
     let state = if synced.score >= GOOD_SYNC { "synced" } else { "check" };
     let detail = format!("{} · matched to {}", describe(&synced), timing.against);
     backend.db.set_subs(episode.id, state, &detail, name, Some(synced.score), Some(synced.offset_ms))?;
+    crate::premine::prepare(backend, episode.id);
     Ok(synced)
 }
 

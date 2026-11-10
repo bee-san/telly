@@ -46,8 +46,6 @@ fn api_address() -> String {
 /// Words asked of Hachidori at a time: each answer carries every dictionary's
 /// entries, and the relay waits 30 seconds at most for one.
 const LOOKUPS_PER_REQUEST: usize = 40;
-/// Words checked in Anki at a time.
-const CHECKS_PER_REQUEST: usize = 100;
 /// The subdeck of your card format's deck that premined cards go in.
 const SUBDECK: &str = "Premined";
 const NO_RELAY: &str = "Premining needs Anki open, with Hachidori Relay. Open Anki and try again.";
@@ -418,47 +416,19 @@ fn card_format(backend: &Backend) -> Result<CardFormat> {
 
 // ---- Anki ----
 
-/// A search for notes whose `field` is exactly `value`.
-fn exact(field: &str, value: &str) -> String {
-    let mut escaped = String::new();
-    for c in value.chars() {
-        if matches!(c, '\\' | '"' | '*' | '_') {
-            escaped.push('\\');
-        }
-        escaped.push(c);
-    }
-    format!("\"{field}:{escaped}\"")
+/// What `field` holds in each note with a card you've studied (young or
+/// mature). One search and one read: a search per word reads the whole
+/// collection each time.
+fn studied_words(url: &str, field: &str) -> Result<HashSet<String>> {
+    let ids = anki::invoke(url, "findNotes", json!({ "query": format!("\"{field}:_*\" -is:new") }))?;
+    let ids: Vec<i64> = ids.as_array().map(|a| a.iter().filter_map(Value::as_i64).collect()).unwrap_or_default();
+    Ok(anki::notes_info(url, &ids)?.iter().filter_map(|n| n.field(field)).collect())
 }
 
-/// The search for a word's notes: its headword, or its reading where the
-/// note has the word in kana (する for 為る, こと for 事).
-fn word_search(field: &str, term: &Term) -> String {
-    let headword = exact(field, &term.headword);
-    if term.reading.is_empty() || term.reading == term.headword {
-        headword
-    } else {
-        format!("({headword} OR {})", exact(field, &term.reading))
-    }
-}
-
-/// For each word: whether you know it, by a card you've studied (young or mature).
-fn what_you_know(url: &str, field: &str, terms: &[Term], step: &dyn Fn(f64)) -> Result<Vec<bool>> {
-    let mut out = Vec::with_capacity(terms.len());
-    for (k, chunk) in terms.chunks(CHECKS_PER_REQUEST).enumerate() {
-        step(k as f64 * CHECKS_PER_REQUEST as f64 / terms.len().max(1) as f64);
-        let actions: Vec<Value> = chunk
-            .iter()
-            .map(|term| json!({ "action": "findCards", "params": { "query": format!("{} -is:new", word_search(field, term)) } }))
-            .collect();
-        let results = anki::invoke(url, "multi", json!({ "actions": actions }))?;
-        let list = results.as_array().cloned().unwrap_or_default();
-        // AnkiConnect answers each action bare, or as {result, error} when it names a version.
-        let found = |v: &Value| v.get("result").unwrap_or(v).as_array().is_some_and(|a| !a.is_empty());
-        for i in 0..chunk.len() {
-            out.push(list.get(i).is_some_and(found));
-        }
-    }
-    Ok(out)
+/// Whether you know a word: a studied note holds its headword, or its reading
+/// where the note has the word in kana (する for 為る, こと for 事).
+fn known(studied: &HashSet<String>, term: &Term) -> bool {
+    studied.contains(&term.headword) || (!term.reading.is_empty() && studied.contains(&term.reading))
 }
 
 // ---- The list ----
@@ -599,12 +569,13 @@ fn make_list(backend: &Backend, show: &Show, step: &dyn Fn(&str, f64)) -> Result
         }
     }
     let url = cards::anki_url(backend);
-    let know = what_you_know(&url, &field, &order, &|p| step("Checking your cards in Anki", 0.8 + 0.2 * p))?;
+    step("Checking your cards in Anki", 0.8);
+    let studied = studied_words(&url, &field)?;
 
     let mut known_uses = 0;
     let mut words: Vec<(usize, Word)> = Vec::new();
-    for (term, known) in order.iter().zip(&know) {
-        if *known {
+    for term in &order {
+        if known(&studied, term) {
             known_uses += seen[&(term.headword.clone(), term.reading.clone())].1;
             continue;
         }
@@ -992,11 +963,13 @@ mod tests {
     }
 
     #[test]
-    fn anki_searches_match_the_whole_field() {
-        assert_eq!(exact("Expression", "悪意"), "\"Expression:悪意\"");
-        assert_eq!(exact("Expression", "a_b*\"c"), "\"Expression:a\\_b\\*\\\"c\"");
-        let term = Term { headword: "為る".into(), reading: "する".into(), rank: Some(10) };
-        assert_eq!(word_search("Expression", &term), "(\"Expression:為る\" OR \"Expression:する\")");
+    fn a_studied_note_with_the_headword_or_reading_is_known() {
+        let studied: HashSet<String> = ["する".to_string(), "悪意".to_string()].into();
+        let term = |headword: &str, reading: &str| Term { headword: headword.into(), reading: reading.into(), rank: None };
+        assert!(known(&studied, &term("為る", "する")));
+        assert!(known(&studied, &term("悪意", "あくい")));
+        assert!(!known(&studied, &term("魔導士", "まどうし")));
+        assert!(!known(&studied, &term("悪意的", "")));
     }
 
     #[test]

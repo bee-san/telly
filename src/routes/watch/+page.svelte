@@ -537,19 +537,46 @@
     if (play && wasOpen && video) video.play().catch(() => {});
   }
 
-  const moments = $derived(recap?.data?.moments ?? []);
-  const canMontage = $derived(recap?.state === "ready" && !!recap.data?.from?.playable && moments.length > 0);
+  /** The moments to play: only those whose episode can play here. */
+  const moments = $derived((recap?.data?.moments ?? []).filter((m) => m.playable));
+  const canMontage = $derived(recap?.state === "ready" && moments.length > 0);
+  /** The episode the moment playing comes from: switching to another loads it. */
+  const montageSrc = $derived(montage ? mediaUrl(moments[montage.i]?.src ?? "") : "");
 
   function startMontage() {
     if (canMontage) montage = { i: 0, t: moments[0].start };
   }
 
+  /** The moment `i`: straight there in the same episode, or once the other episode has loaded. */
   function playMoment(i: number) {
     const m = moments[i];
     if (!m || !montageVideo) return endMontage(true);
+    const sameEpisode = montage !== null && moments[montage.i]?.src === m.src && montageVideo.readyState >= 1;
     montage = { i, t: m.start };
-    montageVideo.currentTime = m.start;
+    if (sameEpisode) startMoment();
+  }
+
+  /** Seeks to the moment playing and plays it (on load, for another episode). */
+  function startMoment() {
+    if (!montage || !montageVideo) return;
+    montageVideo.currentTime = moments[montage.i].start;
     montageVideo.play().catch(() => {});
+  }
+
+  /** "Episode 7", or "Episodes 2–7". */
+  function spanLabel(from: number | undefined, to: number | undefined): string {
+    if (!to) return "the episodes before";
+    return !from || from === to ? `Episode ${to}` : `Episodes ${from}–${to}`;
+  }
+
+  /** "Episode 3", "Episodes 3–5", "Episodes 3, 5 and 6". */
+  function episodesLabel(list: number[]): string {
+    const sorted = [...list].sort((a, b) => a - b);
+    if (!sorted.length) return "";
+    if (sorted.length === 1) return `Episode ${sorted[0]}`;
+    const run = sorted.every((n, i) => i === 0 || n === sorted[i - 1] + 1);
+    if (run) return `Episodes ${sorted[0]}–${sorted[sorted.length - 1]}`;
+    return `Episodes ${sorted.slice(0, -1).join(", ")} and ${sorted[sorted.length - 1]}`;
   }
 
   /** Follows the moment playing, and moves on at its end. Called every frame, and on the video's
@@ -569,7 +596,7 @@
 
   const montageLines = $derived.by(() => {
     if (!montage) return [];
-    const shift = (recap?.data?.from?.nudgeMs ?? 0) / 1000;
+    const shift = (moments[montage.i]?.nudgeMs ?? 0) / 1000;
     const t = montage.t;
     return (moments[montage.i]?.lines ?? []).filter((l) => l.start + shift <= t && t < l.end + shift);
   });
@@ -796,7 +823,7 @@
     if (!e) return "";
     if (e.subsState === "synced" && e.subsFile === "Whisper") return "Subtitles made by Whisper";
     if (e.subsState === "synced") return `Subtitles synced · ${Math.round((e.subsScore ?? 0) * 100)}%`;
-    if (e.subsState === "check") return `Subtitles need a look · ${Math.round((e.subsScore ?? 0) * 100)}%`;
+    if (e.subsState === "check") return `Subtitle timing unsure · ${Math.round((e.subsScore ?? 0) * 100)}%`;
     if (e.subsState === "pending" || e.subsState === "working") return "Finding subtitles…";
     return e.subsDetail || "No subtitles";
   });
@@ -882,7 +909,7 @@
       <button type="button" class="pbtn" class:on={transcript} aria-label="Transcript" title="Transcript (T)" onclick={() => (transcript = !transcript)}><Icon name="transcript" /></button>
       <button type="button" class="pbtn txt" class:on={!!explaining} title="Explain the line with Claude (E)" onclick={() => explainLine()}>Explain</button>
       {#if view?.recap?.possible}
-        <button type="button" class="pbtn txt" title="Previously on: a recap of Episode {view.recap.beforeNumber} (P)" onclick={openRecap}>Recap</button>
+        <button type="button" class="pbtn txt" title="Previously on: a recap of {spanLabel(view.recap.fromNumber, view.recap.beforeNumber)} (P)" onclick={openRecap}>Recap</button>
       {/if}
       <span class="menuwrap">
         <button type="button" class="pbtn txt" class:on={subMenu} aria-haspopup="menu" aria-expanded={subMenu} title="Fix the subtitle timing" onclick={() => (subMenu = !subMenu)}>Sync ▾</button>
@@ -963,9 +990,24 @@
         <span class="small">Previously on</span>
         <h3>{view.show.title}</h3>
         {#if recap.state === "writing"}
-          <p class="recap-text wait">Claude is writing a recap of Episode {view.recap?.beforeNumber ?? ""} from its subtitles…</p>
+          <p class="recap-text wait">Claude is writing a recap of {spanLabel(view.recap?.fromNumber, view.recap?.beforeNumber)} from their subtitles…</p>
         {:else if recap.state === "error"}
           <p class="recap-text wait">{recap.error}</p>
+        {:else if recap.data?.arcs || recap.data?.last}
+          <div class="recap-body scroll">
+            {#each recap.data.arcs ?? [] as arc, k (k)}
+              <section class="arc">
+                <div class="arc-head"><b>{arc.title}</b><span>{episodesLabel(arc.episodes)}</span></div>
+                <p class="recap-text">{arc.summary}</p>
+              </section>
+            {/each}
+            {#if recap.data.last}
+              <section class="arc">
+                <div class="arc-head"><b>Last time</b>{#if recap.data.lastNumber}<span>Episode {recap.data.lastNumber}</span>{/if}</div>
+                <p class="recap-text">{recap.data.last}</p>
+              </section>
+            {/if}
+          </div>
         {:else}
           <p class="recap-text">{recap.text}</p>
         {/if}
@@ -979,11 +1021,11 @@
     </div>
   {/if}
 
-  {#if montage && recap?.data?.from && view}
+  {#if montage && moments[montage.i] && view}
     <div class="montage">
       <!-- svelte-ignore a11y_media_has_caption -->
-      <video bind:this={montageVideo} src={mediaUrl(recap.data.from.src)} preload="auto" onloadedmetadata={() => playMoment(0)} ontimeupdate={montageTick} onerror={() => endMontage(false)}></video>
-      <span class="montage-label">Previously on {view.show.title} · Episode {recap.data.from.number} · {montage.i + 1} of {moments.length}</span>
+      <video bind:this={montageVideo} src={montageSrc} preload="auto" onloadedmetadata={startMoment} ontimeupdate={montageTick} onerror={() => endMontage(false)}></video>
+      <span class="montage-label">Previously on {view.show.title} · Episode {moments[montage.i].number} · {montage.i + 1} of {moments.length}</span>
       <div class="subs montage-subs" style:--sub-size="{subSize}px">
         {#each montageLines as l (l.start + l.text)}
           <p class="sub-line" lang="ja">{@html lineHtml(l)}</p>
@@ -1127,6 +1169,12 @@
   .recap-card h3 { padding-right: 0; }
   .recap-text { margin: 0; font: 400 16px/1.6 var(--font-ui); white-space: pre-line; }
   .recap-text.wait { color: var(--vid-ink-2); font-size: 14.5px; }
+  .recap-card { max-height: 86vh; }
+  .recap-body { display: grid; gap: 16px; max-height: 56vh; overflow: auto; padding-right: 4px; }
+  .arc { display: grid; gap: 4px; }
+  .arc-head { display: flex; align-items: baseline; gap: 10px; }
+  .arc-head b { font: 600 15px/1.3 var(--font-ui); }
+  .arc-head span { font-size: 12.5px; color: var(--vid-ink-2); }
   .montage { position: absolute; inset: 0; z-index: 9; background: var(--vid); }
   .montage video { width: 100%; height: 100%; object-fit: contain; display: block; }
   .montage-label { position: absolute; top: 18px; left: 20px; font: 600 13px/1 var(--font-ui); letter-spacing: .02em; color: var(--vid-ink); text-shadow: 0 1px 3px rgba(0, 0, 0, .9); }

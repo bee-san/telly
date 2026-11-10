@@ -56,6 +56,9 @@ impl Dirs {
     }
 }
 
+/// How subtitles are matched; a newer one syncs every episode again.
+const SUBS_ENGINE: i64 = 2;
+
 /// The episode open in the player.
 struct Playing {
     episode_id: i64,
@@ -246,6 +249,13 @@ impl Backend {
         let _ = log.tidy();
         // Failed subtitles get another go each time Telly starts (Jimaku may have been down).
         let _ = db.requeue_subs(None, &["failed"]);
+        // Subtitles synced by an older way of matching are synced again: since
+        // version 2 files are matched to the rip's own subtitles when it has
+        // them, or FireRedVAD's view of the speech, and season folders are numbered right.
+        if db.setting_i64("subs.engine", 1) < SUBS_ENGINE {
+            let _ = db.requeue_subs(None, &["synced", "check", "none"]);
+            let _ = db.set_setting("subs.engine", &json!(SUBS_ENGINE));
+        }
         let found = tools::find(&dirs.tools(), &dirs.models(), &db.setting_str("tools.ffmpeg"));
         Ok(Backend {
             db,
@@ -660,6 +670,10 @@ impl Backend {
             m.watch(true);
         }
         self.jobs.poke();
+        // Explain answers in a second or two from a Claude Code that's already started.
+        if crate::claude::find().is_some() {
+            crate::claude::warm_up(ask::model(self).as_deref(), Some(ask::EFFORT));
+        }
         let mut view = self.episode_view(id)?;
         view["awayMs"] = json!(away);
         view["recap"] = ask::recap_state(self, &episode);

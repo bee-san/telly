@@ -17,6 +17,7 @@ use crate::media::{self, Plan};
 use crate::subs::{self, Line};
 use crate::sync;
 use crate::jimaku;
+use crate::{anilist, matching, scan};
 use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -28,10 +29,13 @@ use std::time::{Duration, Instant};
 /// A sync scoring at least this shows as synced; below it, as "needs a look"
 /// (0.5 is 4 spreads above chance; see sync.rs).
 pub const GOOD_SYNC: f64 = 0.5;
+/// Below this, a file is another episode's: Telly keeps none rather than a wrong one.
+const FITS_NOT: f64 = 0.15;
 /// After this, the quick sync stops trying more files.
 const GREAT_SYNC: f64 = 0.75;
-/// The most subtitle files tried per episode.
-const MAX_TRIES: usize = 4;
+/// The most subtitle files tried per episode. Matching a file to the rip's own
+/// subtitles takes a fraction of a second, so it can try every set Jimaku has.
+const MAX_TRIES: usize = 12;
 /// Nothing played for this long counts as idle.
 const IDLE_AFTER: Duration = Duration::from_secs(120);
 
@@ -520,15 +524,106 @@ pub fn write_lines(backend: &Backend, episode_id: i64, lines: &[Line]) -> Result
     Ok(())
 }
 
-/// Where people speak in an episode, from its Japanese track, and how long it is.
-fn speech_of(ffmpeg: &Path, probe: &media::Probe, episode: &Episode) -> Result<(Vec<(f64, f64)>, f64)> {
+/// Where people speak in an episode, from its Japanese track, and how long it
+/// is: FireRedVAD's view, or WebRTC's detector if FireRedVAD can't run.
+/// The bool says whether it's FireRedVAD's (clean) view.
+fn speech_of(ffmpeg: &Path, probe: &media::Probe, episode: &Episode) -> Result<(Vec<(f64, f64)>, f64, bool)> {
     let source = Path::new(&episode.path);
-    let samples = media::read_audio_filtered(ffmpeg, source, media::japanese_audio(probe), sync::RATE, None, None, Some(sync::VOICE_FILTER))?;
-    let length = samples.len() as f64 / sync::RATE as f64;
-    Ok((sync::voice_spans(&samples), length))
+    let audio = media::japanese_audio(probe);
+    let samples = media::read_audio_filtered(ffmpeg, source, audio, sync::FIRERED_RATE, None, None, None)?;
+    let length = samples.len() as f64 / sync::FIRERED_RATE as f64;
+    match sync::firered_spans(&samples) {
+        Ok(spans) if !spans.is_empty() => Ok((spans, length, true)),
+        _ => {
+            let samples = media::read_audio_filtered(ffmpeg, source, audio, sync::RATE, None, None, Some(sync::VOICE_FILTER))?;
+            Ok((sync::voice_spans(&samples), length, false))
+        }
+    }
 }
 
-/// Jimaku's files for a show, cached for an hour.
+/// What subtitle files are matched against: when the rip's own dialogue
+/// subtitles show (in any language, pictures included), or where its people speak.
+pub struct Timing {
+    pub spans: Vec<(f64, f64)>,
+    pub length: f64,
+    /// For the episode's details: "the rip’s English subtitles", "the speech".
+    pub against: String,
+    /// Seconds subtitles show before the voice starts. Matched to speech, a
+    /// file lands this much late (0.1 s, measured on Fairy Tail's Blu-rays
+    /// against files made for them); matched to subtitles, nothing.
+    pub lead: f64,
+    /// How sure a fit to this timing is (see `sync::Calibration`).
+    pub calibration: sync::Calibration,
+}
+
+/// Syncs a file to `timing`, moving it back by the timing's lead.
+pub fn sync_to(lines: &[Line], timing: &Timing) -> sync::Synced {
+    let mut synced = sync::sync_with(lines, &timing.spans, timing.length, &timing.calibration);
+    if timing.lead > 0.0 {
+        for line in &mut synced.lines {
+            line.start = (line.start - timing.lead).max(0.0);
+            line.end = (line.end - timing.lead).max(line.start + 0.05);
+        }
+        synced.offset_ms -= (timing.lead * 1000.0).round() as i64;
+    }
+    synced
+}
+
+fn language_name(code: &str) -> &'static str {
+    match code.to_lowercase().as_str() {
+        "eng" | "en" => "English ",
+        "jpn" | "ja" | "jp" => "Japanese ",
+        "spa" | "es" => "Spanish ",
+        "fre" | "fra" | "fr" => "French ",
+        "ger" | "deu" | "de" => "German ",
+        "por" | "pt" => "Portuguese ",
+        "ita" | "it" => "Italian ",
+        "chi" | "zho" | "zh" => "Chinese ",
+        "kor" | "ko" => "Korean ",
+        _ => "",
+    }
+}
+
+/// The rip's own dialogue subtitles when it has them: timed to this very
+/// video, they place a file far more surely than the speech does. Otherwise its speech.
+pub fn timing_of(ffmpeg: &Path, ffprobe: &Path, probe: &media::Probe, episode: &Episode) -> Result<Timing> {
+    let path = Path::new(&episode.path);
+    if let Ok(timings) = media::subtitle_timings(ffmpeg, ffprobe, path, probe) {
+        if let Some(track) = media::dialogue_track(&timings) {
+            let end = track.events.last().map(|e| e.1).unwrap_or(0.0);
+            return Ok(Timing {
+                spans: track.events.clone(),
+                length: probe.duration.max(end),
+                against: format!("the rip’s {}subtitles", language_name(&track.language)),
+                lead: 0.0,
+                calibration: sync::Calibration::CLEAN,
+            });
+        }
+    }
+    let (spans, length, clean) = speech_of(ffmpeg, probe, episode)?;
+    let calibration = if clean { sync::Calibration::CLEAN } else { sync::Calibration::NOISY };
+    Ok(Timing { spans, length, against: "the speech".into(), lead: 0.1, calibration })
+}
+
+/// An entry's files, cached for an hour.
+fn entry_files(backend: &Backend, key: &str, id: i64) -> Result<Vec<jimaku::Local>> {
+    let cached = backend
+        .jobs
+        .jimaku_files
+        .lock()
+        .ok()
+        .and_then(|c| c.get(&id).filter(|(at, _)| at.elapsed() < Duration::from_secs(3600)).map(|(_, f)| f.clone()));
+    if let Some(files) = cached {
+        return Ok(files);
+    }
+    let files = jimaku::fetch_all(key, id, &backend.dirs.jimaku().join(id.to_string()))?;
+    if let Ok(mut c) = backend.jobs.jimaku_files.lock() {
+        c.insert(id, (Instant::now(), files.clone()));
+    }
+    Ok(files)
+}
+
+/// Jimaku's files for a show.
 fn jimaku_files(backend: &Backend, key: &str, show: &Show) -> Result<Vec<jimaku::Local>> {
     let entry_ids: Vec<i64> = match show.jimaku_id {
         Some(id) => vec![id],
@@ -542,25 +637,50 @@ fn jimaku_files(backend: &Backend, key: &str, show: &Show) -> Result<Vec<jimaku:
     };
     let mut all = Vec::new();
     for id in entry_ids {
-        let cached = backend
-            .jobs
-            .jimaku_files
-            .lock()
-            .ok()
-            .and_then(|c| c.get(&id).filter(|(at, _)| at.elapsed() < Duration::from_secs(3600)).map(|(_, f)| f.clone()));
-        let files = match cached {
-            Some(files) => files,
-            None => {
-                let files = jimaku::fetch_all(key, id, &backend.dirs.jimaku().join(id.to_string()))?;
-                if let Ok(mut c) = backend.jobs.jimaku_files.lock() {
-                    c.insert(id, (Instant::now(), files.clone()));
-                }
-                files
-            }
-        };
-        all.extend(files);
+        all.extend(entry_files(backend, key, id)?);
     }
     Ok(all)
+}
+
+/// The Jimaku files of a season folder's own AniList entry, for a show added
+/// as one folder holding several seasons (Fairy Tail's OVAs and 2014 series
+/// are entries of their own). Which entry that is is worked out once, from
+/// the folder's name, and kept.
+fn group_files(backend: &Backend, key: &str, show: &Show, group: &str, in_group: usize) -> Result<Vec<jimaku::Local>> {
+    if group.is_empty() {
+        return Ok(Vec::new());
+    }
+    let setting = format!("jimaku.group.{}.{group}", show.id);
+    let entry = match backend.db.setting(&setting)?.and_then(|v| v.as_i64()) {
+        Some(id) => id,
+        None => {
+            let title = scan::clean_title(group.rsplit('/').next().unwrap_or(group));
+            let mut found = anilist::search_loosely(&title).unwrap_or_default();
+            anilist::rank(&mut found, &title, in_group);
+            let id = match found.first() {
+                Some(a) if Some(a.id) != show.anilist_id && a.score >= 0.5 => {
+                    jimaku::find_entries(key, Some(a.id), &a.romaji)?.first().map(|e| e.id).unwrap_or(-1)
+                }
+                _ => -1,
+            };
+            backend.db.set_setting(&setting, &serde_json::json!(id))?;
+            id
+        }
+    };
+    if entry <= 0 || Some(entry) == show.jimaku_id {
+        return Ok(Vec::new());
+    }
+    entry_files(backend, key, entry)
+}
+
+/// The number in an episode file's own name.
+fn local_number(path: &str) -> Option<i64> {
+    let stem = Path::new(path).file_stem()?.to_string_lossy().to_string();
+    scan::episode_number(&stem).map(|(_, e)| e)
+}
+
+fn offset_setting(show: i64, group: &str) -> String {
+    format!("subs.numbering.{show}.{group}")
 }
 
 /// Japanese text subtitles inside the rip itself, written out as files.
@@ -582,25 +702,126 @@ fn embedded(backend: &Backend, ffmpeg: &Path, probe: &media::Probe, episode: &Ep
     out
 }
 
-/// Syncs one file to the episode's speech.
-pub fn sync_file(path: &Path, name: &str, speech: &[(f64, f64)], length: f64) -> Result<sync::Synced> {
+/// Syncs one file to the episode's timing (its own subtitles or its speech),
+/// with how it compares with the others (see `matching::better`).
+pub fn sync_file(path: &Path, name: &str, timing: &Timing, video: &str) -> Result<(sync::Synced, matching::Fit)> {
     let bytes = std::fs::read(path)?;
     let lines = subs::parse(name, &bytes)?;
     if !subs::is_japanese(&lines) {
         return Err(anyhow!("not Japanese"));
     }
-    Ok(sync::sync(&lines, speech, length))
+    let synced = sync_to(&lines, timing);
+    let fit = matching::Fit {
+        score: synced.score,
+        quality: subs::quality(&lines),
+        offset_ms: synced.offset_ms,
+        z: synced.standing.above,
+        made_for: matching::made_for(name, video),
+    };
+    Ok((synced, fit))
+}
+
+/// The file kept for an episode, synced.
+pub struct Pick {
+    pub synced: sync::Synced,
+    pub fit: matching::Fit,
+    pub name: String,
+    /// The episode number the file was filed under.
+    pub filed_as: Option<i64>,
+}
+
+/// How many files a search looks at fully, of those that screen best.
+const SEARCH_TOP: usize = 6;
+
+/// Parsed files' dialogue timing, kept while Telly runs: a search screens
+/// every file of an entry, episode after episode.
+fn screened(file: &jimaku::Local) -> Option<std::sync::Arc<Vec<(f64, f64)>>> {
+    static CACHE: std::sync::OnceLock<Mutex<HashMap<PathBuf, Option<std::sync::Arc<Vec<(f64, f64)>>>>>> = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(hit) = cache.lock().ok().and_then(|c| c.get(&file.path).cloned()) {
+        return hit;
+    }
+    let spans = std::fs::read(&file.path)
+        .ok()
+        .and_then(|bytes| subs::parse(&file.name, &bytes).ok())
+        .filter(|lines| subs::is_japanese(lines))
+        .map(|lines| std::sync::Arc::new(lines.iter().filter(|l| !l.sign).map(|l| (l.start, l.end)).collect::<Vec<_>>()));
+    if let Ok(mut c) = cache.lock() {
+        c.insert(file.path.clone(), spans.clone());
+    }
+    spans
+}
+
+/// Syncs the files that could be this episode's (`files`, likeliest first)
+/// and keeps the best (`matching::better`). When none of them fits, it
+/// searches the rest of `pool`: every file is screened by `sync::quick_fit`,
+/// and the few that screen best are synced in full. That finds an episode
+/// filed under a number nothing predicted (Judas's Fairy Tail 2014 runs in
+/// another order than Netflix's from its 48th episode).
+pub fn pick_subtitles(files: &[jimaku::Local], pool: &[jimaku::Local], timing: &Timing, video: &str, mut progress: impl FnMut(&str, f64)) -> (Option<Pick>, Vec<Tried>) {
+    let mut tried: Vec<Tried> = Vec::new();
+    let mut best: Option<Pick> = None;
+    let consider = |file: &jimaku::Local, tried: &mut Vec<Tried>, best: &mut Option<Pick>| match sync_file(&file.path, &file.name, timing, video) {
+        Ok((synced, fit)) => {
+            tried.push(Tried { name: file.name.clone(), path: file.path.to_string_lossy().into_owned(), score: synced.score, offset_ms: synced.offset_ms, error: String::new() });
+            if best.as_ref().is_none_or(|b| matching::better(&fit, &b.fit)) {
+                *best = Some(Pick { synced, fit, name: file.name.clone(), filed_as: file.episode });
+            }
+        }
+        Err(e) => tried.push(Tried { name: file.name.clone(), path: file.path.to_string_lossy().into_owned(), score: 0.0, offset_ms: 0, error: format!("{e:#}") }),
+    };
+    let first: Vec<&jimaku::Local> = files.iter().take(MAX_TRIES).collect();
+    for (i, file) in first.iter().enumerate() {
+        progress("Syncing subtitles for", i as f64 / first.len() as f64);
+        consider(file, &mut tried, &mut best);
+    }
+    if best.as_ref().is_none_or(|b| b.fit.score < GOOD_SYNC) && !pool.is_empty() {
+        progress("Searching every subtitle file for", 0.0);
+        let done: std::collections::HashSet<&PathBuf> = first.iter().map(|f| &f.path).collect();
+        let mut screen: Vec<(f64, &jimaku::Local)> = pool
+            .iter()
+            .filter(|f| !done.contains(&f.path))
+            .filter_map(|f| screened(f).map(|spans| (sync::quick_fit(&spans, &timing.spans), f)))
+            .collect();
+        screen.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let top: Vec<&jimaku::Local> = screen.into_iter().take(SEARCH_TOP).map(|(_, f)| f).collect();
+        for (i, file) in top.iter().enumerate() {
+            progress("Searching every subtitle file for", (i + 1) as f64 / top.len() as f64);
+            consider(file, &mut tried, &mut best);
+        }
+    }
+    (best, tried)
 }
 
 fn find_subtitles(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, show: &Show, episode: &Episode, count: usize) -> Result<()> {
     let key = backend.db.setting_str("jimaku.key");
     let probe = media::probe(ffprobe, Path::new(&episode.path))?;
     let mut files = embedded(backend, ffmpeg, &probe, episode);
+    // Where this episode sits among the show's season folders.
+    let listing: Vec<(i64, String)> = backend.db.episodes(show.id)?.into_iter().map(|e| (e.number, e.path)).collect();
+    let groups = matching::groups(&show.folder, &listing);
+    let group = matching::group_of(&show.folder, &episode.path);
+    let local = local_number(&episode.path);
+    let mut pool: Vec<jimaku::Local> = Vec::new();
     if !key.trim().is_empty() {
-        let all = jimaku_files(backend, key.trim(), show)?;
-        files.extend(jimaku::candidates(&all, episode.number, count));
+        let mut all = jimaku_files(backend, key.trim(), show)?;
+        if groups.len() > 1 {
+            let in_group = groups.iter().find(|(g, _)| *g == group).map(|(_, c)| *c).unwrap_or(0);
+            all.extend(group_files(backend, key.trim(), show, &group, in_group).unwrap_or_default());
+        }
+        let earlier: Vec<usize> = groups.iter().take_while(|(g, _)| *g != group).map(|(_, c)| *c).collect();
+        let learned = backend.db.setting(&offset_setting(show.id, &group)).ok().flatten().and_then(|v| v.as_i64());
+        let mut seen = std::collections::HashSet::new();
+        for n in matching::numbers_for(episode.number, local, &earlier, learned) {
+            for file in jimaku::candidates(&all, n, count) {
+                if seen.insert(file.path.clone()) {
+                    files.push(file);
+                }
+            }
+        }
+        pool = all;
     }
-    if files.is_empty() {
+    if files.is_empty() && pool.is_empty() {
         let (state, detail) = if key.trim().is_empty() {
             ("nokey", "Add your Jimaku API key in Settings")
         } else if show.jimaku_id.is_none() && backend.db.show(show.id)?.and_then(|s| s.jimaku_id).is_none() {
@@ -611,36 +832,33 @@ fn find_subtitles(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, show: &Show,
         backend.db.set_subs(episode.id, state, detail, "", None, None)?;
         return Ok(());
     }
-    update_task(&backend.jobs.subs, Some(&format!("Listening to {} {}", show.title, episode.number)), 0.0);
-    let (speech, length) = speech_of(ffmpeg, &probe, episode).context("reading the episode’s audio")?;
-    let mut tried: Vec<Tried> = Vec::new();
-    let mut best: Option<(sync::Synced, String)> = None;
-    for (i, file) in files.iter().take(MAX_TRIES).enumerate() {
-        update_task(&backend.jobs.subs, Some(&format!("Syncing subtitles for {} {}", show.title, episode.number)), i as f64 / files.len().min(MAX_TRIES) as f64);
-        match sync_file(&file.path, &file.name, &speech, length) {
-            Ok(synced) => {
-                tried.push(Tried { name: file.name.clone(), path: file.path.to_string_lossy().into_owned(), score: synced.score, offset_ms: synced.offset_ms, error: String::new() });
-                let better = best.as_ref().is_none_or(|(b, _)| synced.score > b.score);
-                let great = synced.score >= GREAT_SYNC;
-                if better {
-                    best = Some((synced, file.name.clone()));
-                }
-                if great {
-                    break;
-                }
-            }
-            Err(e) => tried.push(Tried { name: file.name.clone(), path: file.path.to_string_lossy().into_owned(), score: 0.0, offset_ms: 0, error: format!("{e:#}") }),
-        }
-    }
+    update_task(&backend.jobs.subs, Some(&format!("Reading the timing of {} {}", show.title, episode.number)), 0.0);
+    let timing = timing_of(ffmpeg, ffprobe, &probe, episode).context("reading the episode’s timing")?;
+    let video = Path::new(&episode.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let (best, tried) = pick_subtitles(&files, &pool, &timing, &video, |what, progress| {
+        update_task(&backend.jobs.subs, Some(&format!("{what} {} {}", show.title, episode.number)), progress);
+    });
     std::fs::create_dir_all(backend.dirs.subs())?;
     std::fs::write(tried_path(backend, episode.id), serde_json::to_vec(&tried)?)?;
-    let Some((synced, name)) = best else {
+    let Some(Pick { synced, name, filed_as, .. }) = best else {
         backend.db.set_subs(episode.id, "none", "None of Jimaku’s files for this episode are Japanese subtitles Telly can read", "", None, None)?;
         return Ok(());
     };
+    if synced.score < FITS_NOT {
+        // Every file is another episode's, or another cut's: none is better than wrong ones.
+        let _ = std::fs::remove_file(lines_path(backend, episode.id));
+        backend.db.set_subs(episode.id, "none", &format!("None of Jimaku’s {} files fit this episode", tried.len()), "", Some(synced.score), None)?;
+        return Ok(());
+    }
+    // The numbering that fitted, for the rest of this season folder.
+    if synced.score >= GREAT_SYNC {
+        if let (Some(filed), Some(l)) = (filed_as, local) {
+            let _ = backend.db.set_setting(&offset_setting(show.id, &group), &serde_json::json!(filed - l));
+        }
+    }
     write_lines(backend, episode.id, &synced.lines)?;
     let state = if synced.score >= GOOD_SYNC { "synced" } else { "check" };
-    let detail = describe(&synced);
+    let detail = format!("{} · matched to {}", describe(&synced), timing.against);
     backend.db.set_subs(episode.id, state, &detail, &name, Some(synced.score), Some(synced.offset_ms))?;
     Ok(())
 }
@@ -663,13 +881,14 @@ pub fn use_file(backend: &Backend, episode: &Episode, path: &Path, name: &str) -
         return Err(anyhow!("Telly needs ffmpeg for this. Choose it in Settings."));
     };
     let probe = media::probe(&ffprobe, Path::new(&episode.path))?;
-    let (speech, length) = speech_of(&ffmpeg, &probe, episode)?;
+    let timing = timing_of(&ffmpeg, &ffprobe, &probe, episode)?;
     let bytes = std::fs::read(path)?;
     let lines = subs::parse(name, &bytes)?;
-    let synced = sync::sync(&lines, &speech, length);
+    let synced = sync_to(&lines, &timing);
     write_lines(backend, episode.id, &synced.lines)?;
     let state = if synced.score >= GOOD_SYNC { "synced" } else { "check" };
-    backend.db.set_subs(episode.id, state, &describe(&synced), name, Some(synced.score), Some(synced.offset_ms))?;
+    let detail = format!("{} · matched to {}", describe(&synced), timing.against);
+    backend.db.set_subs(episode.id, state, &detail, name, Some(synced.score), Some(synced.offset_ms))?;
     Ok(synced)
 }
 

@@ -11,7 +11,7 @@ use crate::db::{Episode, Show};
 use crate::jobs;
 use crate::names;
 use crate::subs::Line;
-use crate::util::{clock, now_ms};
+use crate::util::now_ms;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -37,7 +37,8 @@ pub struct Asks {
 
 impl Asks {
     /// Answers `prompt` in the background; `keep` hears the whole answer.
-    fn start(&self, prompt: String, model: String, effort: &'static str, keep: impl FnOnce(&str) + Send + 'static) -> u64 {
+    /// `model` is None for Claude Code's own default. `warm` asks in the warm session (short questions).
+    fn start(&self, prompt: String, model: Option<String>, effort: &'static str, warm: bool, keep: impl FnOnce(&str) + Send + 'static) -> u64 {
         let id = self.next.fetch_add(1, Ordering::SeqCst) + 1;
         let asking = Arc::new(Asking {
             text: Mutex::new(String::new()),
@@ -52,8 +53,7 @@ impl Asks {
             running.insert(id, asking.clone());
         }
         std::thread::spawn(move || {
-            let model = (!model.trim().is_empty()).then_some(model.trim().to_string());
-            let question = claude::Ask { prompt: &prompt, model: model.as_deref(), effort: Some(effort) };
+            let question = claude::Ask { prompt: &prompt, model: model.as_deref(), effort: Some(effort), warm };
             let result = claude::ask(
                 &question,
                 |piece| {
@@ -98,9 +98,18 @@ impl Asks {
     }
 }
 
-fn model(backend: &Backend) -> String {
-    backend.db.setting_str("claude.model")
+/// The model Settings picked: Haiku 5.5 unless it says otherwise, or None
+/// ("default") for Claude Code's own default.
+pub fn model(backend: &Backend) -> Option<String> {
+    match backend.db.setting_str("claude.model").trim() {
+        "" => Some(claude::DEFAULT_MODEL.to_string()),
+        "default" => None,
+        other => Some(other.to_string()),
+    }
 }
+
+/// Explain's effort: low answers in about a third of the time.
+pub const EFFORT: &str = "low";
 
 /// English, or simple Japanese for when you'd rather not read English.
 fn answer_in(backend: &Backend) -> &'static str {
@@ -170,13 +179,13 @@ pub fn explain(backend: &Arc<Backend>, episode_id: i64, index: usize) -> Result<
     let prompt = explain_prompt(&show_title(&show), episode.number, &lines, index, &names_line(backend, &show, &context), answer_in(backend));
     let keeper = backend.clone();
     let kept_about = about.clone();
-    let id = backend.asks.start(prompt, model(backend), "low", move |answer| {
+    let id = backend.asks.start(prompt, model(backend), EFFORT, true, move |answer| {
         let _ = keeper.db.save_answer(episode_id, "line", index as i64, &kept_about, answer, "");
     });
     Ok(json!({ "ask": id, "line": about }))
 }
 
-/// A stretch of the episode before to play in the recap.
+/// A stretch of an episode before, to play in the recap.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Moment {
@@ -219,46 +228,117 @@ pub fn moments(lines: &[Line], chosen: &[usize]) -> Vec<Moment> {
     out
 }
 
-/// The prompt for the recap shown before an episode: the whole episode
-/// before it, numbered, and the recap shown before that one, for the story so far.
-pub fn recap_prompt(show_title: &str, number: i64, before_number: i64, lines: &[Line], earlier: &str, names: &str, answer_in: &str) -> String {
-    let numbered: Vec<String> = spoken(lines).map(|(i, l)| format!("[{i}] {} {}", clock(l.start), one_line(&l.text))).collect();
+/// A part of the story in a recap: what happens in it, and the episodes it covers.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct StoryArc {
+    pub title: String,
+    pub episodes: Vec<i64>,
+    pub summary: String,
+}
+
+/// A recap: the story so far in its arcs, the episode just left, and the
+/// moments to play, as (episode number, line number).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Recap {
+    pub arcs: Vec<StoryArc>,
+    pub last: String,
+    pub moments: Vec<(i64, usize)>,
+}
+
+impl Recap {
+    /// As plain text, for the next recap's "story before these".
+    pub fn text(&self) -> String {
+        let mut out: Vec<String> = self.arcs.iter().map(|a| format!("{}: {}", a.title, a.summary)).collect();
+        if !self.last.is_empty() {
+            out.push(format!("Last time: {}", self.last));
+        }
+        out.join("\n")
+    }
+}
+
+/// How many episodes a recap covers: the one just left and the five before it.
+const RECAP_EPISODES: usize = 6;
+
+/// The prompt for "Previously on" before Episode `number`: the subtitles of
+/// the episodes before it (`window`, oldest first, each line numbered), and the
+/// recap shown before the first of them, for the story before.
+pub fn recap_prompt(show_title: &str, number: i64, window: &[(i64, &[Line])], earlier: &str, names: &str, answer_in: &str) -> String {
+    let episodes: Vec<String> = window
+        .iter()
+        .map(|(n, lines)| {
+            let numbered: Vec<String> = spoken(lines).map(|(i, l)| format!("[{i}] {}", one_line(&l.text))).collect();
+            format!("<episode number=\"{n}\">\n{}\n</episode>", numbered.join("\n"))
+        })
+        .collect();
+    let first = window.first().map(|(n, _)| *n).unwrap_or(number - 1);
+    let last = window.last().map(|(n, _)| *n).unwrap_or(number - 1);
+    let span = if first == last { format!("Episode {last}") } else { format!("Episodes {first} to {last}") };
     let earlier = if earlier.trim().is_empty() {
         String::new()
     } else {
-        format!("\n\nFor the story before that, this was the recap shown before Episode {before_number}:\n<earlier>\n{}\n</earlier>", earlier.trim())
+        format!("\n\nFor the story before Episode {first}, this was the recap shown before it:\n<earlier>\n{}\n</earlier>", earlier.trim())
     };
     format!(
-        "I’m about to watch Episode {number} of {show_title}, an anime in Japanese. \
-         Here are the Japanese subtitles of Episode {before_number}, the episode before it, numbered, with their times:{names}\n\n\
-         <subtitles>\n{subtitles}\n</subtitles>{earlier}\n\n\
-         Reply with only a JSON object, and no other text: {{\"recap\": \"…\", \"moments\": [12, 40, 87, 133, 201]}}.\n\
-         \"recap\": a short \"previously on\" recap of Episode {before_number} in {answer_in}, so I can pick up where I left off: \
-         who was in it, what happened, and how it ended. Write the characters' names as AniList does. \
-         Start with the recap itself, with no title. Keep it under 120 words.\n\
-         \"moments\": the numbers of 4 to 6 subtitles, in order, that best tell the episode’s story when each is played as a short clip: \
-         complete lines, spoken at key moments, spread through the episode, the last one near its end.\n\
-         Use only the subtitles above, and don’t guess at what comes next. If you recognise the show, still tell me only what \
-         the subtitles say: what you know of it from elsewhere could spoil what’s ahead.",
-        subtitles = numbered.join("\n"),
+        "I’m about to watch Episode {number} of {show_title}, an anime in Japanese. Here are the Japanese subtitles of {span}, \
+         the episodes before it, each line numbered:{names}\n\n{body}{earlier}\n\n\
+         Reply with only a JSON object, and no other text, shaped like this: \
+         {{\"arcs\": [{{\"title\": \"…\", \"episodes\": [{first}, …], \"summary\": \"…\"}}], \"last\": \"…\", \"moments\": [{{\"episode\": {last}, \"line\": 12}}]}}.\n\
+         \"arcs\": the story of these episodes cut into its arcs or parts, one to three, oldest first. Each has a short title saying \
+         what happens in it, taken from the subtitles (never a name from elsewhere that could hint at what’s ahead), the episodes it \
+         covers, and two or three sentences in {answer_in}. An arc can run on into Episode {last}.\n\
+         \"last\": what happened in Episode {last}, the one I just left, in {answer_in}: three or four sentences, ending where it ended, \
+         so I can pick up from there.\n\
+         \"moments\": 4 to 6 lines, in story order, that best tell this stretch of the story when each is played as a short clip: \
+         complete lines spoken at key moments, two or more from Episode {last}, the last near its end.\n\
+         Write the characters’ names as AniList does. Keep it under 250 words in all. Use only the subtitles above, and don’t guess at \
+         what comes next. If you recognise the show, still tell me only what the subtitles say: what you know of it from elsewhere \
+         could spoil what’s ahead.",
+        body = episodes.join("\n\n"),
     )
 }
 
 /// Claude's recap, from its answer (the JSON object, wherever it is in it).
-pub fn parse_recap(answer: &str) -> Option<(String, Vec<usize>)> {
+pub fn parse_recap(answer: &str) -> Option<Recap> {
     let start = answer.find('{')?;
     let end = answer.rfind('}')?;
     let value: Value = serde_json::from_str(answer.get(start..=end)?).ok()?;
-    let recap = value["recap"].as_str()?.trim().to_string();
-    let moments: Vec<usize> = value["moments"].as_array().map(|a| a.iter().filter_map(Value::as_u64).map(|n| n as usize).collect()).unwrap_or_default();
-    (!recap.is_empty()).then_some((recap, at_most(moments, MAX_MOMENTS)))
+    let text = |v: &Value| v.as_str().map(str::trim).unwrap_or("").to_string();
+    let arcs: Vec<StoryArc> = value["arcs"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|arc| StoryArc {
+                    title: text(&arc["title"]),
+                    episodes: arc["episodes"].as_array().map(|e| e.iter().filter_map(Value::as_i64).collect()).unwrap_or_default(),
+                    summary: text(&arc["summary"]),
+                })
+                .filter(|arc| !arc.summary.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let moments: Vec<(i64, usize)> = value["moments"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|m| match m {
+                    Value::Object(_) => Some((m["episode"].as_i64()?, m["line"].as_u64()? as usize)),
+                    Value::Array(pair) => Some((pair.first()?.as_i64()?, pair.get(1)?.as_u64()? as usize)),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let recap = Recap { arcs, last: text(&value["last"]), moments: at_most(moments, MAX_MOMENTS) };
+    (!recap.last.is_empty() || !recap.arcs.is_empty()).then_some(recap)
 }
 
 /// The most moments a recap plays: about 40 seconds.
 const MAX_MOMENTS: usize = 6;
 
-/// `n` of the moments, spread from the first to the last (the episode's end matters most).
-fn at_most(moments: Vec<usize>, n: usize) -> Vec<usize> {
+/// `n` of the moments, spread from the first to the last (the end matters most).
+fn at_most<T: Clone>(moments: Vec<T>, n: usize) -> Vec<T> {
     if moments.len() <= n {
         return moments;
     }
@@ -266,48 +346,73 @@ fn at_most(moments: Vec<usize>, n: usize) -> Vec<usize> {
         return moments.into_iter().take(n).collect();
     }
     let last = moments.len() - 1;
-    (0..n).map(|k| moments[(k * last + (n - 1) / 2) / (n - 1)]).collect()
+    (0..n).map(|k| moments[(k * last + (n - 1) / 2) / (n - 1)].clone()).collect()
 }
 
-/// The episode before `episode` in its show, if it has subtitles to recap.
-fn before(backend: &Backend, episode: &Episode) -> Result<Option<(Episode, Vec<Line>)>> {
+/// The episodes a recap before `episode` covers: up to six before it with
+/// subtitles, oldest first. None when the episode just before has none.
+fn window(backend: &Backend, episode: &Episode) -> Result<Vec<(Episode, Vec<Line>)>> {
     let episodes = backend.db.episodes(episode.show_id)?;
-    let Some(i) = episodes.iter().position(|e| e.id == episode.id) else { return Ok(None) };
-    if i == 0 {
-        return Ok(None);
+    let Some(i) = episodes.iter().position(|e| e.id == episode.id) else { return Ok(Vec::new()) };
+    let mut out = Vec::new();
+    for e in episodes[..i].iter().rev() {
+        if out.len() >= RECAP_EPISODES {
+            break;
+        }
+        let lines = jobs::read_lines(backend, e.id);
+        if spoken(&lines).count() >= 20 {
+            out.push((e.clone(), lines));
+        } else if out.is_empty() {
+            return Ok(Vec::new());
+        }
     }
-    let prev = episodes[i - 1].clone();
-    let lines = jobs::read_lines(backend, prev.id);
-    Ok((spoken(&lines).count() >= 20).then_some((prev, lines)))
+    out.reverse();
+    Ok(out)
 }
 
-/// What a recap was made from: the episode before and its subtitles.
-fn recap_about(prev: &Episode, lines: &[Line]) -> String {
-    let chars: usize = lines.iter().map(|l| l.text.chars().count()).sum();
-    format!("{}:{}:{chars}", prev.id, lines.len())
+/// What a recap was made from: the episodes and their subtitles.
+fn recap_about(window: &[(Episode, Vec<Line>)]) -> String {
+    let parts: Vec<String> = window
+        .iter()
+        .map(|(e, lines)| format!("{}:{}:{}", e.id, lines.len(), lines.iter().map(|l| l.text.chars().count()).sum::<usize>()))
+        .collect();
+    format!("arcs|{}", parts.join(","))
 }
 
-fn recap_view(prev: &Episode, lines: &[Line], text: &str, chosen: &[usize]) -> Value {
+fn recap_view(window: &[(Episode, Vec<Line>)], recap: &Recap) -> Value {
+    let mut clips = Vec::new();
+    for &(number, line) in &recap.moments {
+        let Some((e, lines)) = window.iter().find(|(e, _)| e.number == number) else { continue };
+        for m in moments(lines, &[line]) {
+            clips.push(json!({
+                "start": m.start,
+                "end": m.end,
+                "lines": m.lines,
+                "episodeId": e.id,
+                "number": e.number,
+                "src": format!("/ep/{}?v={}", e.id, e.media_plan),
+                "playable": e.media_state == "ready",
+                "nudgeMs": e.subs_nudge_ms,
+            }));
+        }
+    }
     json!({
         "done": true,
-        "recap": text,
-        "moments": moments(lines, chosen),
-        "from": {
-            "id": prev.id,
-            "number": prev.number,
-            "src": format!("/ep/{}?v={}", prev.id, prev.media_plan),
-            "playable": prev.media_state == "ready",
-            "nudgeMs": prev.subs_nudge_ms,
-        },
+        "recap": recap.text(),
+        "arcs": recap.arcs,
+        "last": recap.last,
+        "lastNumber": window.last().map(|(e, _)| e.number),
+        "moments": clips,
     })
 }
 
-/// Whether a recap can be made for `episode` (there's an episode before it
-/// with subtitles), and whether one is ready.
+/// Whether a recap can be made for `episode` (the episode before it has
+/// subtitles), whether one is ready, and which episodes it covers.
 pub fn recap_state(backend: &Backend, episode: &Episode) -> Value {
-    let Ok(Some((prev, lines))) = before(backend, episode) else { return json!({ "possible": false }) };
-    let ready = backend.db.answer(episode.id, "recap", -1).ok().flatten().is_some_and(|a| a.about == recap_about(&prev, &lines));
-    json!({ "possible": true, "ready": ready, "beforeNumber": prev.number })
+    let Ok(window) = window(backend, episode) else { return json!({ "possible": false }) };
+    let (Some((first, _)), Some((last, _))) = (window.first(), window.last()) else { return json!({ "possible": false }) };
+    let ready = backend.db.answer(episode.id, "recap", -1).ok().flatten().is_some_and(|a| a.about == recap_about(&window));
+    json!({ "possible": true, "ready": ready, "beforeNumber": last.number, "fromNumber": first.number })
 }
 
 /// "Previously on" before `episode_id`: the kept recap, or an ask to follow
@@ -315,33 +420,40 @@ pub fn recap_state(backend: &Backend, episode: &Episode) -> Value {
 pub fn recap(backend: &Arc<Backend>, episode_id: i64, start: bool) -> Result<Value> {
     let episode = backend.db.episode(episode_id)?.ok_or_else(|| anyhow!("That episode isn’t in Telly any more"))?;
     let show = backend.db.show(episode.show_id)?.ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?;
-    let Some((prev, lines)) = before(backend, &episode)? else {
+    let window = window(backend, &episode)?;
+    if window.is_empty() {
         return Ok(json!({ "done": true, "error": "There’s no episode before this one with subtitles to recap." }));
-    };
-    let about = recap_about(&prev, &lines);
+    }
+    let about = recap_about(&window);
     if let Some(kept) = backend.db.answer(episode_id, "recap", -1)? {
         if kept.about == about {
-            let chosen: Vec<usize> = serde_json::from_str(&kept.extra).unwrap_or_default();
-            return Ok(recap_view(&prev, &lines, &kept.text, &chosen));
+            if let Ok(recap) = serde_json::from_str::<Recap>(&kept.text) {
+                return Ok(recap_view(&window, &recap));
+            }
         }
     }
     if !start {
         return Ok(json!({ "done": false }));
     }
-    let id = start_recap(backend, &show, &episode, prev, lines, about);
+    let id = start_recap(backend, &show, &episode, window, about);
     Ok(json!({ "ask": id }))
 }
 
-fn start_recap(backend: &Arc<Backend>, show: &Show, episode: &Episode, prev: Episode, lines: Vec<Line>, about: String) -> u64 {
-    // The recap shown before the episode before, for the story before it.
-    let earlier = backend.db.answer(prev.id, "recap", -1).ok().flatten().map(|a| a.text).unwrap_or_default();
-    let text: String = lines.iter().map(|l| l.text.as_str()).collect();
-    let prompt = recap_prompt(&show_title(show), episode.number, prev.number, &lines, &earlier, &names_line(backend, show, &text), answer_in(backend));
+fn start_recap(backend: &Arc<Backend>, show: &Show, episode: &Episode, window: Vec<(Episode, Vec<Line>)>, about: String) -> u64 {
+    // The recap shown before the first of these episodes, for the story before them.
+    let earlier = window
+        .first()
+        .and_then(|(e, _)| backend.db.answer(e.id, "recap", -1).ok().flatten())
+        .and_then(|a| serde_json::from_str::<Recap>(&a.text).ok().map(|r| r.text()))
+        .unwrap_or_default();
+    let text: String = window.iter().flat_map(|(_, lines)| lines.iter().map(|l| l.text.as_str())).collect();
+    let numbered: Vec<(i64, &[Line])> = window.iter().map(|(e, lines)| (e.number, lines.as_slice())).collect();
+    let prompt = recap_prompt(&show_title(show), episode.number, &numbered, &earlier, &names_line(backend, show, &text), answer_in(backend));
     let keeper = backend.clone();
     let episode_id = episode.id;
-    backend.asks.start(prompt, model(backend), "low", move |answer| {
-        if let Some((recap, chosen)) = parse_recap(answer) {
-            let _ = keeper.db.save_answer(episode_id, "recap", -1, &about, &recap, &serde_json::to_string(&chosen).unwrap_or_default());
+    backend.asks.start(prompt, model(backend), EFFORT, false, move |answer| {
+        if let Some(recap) = parse_recap(answer) {
+            let _ = keeper.db.save_answer(episode_id, "recap", -1, &about, &serde_json::to_string(&recap).unwrap_or_default(), "");
         }
     })
 }
@@ -377,12 +489,15 @@ pub fn prepare_next_recap(backend: &Arc<Backend>, episode_id: i64) {
     let Ok(episodes) = backend.db.episodes(episode.show_id) else { return };
     let Some(next) = episodes.iter().skip_while(|e| e.id != episode_id).nth(1).cloned() else { return };
     let Ok(Some(show)) = backend.db.show(episode.show_id) else { return };
-    let Ok(Some((prev, lines))) = before(backend, &next) else { return };
-    let about = recap_about(&prev, &lines);
+    let Ok(window) = window(backend, &next) else { return };
+    if window.is_empty() {
+        return;
+    }
+    let about = recap_about(&window);
     if backend.db.answer(next.id, "recap", -1).ok().flatten().is_some_and(|a| a.about == about) {
         return;
     }
-    start_recap(backend, &show, &next, prev, lines, about);
+    start_recap(backend, &show, &next, window, about);
 }
 
 /// How long since the show was last open, in ms, from when `open_player` saw it.
@@ -409,16 +524,24 @@ mod tests {
     }
 
     #[test]
-    fn recaps_number_the_lines_and_read_back_the_moments() {
+    fn recaps_cover_the_episodes_before_in_arcs() {
         let lines: Vec<Line> = (0..30).map(|i| line(i as f64 * 3.0, i as f64 * 3.0 + 2.0, &format!("台詞{i}"))).collect();
-        let p = recap_prompt("『FAIRY TAIL』", 5, 4, &lines, "Natsu fought.", "", "English");
-        assert!(p.contains("[3] 0:09 台詞3") && p.contains("<earlier>\nNatsu fought.\n</earlier>") && p.contains("Episode 4"));
-        let answer = "Here you go:\n{\"recap\": \"Lucy joined Fairy Tail.\", \"moments\": [2, 10, 29]}";
-        assert_eq!(parse_recap(answer), Some(("Lucy joined Fairy Tail.".into(), vec![2, 10, 29])));
+        let window: Vec<(i64, &[Line])> = vec![(3, &lines[..]), (4, &lines[..])];
+        let p = recap_prompt("『FAIRY TAIL』", 5, &window, "Lucy joined Fairy Tail.", "", "English");
+        assert!(p.contains("<episode number=\"3\">\n[0] 台詞0") && p.contains("<episode number=\"4\">"));
+        assert!(p.contains("Episodes 3 to 4") && p.contains("<earlier>\nLucy joined Fairy Tail.\n</earlier>"));
+        assert!(p.contains("\"arcs\"") && p.contains("Episode 4, the one I just left"));
+        let answer = "Sure:\n{\"arcs\": [{\"title\": \"The Lullaby flute\", \"episodes\": [3, 4], \"summary\": \"Erigor steals Lullaby.\"}], \"last\": \"Natsu wins.\", \"moments\": [{\"episode\": 3, \"line\": 2}, {\"episode\": 4, \"line\": 20}]}";
+        let recap = parse_recap(answer).unwrap();
+        assert_eq!(recap.arcs[0].title, "The Lullaby flute");
+        assert_eq!(recap.arcs[0].episodes, vec![3, 4]);
+        assert_eq!(recap.last, "Natsu wins.");
+        assert_eq!(recap.moments, vec![(3, 2), (4, 20)]);
+        assert!(recap.text().contains("The Lullaby flute: Erigor steals Lullaby.") && recap.text().contains("Last time: Natsu wins."));
         assert_eq!(parse_recap("no json here"), None);
         // Seven moments become six, keeping the first and the last.
-        let seven = "{\"recap\": \"r\", \"moments\": [3, 40, 90, 150, 200, 260, 330]}";
-        assert_eq!(parse_recap(seven).unwrap().1, vec![3, 40, 90, 200, 260, 330]);
+        let seven = "{\"last\": \"r\", \"moments\": [[1, 3], [1, 40], [2, 90], [2, 150], [3, 200], [3, 260], [4, 330]]}";
+        assert_eq!(parse_recap(seven).unwrap().moments, vec![(1, 3), (1, 40), (2, 90), (3, 200), (3, 260), (4, 330)]);
     }
 
     #[test]

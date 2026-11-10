@@ -5,7 +5,7 @@
   import Cover from "$lib/Cover.svelte";
   import Icon from "$lib/Icon.svelte";
   import { call, errorText, pickFile, setWindowTitle, type Anime, type EpisodeRow, type ShowView } from "$lib/api";
-  import { bytes, clock, mediaLabel, plural, statusOf, subsLabel } from "$lib/format";
+  import { bytes, clock, mediaLabel, plural, statusOf, subsHelp, subsLabel } from "$lib/format";
   import { app } from "$lib/state.svelte";
   import { toast } from "$lib/toast-store.svelte";
 
@@ -192,7 +192,7 @@
             {#if m.tone === "ok"}<Icon name="check" />{:else if ep.mediaState === "working"}<span class="spin"></span>{/if}
             <span>{m.text}{ep.duration > 0 ? ` · ${clock(ep.duration)}` : ""}</span>
           </span>
-          <span class="cell {tone(s.tone)}" title={ep.subsFile || ep.subsDetail}>
+          <span class="cell {tone(s.tone)}" title={subsHelp(ep.subsState, ep.subsDetail, ep.subsFile)}>
             {#if s.tone === "ok"}<Icon name="check" />{:else if ep.subsState === "working"}<span class="spin"></span>{/if}
             <span>{s.text}</span>
           </span>

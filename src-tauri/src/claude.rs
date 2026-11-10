@@ -1,19 +1,33 @@
 //! Claude, for "Explain this line" and "Previously on": the Claude Code on
-//! this PC, run as `claude -p` with no tools, so it uses your own Claude Code
-//! sign-in and only answers. Gromit Reader's claude.rs, reading Claude Code's
-//! stream-json the way Tidepool's Learn does, so an answer shows as it's written.
+//! this computer, run as `claude -p` with no tools, so it uses your own Claude
+//! Code sign-in and only answers. Gromit Reader's claude.rs, reading Claude
+//! Code's stream-json the way Tidepool's Learn does, so an answer shows as it's written.
+//!
+//! Claude Code takes 3 to 15 seconds to start, and Haiku then answers in one
+//! or two. So while the player is open Telly keeps one session started and
+//! past its first turn (`warm_up`), and Explain asks in it: the answer starts
+//! about a second after the question.
 
 use anyhow::{anyhow, Result};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const TIMEOUT: Duration = Duration::from_secs(240);
+
+/// The model Telly asks unless Settings says otherwise: the fastest and cheapest.
+pub const DEFAULT_MODEL: &str = "claude-haiku-5-5";
+/// A warm session answers this many questions, then a fresh one takes over,
+/// so its history stays short.
+const SESSION_QUESTIONS: usize = 12;
+/// A warm session nobody asked for this long is ended.
+const SESSION_IDLE: Duration = Duration::from_secs(30 * 60);
 
 /// One line: arguments with a line break can't be passed to a .cmd (an npm install's claude.cmd).
 pub const SYSTEM: &str = "You help someone learn Japanese by watching anime with Japanese subtitles. \
@@ -61,6 +75,8 @@ fn command(exe: &Path) -> Command {
     };
     // Away from any project, so no project's CLAUDE.md or settings come along.
     cmd.current_dir(std::env::temp_dir());
+    // Claude Code's update checks and telemetry cost seconds at every start.
+    cmd.env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1").env("DISABLE_AUTOUPDATER", "1");
     cmd
 }
 
@@ -131,16 +147,39 @@ fn check() -> Status {
 /// One question for Claude.
 pub struct Ask<'a> {
     pub prompt: &'a str,
-    /// A model name for --model (opus, sonnet, haiku…), or Claude Code's own default.
+    /// A model name for --model (claude-haiku-5-5…), or Claude Code's own default.
     pub model: Option<&'a str>,
     /// --effort: "low" answers in about a third of the time, for retelling and explaining.
     pub effort: Option<&'a str>,
+    /// Ask in the warm session (short questions); otherwise in a Claude Code of its own.
+    pub warm: bool,
+}
+
+/// The model's name as --model takes it: one word, or none for Claude Code's default.
+fn model_arg(model: Option<&str>) -> Option<String> {
+    model.map(str::trim).filter(|m| !m.is_empty() && !m.contains(char::is_whitespace)).map(str::to_string)
 }
 
 /// Asks Claude, calling `on_text` with each piece of the answer as it's
 /// written, and returns the whole answer. `stop` ends it early.
 pub fn ask(question: &Ask, mut on_text: impl FnMut(&str), stop: &Arc<AtomicBool>) -> Result<String> {
     let exe = find().ok_or_else(|| anyhow!("Claude Code isn’t installed on this computer (no claude command was found)."))?;
+    if question.warm {
+        let wanted = (model_arg(question.model), question.effort.map(str::to_string));
+        if let Some(session) = take_session(&wanted) {
+            match session.ask(question.prompt, &mut on_text, stop) {
+                Ok((answer, session)) => {
+                    put_back(session);
+                    return Ok(answer);
+                }
+                Err(e) if stop.load(Ordering::SeqCst) => return Err(e),
+                // The session broke before answering: ask in a Claude Code of its own instead.
+                Err(_) => {}
+            }
+        }
+        // Ready for the next question.
+        warm_up(question.model, question.effort);
+    }
     match run(&exe, question, true, &mut on_text, stop) {
         // An older Claude Code without --safe-mode or --effort: ask again with Gromit Reader's flags.
         Err(e) if format!("{e:#}").to_lowercase().contains("unknown option") => run(&exe, question, false, &mut on_text, stop),
@@ -160,8 +199,8 @@ fn run(exe: &Path, question: &Ask, modern: bool, on_text: &mut impl FnMut(&str),
         }
     }
     // A model name is one word; anything else can't go to a .cmd.
-    if let Some(model) = question.model.map(str::trim).filter(|m| !m.is_empty() && !m.contains(char::is_whitespace)) {
-        cmd.args(["--model", model]);
+    if let Some(model) = model_arg(question.model) {
+        cmd.args(["--model", &model]);
     }
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| anyhow!("Couldn’t start Claude Code: {e}"))?;
@@ -221,6 +260,157 @@ fn run(exe: &Path, question: &Ask, modern: bool, on_text: &mut impl FnMut(&str),
         None if stderr.trim().is_empty() => Err(anyhow!("Claude Code stopped without answering.")),
         None => Err(classify(&stderr)),
     }
+}
+
+// ---- the warm session ----------------------------------------------------------
+
+/// A Claude Code reading questions as stream-json from its stdin, already
+/// past its first turn.
+struct Session {
+    child: Child,
+    stdin: ChildStdin,
+    lines: Receiver<String>,
+    /// (model, effort) it was started with.
+    kind: (Option<String>, Option<String>),
+    asked: usize,
+    last_used: Instant,
+}
+
+static SESSION: Mutex<Option<Session>> = Mutex::new(None);
+static WARMING: AtomicBool = AtomicBool::new(false);
+
+impl Session {
+    fn start(model: Option<String>, effort: Option<String>) -> Result<Session> {
+        let exe = find().ok_or_else(|| anyhow!("no claude command"))?;
+        let mut cmd = command(&exe);
+        cmd.args(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages"]);
+        cmd.args(["--tools", "", "--no-session-persistence", "--system-prompt", SYSTEM, "--safe-mode", "--strict-mcp-config"]);
+        if let Some(effort) = &effort {
+            cmd.args(["--effort", effort]);
+        }
+        if let Some(model) = &model {
+            cmd.args(["--model", model]);
+        }
+        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+        let mut child = cmd.spawn()?;
+        let stdin = child.stdin.take().ok_or_else(|| anyhow!("no stdin"))?;
+        let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
+        let (tx, lines) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        let session = Session { child, stdin, lines, kind: (model, effort), asked: 0, last_used: Instant::now() };
+        // The first turn is where Claude Code finishes starting: get it over with now.
+        let (_, mut session) = session.ask("Reply with just OK.", &mut |_| {}, &Arc::new(AtomicBool::new(false)))?;
+        session.asked = 0;
+        Ok(session)
+    }
+
+    /// Asks one question in this session; gives the session back for the next one.
+    fn ask(mut self, prompt: &str, on_text: &mut impl FnMut(&str), stop: &Arc<AtomicBool>) -> Result<(String, Session)> {
+        let message = json!({ "type": "user", "message": { "role": "user", "content": prompt } });
+        let sent = writeln!(self.stdin, "{message}").and_then(|_| self.stdin.flush());
+        if let Err(e) = sent {
+            self.end();
+            return Err(anyhow!("the warm Claude Code had gone ({e})"));
+        }
+        let started = Instant::now();
+        let mut text = String::new();
+        loop {
+            if stop.load(Ordering::SeqCst) {
+                self.end();
+                return Err(anyhow!("Stopped."));
+            }
+            if started.elapsed() > TIMEOUT {
+                self.end();
+                return Err(anyhow!("Claude didn’t answer within {} seconds.", TIMEOUT.as_secs()));
+            }
+            match self.lines.recv_timeout(Duration::from_millis(150)) {
+                Ok(line) => match read_line(&line, &mut text, on_text) {
+                    Some(Ok(result)) => {
+                        self.asked += 1;
+                        self.last_used = Instant::now();
+                        let answer = if result.trim().is_empty() { text.trim().to_string() } else { result.trim().to_string() };
+                        return Ok((answer, self));
+                    }
+                    Some(Err(message)) => {
+                        self.end();
+                        return Err(classify(&message));
+                    }
+                    None => {}
+                },
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    self.end();
+                    return Err(anyhow!("the warm Claude Code stopped"));
+                }
+            }
+        }
+    }
+
+    fn end(mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// The warm session, if it's ready, was started for this model and effort, and is still fresh.
+fn take_session(kind: &(Option<String>, Option<String>)) -> Option<Session> {
+    let mut slot = SESSION.lock().ok()?;
+    let session = slot.take()?;
+    if session.kind != *kind || session.asked >= SESSION_QUESTIONS || session.last_used.elapsed() > SESSION_IDLE {
+        session.end();
+        return None;
+    }
+    Some(session)
+}
+
+fn put_back(session: Session) {
+    if session.asked >= SESSION_QUESTIONS {
+        let kind = session.kind.clone();
+        session.end();
+        warm_up(kind.0.as_deref(), kind.1.as_deref());
+        return;
+    }
+    if let Ok(mut slot) = SESSION.lock() {
+        if let Some(old) = slot.replace(session) {
+            old.end();
+        }
+    }
+}
+
+/// Starts a session in the background for the next question, unless one is
+/// ready (or starting) for this model and effort. The player calls this when it opens.
+pub fn warm_up(model: Option<&str>, effort: Option<&str>) {
+    let kind = (model_arg(model), effort.map(str::to_string));
+    if find().is_none() {
+        return;
+    }
+    if let Ok(mut slot) = SESSION.lock() {
+        match slot.as_ref() {
+            Some(s) if s.kind == kind && s.asked < SESSION_QUESTIONS && s.last_used.elapsed() < SESSION_IDLE => return,
+            Some(_) => {
+                if let Some(old) = slot.take() {
+                    old.end();
+                }
+            }
+            None => {}
+        }
+    }
+    if WARMING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    std::thread::spawn(move || {
+        if let Ok(session) = Session::start(kind.0, kind.1) {
+            put_back(session);
+        }
+        WARMING.store(false, Ordering::SeqCst);
+    });
 }
 
 /// Reads one line of stream-json (Tidepool's learn_cli.rs). Text goes to

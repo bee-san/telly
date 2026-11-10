@@ -178,7 +178,7 @@ export interface PlayerView {
   /** openPlayer only: how long since the show was last open, in ms (null the first time). */
   awayMs?: number | null;
   /** openPlayer only: whether there's an episode before this one to recap, and whether its recap is written. */
-  recap?: { possible: boolean; ready?: boolean; beforeNumber?: number };
+  recap?: { possible: boolean; ready?: boolean; beforeNumber?: number; fromNumber?: number };
 }
 
 /** An answer from Claude being written (ask), or written (text, done). */
@@ -192,19 +192,35 @@ export interface AskProgress {
 }
 
 /** A stretch of the episode before, played in "Previously on". */
+/** A stretch of an episode before, played in "Previously on". */
 export interface Moment {
   start: number;
   end: number;
   lines: Line[];
+  episodeId: number;
+  number: number;
+  src: string;
+  playable: boolean;
+  nudgeMs: number;
+}
+
+/** A part of the story in a recap, and the episodes it covers. */
+export interface StoryArc {
+  title: string;
+  episodes: number[];
+  summary: string;
 }
 
 export interface Recap {
   ask?: number;
   done?: boolean;
   error?: string;
+  /** The whole recap as plain text. */
   recap?: string;
+  arcs?: StoryArc[];
+  last?: string;
+  lastNumber?: number;
   moments?: Moment[];
-  from?: { id: number; number: number; src: string; playable: boolean; nudgeMs: number };
 }
 
 export interface ClaudeStatus {

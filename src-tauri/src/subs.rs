@@ -239,6 +239,27 @@ pub fn is_japanese(lines: &[Line]) -> bool {
     japanese * 2 > dialogue.len()
 }
 
+/// The share of dialogue lines that read as Japanese: some kana or kanji, and
+/// not mostly gaps (furigana set as lines of their own, as some TV-caption
+/// rips do) or Latin letters (English lines). 1 for a clean file.
+pub fn quality(lines: &[Line]) -> f64 {
+    let dialogue: Vec<&Line> = lines.iter().filter(|l| !l.sign && !l.text.trim().is_empty()).collect();
+    if dialogue.is_empty() {
+        return 0.0;
+    }
+    let good = dialogue
+        .iter()
+        .filter(|l| {
+            let chars: Vec<char> = l.text.chars().filter(|c| *c != '\n').collect();
+            let japanese = chars.iter().filter(|&&c| is_kana(c) || is_kanji(c)).count();
+            let gaps = chars.iter().filter(|c| c.is_whitespace()).count();
+            let latin = chars.iter().filter(|c| c.is_ascii_alphabetic()).count();
+            japanese >= 2 && gaps * 10 <= chars.len() * 3 && latin * 10 <= chars.len() * 3
+        })
+        .count();
+    good as f64 / dialogue.len() as f64
+}
+
 /// The text as a person reads it, furigana dropped (for matching a card's sentence).
 pub fn plain(text: &str) -> String {
     text.replace('\n', "")

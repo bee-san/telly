@@ -30,6 +30,34 @@ const MAX_CUTS: usize = 4;
 /// Blu-rays: every line back within 0.1 s, PAL speed-ups and cuts included).
 pub const VOICE_FILTER: &str = "highpass=f=200,lowpass=f=3400";
 
+/// FireRedVAD's rate: 16 kHz.
+pub const FIRERED_RATE: u32 = 16_000;
+
+/// Spans of speech, in seconds, from FireRedVAD (FireRedTeam's detector, a
+/// small DFSMN network): on FLEURS-VAD it finds 96% of speech where WebRTC's
+/// finds 36%, with as few false alarms. `samples` are 16 kHz mono.
+pub fn firered_spans(samples: &[i16]) -> anyhow::Result<Vec<(f64, f64)>> {
+    let fail = |e: firered_vad::Error| anyhow::anyhow!("FireRedVAD: {e}");
+    let mut vad = firered_vad::Vad::bundled().map_err(fail)?;
+    let mut spans = Vec::new();
+    let mut buffer: Vec<f32> = Vec::with_capacity(16_000);
+    for chunk in samples.chunks(16_000) {
+        buffer.clear();
+        buffer.extend(chunk.iter().map(|&s| s as f32 / 32768.0));
+        let mut next = vad.push_samples(&buffer).map_err(fail)?;
+        while let Some(segment) = next {
+            spans.push((segment.start().as_secs_f64(), segment.end().as_secs_f64()));
+            next = vad.push_samples(&[]).map_err(fail)?;
+        }
+    }
+    let mut next = vad.finish().map_err(fail)?;
+    while let Some(segment) = next {
+        spans.push((segment.start().as_secs_f64(), segment.end().as_secs_f64()));
+        next = vad.push_samples(&[]).map_err(fail)?;
+    }
+    Ok(spans)
+}
+
 /// Spans of speech, in seconds.
 pub fn voice_spans(samples: &[i16]) -> Vec<(f64, f64)> {
     voice_spans_with(samples, 3)
@@ -100,6 +128,25 @@ pub fn coverage(lines: &[(f64, f64)], speech: &[(f64, f64)]) -> f64 {
         }
     }
     covered / total
+}
+
+/// A quick look at how well `lines` could fit `reference` with one shift: the
+/// best of every second's shift within five minutes, in spreads above the
+/// rest. Under a millisecond a file, so hundreds can be screened for the few
+/// worth a full sync (a season whose numbering jumps).
+pub fn quick_fit(lines: &[(f64, f64)], reference: &[(f64, f64)]) -> f64 {
+    let mut sorted: Vec<(f64, f64)> = lines.iter().copied().filter(|(s, e)| e > s).collect();
+    sorted.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let total: f64 = sorted.iter().map(|(s, e)| e - s).sum();
+    if total <= 0.0 || reference.is_empty() {
+        return 0.0;
+    }
+    let fits: Vec<f64> = (-300..=300).map(|k| covered_at(&sorted, reference, k as f64) / total).collect();
+    let n = fits.len() as f64;
+    let mean = fits.iter().sum::<f64>() / n;
+    let spread = (fits.iter().map(|f| (f - mean).powi(2)).sum::<f64>() / n).sqrt();
+    let best = fits.iter().cloned().fold(0.0, f64::max);
+    if spread <= 1e-9 { 0.0 } else { (best - mean) / spread }
 }
 
 /// The extra shift (within half a second) that puts `lines` in the middle of
@@ -297,14 +344,42 @@ pub struct Synced {
     pub ratio: f64,
     /// How many different shifts the lines got.
     pub shifts: usize,
+    /// How far the fit stands above chance (what `score` comes from).
+    #[serde(skip)]
+    pub standing: Standing,
 }
 
-/// Times `lines` to the speech in an episode `length` seconds long.
+/// How sure a fit is, for the timing it's matched to: how many spreads above
+/// chance scores 0 and 1, and how high a file must stand with one shift before
+/// Telly looks for cuts (cuts let a file that doesn't belong fit in pieces).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Calibration {
+    pub zero: f64,
+    pub full: f64,
+    pub cuts_from: f64,
+}
+
+impl Calibration {
+    /// WebRTC's view of the speech, which hears music too: files that belong
+    /// stand 4 to 10 up, another episode's 2 or 3.
+    pub const NOISY: Calibration = Calibration { zero: 2.0, full: 6.0, cuts_from: 2.5 };
+    /// The rip's own subtitles, or FireRedVAD's view of the speech. Over all
+    /// 286 episodes of Fairy Tail, files that belong stood 6.5 to 17 up with
+    /// one shift; files that don't, at most 5.4, and only by fitting in pieces.
+    pub const CLEAN: Calibration = Calibration { zero: 5.0, full: 7.5, cuts_from: 7.0 };
+}
+
+/// Times `lines` to the speech in an episode `length` seconds long (WebRTC's).
 pub fn sync(lines: &[Line], speech: &[(f64, f64)], length: f64) -> Synced {
+    sync_with(lines, speech, length, &Calibration::NOISY)
+}
+
+/// Times `lines` to `speech` (speech, or another subtitle track's timing), scored by `cal`.
+pub fn sync_with(lines: &[Line], speech: &[(f64, f64)], length: f64, cal: &Calibration) -> Synced {
     let dialogue: Vec<usize> = (0..lines.len()).filter(|&i| !lines[i].sign).collect();
     let spans: Vec<(f64, f64)> = dialogue.iter().map(|&i| (lines[i].start, lines[i].end)).collect();
     if spans.is_empty() || speech.is_empty() {
-        return Synced { lines: lines.to_vec(), score: 0.0, offset_ms: 0, ratio: 1.0, shifts: 0 };
+        return Synced { lines: lines.to_vec(), score: 0.0, offset_ms: 0, ratio: 1.0, shifts: 0, standing: Standing::default() };
     }
     let reference = spans_of(speech);
     let incoming = spans_of(&spans);
@@ -339,7 +414,7 @@ pub fn sync(lines: &[Line], speech: &[(f64, f64)], length: f64) -> Synced {
     let (mut ratio, mut one_s, plain) = fits[0];
     if let Some(&(r, shift, z)) = fits[1..].iter().max_by(|a, b| a.2.total_cmp(&b.2)) {
         // A speed change must fit convincingly on its own, not just beat a poor fit.
-        if z > plain + 2.0 && z >= 4.0 {
+        if z > plain + 2.0 && z >= 4.0_f64.max(cal.cuts_from) {
             (ratio, one_s) = (r, shift);
         }
     }
@@ -366,7 +441,7 @@ pub fn sync(lines: &[Line], speech: &[(f64, f64)], length: f64) -> Synced {
     let split_spans = |split: &[f64]| -> Vec<(f64, f64)> { spans.iter().zip(split).map(|(&(s, e), d)| (s * ratio + d, e * ratio + d)).collect() };
     let z_split = standing(&split_spans(&split), speech, length);
     let jumps = extra.windows(2).filter(|w| (w[1] - w[0]).abs() > 0.05).count();
-    let use_split = (1..=MAX_CUTS).contains(&jumps) && z_one.above >= 2.5 && z_split.above > z_one.above + 0.3;
+    let use_split = (1..=MAX_CUTS).contains(&jumps) && z_one.above >= cal.cuts_from && z_split.above > z_one.above + 0.3;
     if std::env::var_os("TELLY_SYNC_DEBUG").is_some() {
         eprintln!("sync: ratio {ratio:.4} shift {one_s:+.2} one {z_one:?} split {z_split:?} jumps {jumps} → {}", if use_split { "split" } else { "one" });
     }
@@ -386,7 +461,7 @@ pub fn sync(lines: &[Line], speech: &[(f64, f64)], length: f64) -> Synced {
         out.push(l);
     }
     out.sort_by(|a, b| a.start.total_cmp(&b.start));
-    Synced { lines: out, score: score_of(z), offset_ms: (one_s * 1000.0).round() as i64, ratio, shifts }
+    Synced { lines: out, score: score_with(z, cal), offset_ms: (one_s * 1000.0).round() as i64, ratio, shifts, standing: z }
 }
 
 /// The score shown (0 to 1): 2 spreads above the moved fits or less is chance,
@@ -394,7 +469,11 @@ pub fn sync(lines: &[Line], speech: &[(f64, f64)], length: f64) -> Synced {
 /// to the episode scored 0.85 to 1, another episode's 0 to 0.15. A fit that's
 /// no peak of its own (`alone` under 0.3) can't count as synced.
 pub fn score_of(z: Standing) -> f64 {
-    let score = ((z.above - 2.0) / 4.0).clamp(0.0, 1.0);
+    score_with(z, &Calibration::NOISY)
+}
+
+pub fn score_with(z: Standing, cal: &Calibration) -> f64 {
+    let score = ((z.above - cal.zero) / (cal.full - cal.zero)).clamp(0.0, 1.0);
     if z.alone < 0.3 { score.min(0.45) } else { score }
 }
 

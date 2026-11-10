@@ -432,6 +432,96 @@ pub fn read_audio_filtered(
 }
 
 /// A subtitle track inside the rip, as text (for rips that carry Japanese subtitles).
+/// Subtitle codecs that are pictures: no text, but each shows at an exact time.
+pub fn picture_codec(codec: &str) -> bool {
+    matches!(codec, "hdmv_pgs_subtitle" | "dvd_subtitle" | "dvb_subtitle" | "xsub")
+}
+
+/// One of the rip's own subtitle tracks, by when its subtitles show.
+#[derive(Clone, Debug, Default)]
+pub struct TrackTiming {
+    pub index: i64,
+    pub title: String,
+    pub language: String,
+    pub codec: String,
+    /// When each subtitle shows, in seconds, in order.
+    pub events: Vec<(f64, f64)>,
+}
+
+/// When the subtitles of each of the rip's subtitle tracks show, whatever
+/// their language, pictures included: the timing a release's own subtitles
+/// give its dialogue. Picture tracks are read from the container's packets
+/// (one ffprobe pass, nothing decoded): a packet with a picture starts a
+/// subtitle, which lasts its duration or until the next packet (the one that
+/// clears it). Text tracks are decoded, so their signs can be left out.
+pub fn subtitle_timings(ffmpeg: &Path, ffprobe: &Path, path: &Path, probe: &Probe) -> Result<Vec<TrackTiming>> {
+    let mut out: Vec<TrackTiming> = probe
+        .subtitles
+        .iter()
+        .map(|s| TrackTiming { index: s.index, title: s.title.clone(), language: s.language.clone(), codec: s.codec.clone(), events: Vec::new() })
+        .collect();
+    if out.iter().any(|t| picture_codec(&t.codec)) {
+        let answer = command(ffprobe)
+            .args(["-v", "error", "-select_streams", "s", "-show_entries", "packet=stream_index,pts_time,duration_time,size", "-of", "json"])
+            .arg(path)
+            .output()
+            .context("running ffprobe")?;
+        let json: Value = serde_json::from_slice(&answer.stdout).context("reading ffprobe’s packets")?;
+        let num = |v: &Value| v.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| v.as_f64());
+        let mut packets: Vec<(i64, f64, f64, f64)> = json["packets"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|p| Some((p["stream_index"].as_i64()?, num(&p["pts_time"])?, num(&p["duration_time"]).unwrap_or(0.0), num(&p["size"]).unwrap_or(0.0))))
+                    .collect()
+            })
+            .unwrap_or_default();
+        packets.sort_by(|a, b| a.1.total_cmp(&b.1));
+        for track in out.iter_mut().filter(|t| picture_codec(&t.codec)) {
+            let mut open: Option<f64> = None;
+            for &(_, pts, duration, size) in packets.iter().filter(|p| p.0 == track.index) {
+                if let Some(start) = open.take() {
+                    track.events.push((start, pts.min(start + 15.0)));
+                }
+                // A clearing packet is a few dozen bytes; a picture, thousands.
+                if size >= 100.0 {
+                    if duration >= 0.05 {
+                        track.events.push((pts, pts + duration.min(15.0)));
+                    } else {
+                        open = Some(pts);
+                    }
+                }
+            }
+        }
+    }
+    for track in out.iter_mut().filter(|t| !picture_codec(&t.codec)) {
+        let format = if matches!(track.codec.as_str(), "ass" | "ssa") { "ass" } else { "srt" };
+        let Ok(text) = read_subtitle_track(ffmpeg, path, track.index, format) else { continue };
+        let Ok(lines) = crate::subs::parse(&format!("track.{format}"), text.as_bytes()) else { continue };
+        track.events = lines.iter().filter(|l| !l.sign).map(|l| (l.start, l.end)).collect();
+    }
+    for track in &mut out {
+        track.events.sort_by(|a, b| a.0.total_cmp(&b.0));
+    }
+    Ok(out)
+}
+
+/// The track whose timing follows the dialogue best: not one only for signs,
+/// songs or forced lines, and of those the one with the most subtitles.
+pub fn dialogue_track(timings: &[TrackTiming]) -> Option<&TrackTiming> {
+    let partial = |t: &TrackTiming| {
+        let title = t.title.to_lowercase();
+        ["sign", "song", "forced", "karaoke", "lyric"].iter().any(|w| title.contains(w)) && !title.contains("full") && !title.contains("dialog")
+    };
+    let enough = |t: &&TrackTiming| t.events.len() >= 60;
+    timings
+        .iter()
+        .filter(enough)
+        .filter(|t| !partial(t))
+        .max_by_key(|t| t.events.len())
+        .or_else(|| timings.iter().filter(enough).max_by_key(|t| t.events.len()))
+}
+
 pub fn read_subtitle_track(ffmpeg: &Path, path: &Path, stream_index: i64, format: &str) -> Result<String> {
     let out = command(ffmpeg)
         .args(["-nostdin", "-hide_banner", "-v", "error", "-i"])

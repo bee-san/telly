@@ -4,10 +4,10 @@ An anime player for learning Japanese, for Windows. Point it at a folder of rips
 
 - works out the show on AniList and puts the episodes in order
 - gets each episode playable, converting what WebView2 can't play (MPEG-2 DVD rips, 10-bit HEVC) in the background, next episode first
-- finds Japanese subtitles on [Jimaku](https://jimaku.cc) and syncs them to your rip, the way alass does
+- finds Japanese subtitles on [Jimaku](https://jimaku.cc) and syncs them to your rip: to the rip's own subtitles when it has any (in any language, pictures included), or to its speech, heard by [FireRedVAD](https://github.com/FireRedTeam/FireRedVAD)
 - shows them as lines you can look up with [Hachidori](https://github.com/bee-san/hachidori), pausing while you read and carrying on when you move back to the picture
 - finishes the cards you mine with an animated AVIF of the line and its audio as Opus
-- explains the line on screen when you press **E**, and when you come back to a show, opens on **Previously on**: a recap of the episode before and its key moments to watch again (both by Claude, through the Claude Code on your computer)
+- explains the line on screen when you press **E**, and when you come back to a show, opens on **Previously on**: the last few episodes in their arcs, the one you left, and key moments to watch again (both by Claude, through the Claude Code on your computer)
 - makes a dictionary of the characters in what you're watching, the way [characterdictionary.tokyo](https://characterdictionary.tokyo) does, adds it to Hachidori and colours their names in the subtitles
 - logs what you watch for [Tidepool](https://github.com/bee-san/tidepool)
 
@@ -37,10 +37,12 @@ Hachidori in Telly links to the Hachidori in your browser, so lookups use your d
 
 ## Explain and Previously on
 
-Both use [Claude Code](https://claude.com/claude-code), installed and signed in on this computer: Telly runs `claude -p` with no tools, the way Gromit Reader does, so it uses your own sign-in and needs no API key. Settings → Claude picks the model and whether answers are in English or simple Japanese.
+Both use [Claude Code](https://claude.com/claude-code), installed and signed in on this computer: Telly runs `claude -p` with no tools, the way Gromit Reader does, so it uses your own sign-in and needs no API key. It asks Haiku 5.5 unless Settings → Claude picks another model, and answers in English or simple Japanese.
+
+Claude Code takes 3 to 15 seconds to start, longer than Haiku takes to answer. So while the player is open Telly keeps one Claude Code started and past its first turn, and Explain asks in it: the answer starts 1 to 3 seconds after you press E and is complete within 4 (measured over 12 questions: first words after 1.1 to 3.3 s, the whole answer after 1.8 to 4.1 s, against 24 s starting Claude Code for each question with its default model). What's left is Haiku's own time to answer. Telly also starts Claude Code with its non-essential traffic off (update checks, telemetry), which saves a few seconds more.
 
 - **Explain** (E, or Explain on a transcript line) pauses and explains the line: a translation, then the words and grammar a learner might trip on. The answer shows as it's written and is saved, so asking again is instant.
-- **Previously on** (P, or Recap) recaps the episode before from its subtitles, with the story so far from the recap before it, and picks up to 6 lines whose moments play back as clips (Watch the Moments) before the episode starts. It opens by itself when you come back to a show after 8 hours (Settings → Claude), unless you're picking up in the middle of an episode. It's written when you leave after most of an episode, so it's ready next time.
+- **Previously on** (P, or Recap) covers the episodes before this one, the one you left and the five before it: the story cut into its arcs, each with what happens in it and the episodes it spans, then **Last time** for the episode you left, then up to 6 moments from them to play back as clips (Watch the Moments) before the episode starts. It opens by itself when you come back to a show after 8 hours (Settings → Claude), unless you're picking up in the middle of an episode. It's written when you leave after most of an episode, so it's ready next time (Haiku takes about 20 seconds for six episodes).
 
 ## Character names
 
@@ -48,7 +50,19 @@ Telly fetches the casts of the 6 shows you watched last from AniList, with their
 
 It goes into Hachidori as **Telly characters** the way SubMiner sends its own: through Hachidori's upload requests, from Telly's Hachidori, which passes it on to the Hachidori in your browser once they're linked. A new copy replaces the last. Settings → Character names shows where it is, and can leave spoilers out (the default) or in.
 
-`cargo run --release --example names_check -- <AniList id> <folder>` builds one show's dictionary on its own, to see what it holds.
+`cargo run --profile measure --example names_check -- <AniList id> <folder>` builds one show's dictionary on its own, to see what it holds.
+
+## How subtitles are matched
+
+Telly tries every file Jimaku has that could be the episode's, syncs each to the episode, and keeps the one that fits best.
+
+- **What files are matched to:** the rip's own subtitles when it has any, in any language. Picture subtitles (PGS, as on most Blu-ray rips) are read from the container's packets: no OCR is needed, only when each subtitle shows. They're timed to this very video, so they place a file far more precisely than the speech does, and in a few seconds. A rip without subtitles is matched to its speech, heard by FireRedVAD (FireRedTeam's detector, which finds 96% of speech where WebRTC's finds 36%, without music fooling it).
+- **Which number:** a show added as one folder holding several seasons gets its files looked for under Telly's number, the number in the file's name, and that number after the season folders before it, since Jimaku's packs often number a whole run from 1. A season folder's own AniList entry is looked up on Jimaku too. What fits teaches the folder its numbering, and when nothing expected fits, every file is screened and the best few synced in full: a release whose order differs (Judas's Fairy Tail 2014 runs in another order than Netflix's from its 48th episode) still finds each episode's file.
+- **Which file:** one that fits beats one that doesn't; then clean Japanese text (not furigana or English set as lines); then a file made for this very release (the same release tag); then the smaller shift; then the tighter fit. A file has to fit in one piece before Telly looks for cuts, so another episode's file can't be bent into place. When nothing fits, Telly keeps nothing rather than the wrong episode's lines.
+
+Measured on Fairy Tail's 286 Judas Blu-ray episodes: every one of the 277 TV episodes synced (files that belong stood 6.3 to 17 spreads above chance, files that don't at most 5.4), Judas-timed files chosen where they exist (1 to 40), Netflix's elsewhere, and the 9 OVAs, for which Jimaku has nothing, left without. Synced by speech instead, the same files came within 0.15 s.
+
+`cargo run --profile measure --example sync_real -- <telly.sqlite> <jimaku folder> 1-286` runs this over a library, read-only, and says what Telly would keep for each episode.
 
 ## Whisper
 
@@ -71,6 +85,7 @@ Your rips are never moved or changed.
 - `cargo test --manifest-path src-tauri/Cargo.toml --lib` runs the backend's tests.
 - `npm run check` type-checks the frontend.
 - `npm run devserver -- dev-data` runs the backend over HTTP on port 1430, and `npm run dev` then works in an ordinary browser, so the UI can be driven without the app (no Hachidori there).
+- `--profile measure` builds optimised but without the release build's link-time optimisation, for the measuring examples: `sync_real` (subtitle matching over a library), `recap_check` (one Previously on from real subtitles), `explain_check` (how soon Explain answers in the warm session) and `names_check` (one show's character dictionary).
 
 Ports: 8771 is Hachidori Relay's (Telly runs its own while Anki is closed), 8773 is where Telly listens for Anki Beacon.
 

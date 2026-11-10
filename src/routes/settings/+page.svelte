@@ -271,9 +271,10 @@
     <div class="rows two">
       <label class="field"><span>Model</span>
         <select class="input" value={str("claude.model", "")} onchange={(e) => set("claude.model", e.currentTarget.value)}>
-          <option value="">Claude Code’s default</option>
+          <option value="">Haiku 5.5 (fastest, cheapest)</option>
+          <option value="claude-sonnet-5-5">Sonnet 5.5</option>
           <option value="claude-opus-5-5">Opus 5.5</option>
-          <option value="claude-sonnet-5-5">Sonnet 5.5 (answers sooner)</option>
+          <option value="default">Claude Code’s default</option>
         </select>
       </label>
       <label class="field"><span>Answer language</span>
@@ -283,7 +284,7 @@
         </select>
       </label>
     </div>
-    <p class="muted">Claude Code’s default is usually its most capable model, which takes longer to start answering. Sonnet 5.5 starts in about half the time.</p>
+    <p class="muted">Telly keeps one Claude Code started while the player is open, so Explain answers in a second or two with Haiku. Bigger models think longer before answering.</p>
     <div class="rows">
       <label class="check"><input type="checkbox" checked={bool("recap.enabled", true)} onchange={(e) => set("recap.enabled", e.currentTarget.checked)} /><span>Show “Previously on” after time away from a show<small>It’s written once most of an episode has played, so it’s ready next time.</small></span></label>
       <label class="field narrow"><span>Time away</span>

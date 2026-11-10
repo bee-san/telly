@@ -180,6 +180,23 @@ pub fn fetch_all(key: &str, entry_id: i64, dir: &Path) -> Result<Vec<Local>> {
     Ok(out)
 }
 
+/// The files of an entry already downloaded to `dir` (what `fetch_all` left
+/// there), with the episode each name gives, without asking Jimaku.
+pub fn cached(dir: &Path) -> Vec<Local> {
+    walk(dir)
+        .into_iter()
+        .map(|path| {
+            let file = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let zip = path.parent().filter(|p| p != &dir).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().trim_end_matches(".d").to_string());
+            let name = match zip {
+                Some(zip) => format!("{zip} › {file}"),
+                None => file.clone(),
+            };
+            Local { episode: episode_of(&file), name, path }
+        })
+        .collect()
+}
+
 fn walk(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir(dir) else { return out };
@@ -237,8 +254,17 @@ pub fn candidates(all: &[Local], episode: i64, episodes_in_show: usize) -> Vec<L
         (other_language, !marked, extension(&l.name) != "srt", lower.len())
     };
     found.sort_by_key(rank);
-    found.dedup_by(|a, b| std::fs::metadata(&a.path).map(|m| m.len()).ok() == std::fs::metadata(&b.path).map(|m| m.len()).ok() && extension(&a.name) == extension(&b.name));
-    found
+    // The same file twice (loose and in a pack). Only the same bytes count:
+    // a file retimed for another release has timestamps of the same width,
+    // so the same size, and is a file of its own.
+    let mut kept: Vec<(Vec<u8>, Local)> = Vec::new();
+    for local in found {
+        let bytes = std::fs::read(&local.path).unwrap_or_default();
+        if !kept.iter().any(|(b, k)| *b == bytes && extension(&k.name) == extension(&local.name)) {
+            kept.push((bytes, local));
+        }
+    }
+    kept.into_iter().map(|(_, l)| l).collect()
 }
 
 #[cfg(test)]

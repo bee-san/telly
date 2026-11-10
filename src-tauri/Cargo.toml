@@ -38,6 +38,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 # Subtitle sync: alass's aligner, and the WebRTC voice detector alass uses.
 alass-core = "2"
 webrtc-vad = "0.4"
+firered-vad = "0.1.0"
 
 [profile.release]
 codegen-units = 1
@@ -45,6 +46,15 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+# Optimised but quick to rebuild, for the measuring examples (sync_real,
+# names_check): cargo run --profile measure --example sync_real -- ...
+[profile.measure]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+panic = "unwind"
 
 # The aligner and the voice detector are slow unoptimised, and dev builds sync
 # whole episodes.

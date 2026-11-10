@@ -55,13 +55,13 @@ export function subsLabel(state: string, score: number | null): { text: string; 
     case "synced":
       return score === null ? { text: "Made by Whisper", tone: "ok" } : { text: `Synced · ${Math.round(score * 100)}%`, tone: "ok" };
     case "check":
-      return { text: `Needs a look · ${Math.round((score ?? 0) * 100)}%`, tone: "warn" };
+      return { text: `Timing unsure · ${Math.round((score ?? 0) * 100)}%`, tone: "warn" };
     case "working":
       return { text: "Syncing…", tone: "wait" };
     case "pending":
       return { text: "Waiting", tone: "wait" };
     case "none":
-      return { text: "None on Jimaku", tone: "bad" };
+      return { text: "None found", tone: "bad" };
     case "nokey":
       return { text: "Needs a Jimaku key", tone: "bad" };
     case "whisper":
@@ -83,6 +83,21 @@ export function mediaLabel(state: string, plan: string, progress: number): { tex
       return { text: "Failed", tone: "bad" };
     default:
       return { text: "Waiting", tone: "wait" };
+  }
+}
+
+/** What a subtitle state means, for its tooltip. */
+export function subsHelp(state: string, detail: string, file: string): string {
+  const what = [file, detail].filter(Boolean).join(" · ");
+  switch (state) {
+    case "synced":
+      return `Synced: the lines fit this video. ${what}`;
+    case "check":
+      return `Telly found subtitles but isn’t sure they’re in time with this video. Watch a little, and use Sync ▾ in the player if they’re off. ${what}`;
+    case "none":
+      return `${detail || "No subtitles found for this episode."} Make Subtitles With Whisper can make some.`;
+    default:
+      return what;
   }
 }
 

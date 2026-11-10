@@ -138,7 +138,7 @@ fn show_from_row(r: &Row) -> rusqlite::Result<Show> {
     })
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Episode {
     pub id: i64,

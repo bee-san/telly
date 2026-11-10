@@ -396,7 +396,7 @@ export interface PremineWord {
   reading: string;
   /** Its rank in your frequency dictionary: lower is more common. */
   rank: number | null;
-  /** Times it comes up in these episodes. */
+  /** Times it comes up in the show. */
   count: number;
   episodeId: number;
   number: number;
@@ -408,21 +408,18 @@ export interface PremineWord {
 }
 
 export interface PremineList {
-  numbers: number[];
+  /** Episodes with no subtitles yet. Until there are none, there are no words. */
   withoutSubs: number[];
-  /** Words you have no card for, most useful first. */
+  /** Words you don't know yet, most used first. */
   words: PremineWord[];
-  /** The share of the words used that you know (0 to 1). */
-  known: number;
-  /** Words with cards that aren't mature yet. */
-  learning: number;
+  /** Uses of words in the show, and how many are words you know. */
+  uses: number;
+  knownUses: number;
   deck: string;
 }
 
 export interface PremineStatus {
   show: number;
-  from: number;
-  count: number;
   working: boolean;
   step: string;
   progress: number;

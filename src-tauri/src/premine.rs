@@ -1,5 +1,6 @@
-//! Premining: before you watch, the words in the next episodes that you don't
-//! know yet, most useful first, made into cards in one go.
+//! Premining: before you watch a show, the fewest words that take you to the
+//! share of its words you choose to know, made into cards in one go, each with
+//! the line it first comes up in. Every episode needs its subtitles first.
 //!
 //! - Words: each synced line is split by Lindera (IPADIC, built into Telly).
 //!   Particles, auxiliaries, pronouns, この and その, numbers, symbols, proper
@@ -10,9 +11,9 @@
 //!   they're what a lookup would show: Telly's own (own_hachidori.rs), or,
 //!   when Telly is linked to the Hachidori in your browser, that one through
 //!   the Yomitan API Hachidori Relay serves on port 19633.
-//! - Anki says what you have. A note whose word field holds the headword, or
-//!   its reading, is a card you have, so premining leaves the word out. A card
-//!   21 days or more apart is mature: its word is one you know.
+//! - Anki says what you know. A note whose word field holds the headword, or
+//!   its reading, with a card you've studied (young or mature), is a word you
+//!   know. A word whose only cards are new is mined again.
 //! - Cards are made in your Hachidori card format (its first Template), in a
 //!   Premined subdeck of the show's deck (Type::Fairy Tail::Premined), with
 //!   the line the word came from. Telly's
@@ -42,8 +43,6 @@ const API: &str = "http://127.0.0.1:19633";
 fn api_address() -> String {
     std::env::var("TELLY_YOMITAN_API").unwrap_or_else(|_| API.to_string())
 }
-/// A card this many days apart or more is mature: its word counts as known.
-const MATURE_DAYS: i64 = 21;
 /// Words asked of Hachidori at a time: each answer carries every dictionary's
 /// entries, and the relay waits 30 seconds at most for one.
 const LOOKUPS_PER_REQUEST: usize = 40;
@@ -72,7 +71,7 @@ pub struct Word {
     pub headword: String,
     pub reading: String,
     pub rank: Option<i64>,
-    /// Times it comes up in these episodes.
+    /// Times it comes up in the show.
     pub count: usize,
     pub episode_id: i64,
     pub number: i64,
@@ -84,19 +83,17 @@ pub struct Word {
     pub after: String,
 }
 
-/// The words to premine in some episodes.
+/// The words to premine in a show.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct List {
-    pub numbers: Vec<i64>,
-    /// Episodes in the range that have no subtitles yet.
+    /// Episodes that have no subtitles yet. Until there are none, there are no words.
     pub without_subs: Vec<i64>,
-    /// Words you have no card for, most useful first.
+    /// Words you don't know yet, most used first.
     pub words: Vec<Word>,
-    /// The share of the words used in these episodes that you know (0 to 1).
-    pub known: f64,
-    /// Words with cards that aren't mature yet.
-    pub learning: usize,
+    /// Uses of words in the show, and how many of them are words you know.
+    pub uses: usize,
+    pub known_uses: usize,
     /// Where cards go.
     pub deck: String,
 }
@@ -106,8 +103,6 @@ pub struct List {
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     pub show: i64,
-    pub from: i64,
-    pub count: i64,
     pub working: bool,
     /// "Reading Episode 4", "Making cards · 3 of 40".
     pub step: String,
@@ -445,23 +440,21 @@ fn word_search(field: &str, term: &Term) -> String {
     }
 }
 
-/// For each word: whether you have a card for it, and whether one is mature.
-fn what_you_have(url: &str, field: &str, terms: &[Term], step: &dyn Fn(f64)) -> Result<Vec<(bool, bool)>> {
+/// For each word: whether you know it, by a card you've studied (young or mature).
+fn what_you_know(url: &str, field: &str, terms: &[Term], step: &dyn Fn(f64)) -> Result<Vec<bool>> {
     let mut out = Vec::with_capacity(terms.len());
     for (k, chunk) in terms.chunks(CHECKS_PER_REQUEST).enumerate() {
         step(k as f64 * CHECKS_PER_REQUEST as f64 / terms.len().max(1) as f64);
-        let mut actions = Vec::new();
-        for term in chunk {
-            let search = word_search(field, term);
-            actions.push(json!({ "action": "findNotes", "params": { "query": search } }));
-            actions.push(json!({ "action": "findCards", "params": { "query": format!("{search} prop:ivl>={MATURE_DAYS}") } }));
-        }
+        let actions: Vec<Value> = chunk
+            .iter()
+            .map(|term| json!({ "action": "findCards", "params": { "query": format!("{} -is:new", word_search(field, term)) } }))
+            .collect();
         let results = anki::invoke(url, "multi", json!({ "actions": actions }))?;
         let list = results.as_array().cloned().unwrap_or_default();
         // AnkiConnect answers each action bare, or as {result, error} when it names a version.
         let found = |v: &Value| v.get("result").unwrap_or(v).as_array().is_some_and(|a| !a.is_empty());
         for i in 0..chunk.len() {
-            out.push((list.get(2 * i).is_some_and(found), list.get(2 * i + 1).is_some_and(found)));
+            out.push(list.get(i).is_some_and(found));
         }
     }
     Ok(out)
@@ -477,32 +470,40 @@ struct Use {
     to: usize,
 }
 
-/// The words to premine in `count` episodes of `show` from Episode `from`.
-fn make_list(backend: &Backend, show: &Show, from: i64, count: i64, step: &dyn Fn(&str, f64)) -> Result<List> {
-    step("Reading your card format", 0.0);
-    let format = card_format(backend)?;
-    let field = format.word_field();
-    let mut episodes: Vec<Episode> = backend.db.episodes(show.id)?.into_iter().filter(|e| e.number >= from).collect();
+/// The words to premine in `show`.
+fn make_list(backend: &Backend, show: &Show, step: &dyn Fn(&str, f64)) -> Result<List> {
+    let mut episodes: Vec<Episode> = backend.db.episodes(show.id)?;
     episodes.sort_by_key(|e| e.number);
-    episodes.truncate(count.max(1) as usize);
-    let cast: HashSet<String> = names::show_names(backend, show).into_iter().map(|n| n.term).collect();
+    let deck = premined_deck(backend, show);
 
-    // The words in every line.
+    // Every episode's lines; none of the words until every episode has them.
     let mut lines: Vec<Vec<Line>> = Vec::new();
-    let mut found: Vec<(usize, usize, Candidate)> = Vec::new();
     let mut without_subs = Vec::new();
     for (e, episode) in episodes.iter().enumerate() {
-        step(&format!("Reading Episode {}", episode.number), 0.05 + 0.15 * e as f64 / episodes.len() as f64);
+        step(&format!("Reading Episode {}", episode.number), 0.15 * e as f64 / episodes.len() as f64);
         let episode_lines: Vec<Line> = jobs::read_lines(backend, episode.id).into_iter().filter(|l| !l.sign).collect();
         if episode_lines.is_empty() {
             without_subs.push(episode.number);
         }
+        lines.push(episode_lines);
+    }
+    if !without_subs.is_empty() {
+        return Ok(List { without_subs, deck, ..Default::default() });
+    }
+
+    step("Reading your card format", 0.15);
+    let format = card_format(backend)?;
+    let field = format.word_field();
+    let cast: HashSet<String> = names::show_names(backend, show).into_iter().map(|n| n.term).collect();
+
+    // The words in every line.
+    let mut found: Vec<(usize, usize, Candidate)> = Vec::new();
+    for (e, episode_lines) in lines.iter().enumerate() {
         for (l, line) in episode_lines.iter().enumerate() {
             for candidate in candidates(&line.text)? {
                 found.push((e, l, candidate));
             }
         }
-        lines.push(episode_lines);
     }
 
     // What Hachidori makes of them.
@@ -537,18 +538,13 @@ fn make_list(backend: &Backend, show: &Show, from: i64, count: i64, step: &dyn F
         }
     }
     let url = cards::anki_url(backend);
-    let have = what_you_have(&url, &field, &order, &|p| step("Checking your cards in Anki", 0.8 + 0.2 * p))?;
-    let mature: HashSet<(String, String)> = order
-        .iter()
-        .zip(&have)
-        .filter(|(_, (_, mature))| *mature)
-        .map(|(t, _)| (t.headword.clone(), t.reading.clone()))
-        .collect();
-    let known_uses = uses.iter().filter(|(t, _)| mature.contains(&(t.headword.clone(), t.reading.clone()))).count();
+    let know = what_you_know(&url, &field, &order, &|p| step("Checking your cards in Anki", 0.8 + 0.2 * p))?;
 
+    let mut known_uses = 0;
     let mut words: Vec<(usize, Word)> = Vec::new();
-    for (term, (card, _)) in order.iter().zip(&have) {
-        if *card {
+    for (term, known) in order.iter().zip(&know) {
+        if *known {
+            known_uses += seen[&(term.headword.clone(), term.reading.clone())].1;
             continue;
         }
         let (first, count) = seen[&(term.headword.clone(), term.reading.clone())];
@@ -573,17 +569,10 @@ fn make_list(backend: &Backend, show: &Show, from: i64, count: i64, step: &dyn F
         ));
     }
     sort_words(&mut words);
-    Ok(List {
-        numbers: episodes.iter().map(|e| e.number).collect(),
-        without_subs,
-        known: if uses.is_empty() { 0.0 } else { known_uses as f64 / uses.len() as f64 },
-        learning: have.iter().filter(|(card, mature)| *card && !*mature).count(),
-        words: words.into_iter().map(|(_, w)| w).collect(),
-        deck: premined_deck(backend, show),
-    })
+    Ok(List { without_subs, words: words.into_iter().map(|(_, w)| w).collect(), uses: uses.len(), known_uses, deck })
 }
 
-/// Most useful first: the words that come up most in these episodes, then the
+/// Most useful first: the words that come up most in the show, then the
 /// most common anywhere (by your frequency dictionary), then the first seen.
 fn sort_words(words: &mut [(usize, Word)]) {
     words.sort_by(|(fa, a), (fb, b)| {
@@ -763,7 +752,8 @@ fn make_card(backend: &Backend, url: &str, format: &CardFormat, deck: &str, word
             "modelName": format.model,
             "fields": fields,
             "tags": ["telly::premine"],
-            "options": { "allowDuplicate": false, "duplicateScope": "collection", "duplicateScopeOptions": { "checkAllModels": true } },
+            // A word whose only cards are new gets another, with this show's line.
+            "options": { "allowDuplicate": true },
         }}),
     )?;
     note.as_i64().ok_or_else(|| anyhow!("Anki didn’t make the card"))
@@ -815,22 +805,21 @@ pub fn status(backend: &Backend) -> Status {
     backend.premining.status.lock().map(|s| s.clone()).unwrap_or_default()
 }
 
-/// Starts finding the words to premine in `count` episodes from Episode
-/// `from`, unless that list is being made or made already.
-pub fn start_list(backend: &Arc<Backend>, show_id: i64, from: i64, count: i64) -> Result<Status> {
+/// Starts finding the words to premine in a show, unless that list is being
+/// made or made already.
+pub fn start_list(backend: &Arc<Backend>, show_id: i64) -> Result<Status> {
     let show = backend.db.show(show_id)?.ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?;
     {
         let mut status = backend.premining.status.lock().map_err(|_| anyhow!("premining stopped"))?;
-        let same = status.show == show_id && status.from == from && status.count == count;
-        if status.working || (same && status.list.is_some()) {
+        if status.working || (status.show == show_id && status.list.is_some()) {
             return Ok(status.clone());
         }
-        *status = Status { show: show_id, from, count, working: true, step: "Starting".into(), ..Default::default() };
+        *status = Status { show: show_id, working: true, step: "Starting".into(), ..Default::default() };
     }
     let worker = backend.clone();
     std::thread::spawn(move || {
         let step = |text: &str, progress: f64| set(&worker, |s| (s.step, s.progress) = (text.to_string(), progress));
-        let result = make_list(&worker, &show, from, count, &step);
+        let result = make_list(&worker, &show, &step);
         set(&worker, |s| {
             s.working = false;
             match result {
@@ -842,8 +831,8 @@ pub fn start_list(backend: &Arc<Backend>, show_id: i64, from: i64, count: i64) -
     Ok(status(backend))
 }
 
-/// Starts making cards for `words`. When it's done, the list is made again so
-/// they drop out of it.
+/// Starts making cards for `words`. When it's done, they drop out of the list
+/// and count as known.
 pub fn start_cards(backend: &Arc<Backend>, words: Vec<Word>) -> Result<Status> {
     {
         let mut status = backend.premining.status.lock().map_err(|_| anyhow!("premining stopped"))?;
@@ -866,7 +855,9 @@ pub fn start_cards(backend: &Arc<Backend>, words: Vec<Word>) -> Result<Status> {
                 Ok((added, skipped)) => {
                     (s.added, s.skipped) = (added, skipped);
                     if let Some(list) = s.list.as_mut() {
-                        list.words.retain(|w| !made.contains(&(w.headword.clone(), w.reading.clone())));
+                        let mined = |w: &Word| made.contains(&(w.headword.clone(), w.reading.clone()));
+                        list.known_uses += list.words.iter().filter(|w| mined(w)).map(|w| w.count).sum::<usize>();
+                        list.words.retain(|w| !mined(w));
                     }
                 }
                 Err(e) => s.error = format!("{e:#}"),

@@ -165,7 +165,7 @@
             <span class="bar"><i style:width="{Math.round((100 * (card.subsReady < card.episodes ? card.subsReady : card.subsFound)) / Math.max(1, card.episodes))}%"></i></span>
           </span>
           <span class="grow"></span>
-          <button type="button" class="btn quiet" onclick={() => goto(`/premine?show=${id}`)} title="Make cards for the words ahead that you don’t know yet">Premine…</button>
+          <button type="button" class="btn quiet" onclick={() => goto(`/premine?show=${id}`)} title="Make cards for the words that take you to the share of the show you choose">Premine…</button>
           <button type="button" class="btn quiet" onclick={() => { matching = true; query = card?.titleRomaji || card?.title || ""; found = []; search(); }}>Change match…</button>
           {#if missing > 0 && view?.whisper.cli}
             {#if view.whisper.model}

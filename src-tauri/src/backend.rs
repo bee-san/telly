@@ -963,7 +963,7 @@ impl Backend {
                 let show = self.db.show(arg(&args, "id")?)?.ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?;
                 to_value(names::show_names(self, &show))
             }
-            "premine" => to_value(premine::start_list(self, arg(&args, "show")?, arg(&args, "from")?, arg(&args, "count")?)?),
+            "premine" => to_value(premine::start_list(self, arg(&args, "show")?)?),
             "premineStatus" => to_value(premine::status(self)),
             "ownHachidori" => to_value(own_hachidori::report(self)),
             "premineCards" => to_value(premine::start_cards(self, arg(&args, "words")?)?),

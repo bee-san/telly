@@ -710,15 +710,32 @@ pub fn sync_file(path: &Path, name: &str, timing: &Timing, video: &str) -> Resul
     if !subs::is_japanese(&lines) {
         return Err(anyhow!("not Japanese"));
     }
-    let synced = sync_to(&lines, timing);
+    let own = is_the_timing(&lines, timing);
+    let synced = if own { as_timed(&lines, timing) } else { sync_to(&lines, timing) };
     let fit = matching::Fit {
         score: synced.score,
         quality: subs::quality(&lines),
         offset_ms: synced.offset_ms,
         z: synced.standing.above,
-        made_for: matching::made_for(name, video),
+        made_for: own || matching::made_for(name, video),
     };
     Ok((synced, fit))
+}
+
+/// Whether `lines` are the subtitles `timing` was read from: the rip's own
+/// Japanese track, timed to the episode already. Matched to itself, such a
+/// track fits perfectly yet can stand as little as 5.7 spreads above chance
+/// where the dialogue is dense (Fairy Tail 3's), which would read as unsure.
+fn is_the_timing(lines: &[Line], timing: &Timing) -> bool {
+    let mut spans: Vec<(f64, f64)> = lines.iter().filter(|l| !l.sign).map(|l| (l.start, l.end)).collect();
+    spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+    spans.len() == timing.spans.len() && spans.iter().zip(&timing.spans).all(|(a, b)| (a.0 - b.0).abs() < 0.001 && (a.1 - b.1).abs() < 0.001)
+}
+
+/// `lines` as they are, an exact fit to `timing`.
+fn as_timed(lines: &[Line], timing: &Timing) -> sync::Synced {
+    let spans: Vec<(f64, f64)> = lines.iter().filter(|l| !l.sign).map(|l| (l.start, l.end)).collect();
+    sync::Synced { lines: lines.to_vec(), score: 1.0, offset_ms: 0, ratio: 1.0, shifts: 1, standing: sync::standing(&spans, &timing.spans, timing.length) }
 }
 
 /// The file kept for an episode, synced.
@@ -934,6 +951,27 @@ mod tests {
         ];
         let kept: Vec<String> = without_repeats(lines).into_iter().map(|l| l.text).collect();
         assert_eq!(kept, ["そこは魔法の世界。", "彼らは「魔道士」と呼ばれる。", "ギルドだ。"]);
+    }
+
+    #[test]
+    fn the_rip_s_own_track_is_an_exact_fit() {
+        let srt: String = (0..40)
+            .map(|i| {
+                let s = 5 + i * 7;
+                format!("{}\n00:{:02}:{:02},000 --> 00:{:02}:{:02},500\nこれは{}番目のせりふです。\n\n", i + 1, s / 60, s % 60, (s + 3) / 60, (s + 3) % 60, i)
+            })
+            .collect();
+        let path = std::env::temp_dir().join(format!("telly-own-track-{}.srt", std::process::id()));
+        std::fs::write(&path, &srt).unwrap();
+        let lines = subs::parse("track.srt", srt.as_bytes()).unwrap();
+        let spans: Vec<(f64, f64)> = lines.iter().filter(|l| !l.sign).map(|l| (l.start, l.end)).collect();
+        let timing = Timing { spans: spans.clone(), length: 300.0, against: "the rip’s Japanese subtitles".into(), lead: 0.0, calibration: sync::Calibration::CLEAN };
+        let (synced, fit) = sync_file(&path, "In the rip (track 2)", &timing, "Show - 01.mkv").unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!((synced.score, synced.offset_ms, fit.made_for), (1.0, 0, true));
+        // Another file's timing, even one moved by 2 seconds, isn't the rip's own.
+        let moved = Timing { spans: spans.iter().map(|&(s, e)| (s + 2.0, e + 2.0)).collect(), ..timing };
+        assert!(!is_the_timing(&lines, &moved));
     }
 
     #[test]

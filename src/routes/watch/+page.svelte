@@ -1013,7 +1013,7 @@
         {/if}
         <div class="end-actions">
           {#if canMontage}
-            <button type="button" class="btn quiet" title="Watch the moments (P)" onclick={startMontage}>Watch the Moments</button>
+            <button type="button" class="btn quiet" title="Watch the moments (P)" onclick={startMontage}>Watch the moments</button>
           {/if}
           <button type="button" class="btn" title="Start the episode (Enter)" onclick={() => closeRecap(true)}><Icon name="play" /><span>Start Episode {view.episode.number}</span></button>
         </div>
@@ -1174,7 +1174,7 @@
   .arc { display: grid; gap: 4px; }
   .arc-head { display: flex; align-items: baseline; gap: 10px; }
   .arc-head b { font: 600 15px/1.3 var(--font-ui); }
-  .arc-head span { font-size: 12.5px; color: var(--vid-ink-2); }
+  .arc-head span { font-size: 12.5px; color: var(--vid-ink-2); white-space: nowrap; }
   .montage { position: absolute; inset: 0; z-index: 9; background: var(--vid); }
   .montage video { width: 100%; height: 100%; object-fit: contain; display: block; }
   .montage-label { position: absolute; top: 18px; left: 20px; font: 600 13px/1 var(--font-ui); letter-spacing: .02em; color: var(--vid-ink); text-shadow: 0 1px 3px rgba(0, 0, 0, .9); }

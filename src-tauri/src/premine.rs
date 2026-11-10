@@ -46,6 +46,9 @@ fn api_address() -> String {
 /// Words asked of Hachidori at a time: each answer carries every dictionary's
 /// entries, and the relay waits 30 seconds at most for one.
 const LOOKUPS_PER_REQUEST: usize = 40;
+/// Notes read from Anki at a time: a note with its definitions is about 10 KB,
+/// and Anki's whole answer has to arrive within its 15 seconds.
+const NOTES_PER_READ: usize = 500;
 /// The subdeck of your card format's deck that premined cards go in.
 const SUBDECK: &str = "Premined";
 const NO_RELAY: &str = "Premining needs Anki open, with Hachidori Relay. Open Anki and try again.";
@@ -417,12 +420,17 @@ fn card_format(backend: &Backend) -> Result<CardFormat> {
 // ---- Anki ----
 
 /// What `field` holds in each note with a card you've studied (young or
-/// mature). One search and one read: a search per word reads the whole
-/// collection each time.
-fn studied_words(url: &str, field: &str) -> Result<HashSet<String>> {
+/// mature). One search, then the notes read in chunks: a search per word reads
+/// the whole collection each time.
+fn studied_words(url: &str, field: &str, step: &dyn Fn(f64)) -> Result<HashSet<String>> {
     let ids = anki::invoke(url, "findNotes", json!({ "query": format!("\"{field}:_*\" -is:new") }))?;
     let ids: Vec<i64> = ids.as_array().map(|a| a.iter().filter_map(Value::as_i64).collect()).unwrap_or_default();
-    Ok(anki::notes_info(url, &ids)?.iter().filter_map(|n| n.field(field)).collect())
+    let mut out = HashSet::new();
+    for (k, chunk) in ids.chunks(NOTES_PER_READ).enumerate() {
+        step(k as f64 * NOTES_PER_READ as f64 / ids.len() as f64);
+        out.extend(anki::notes_info(url, chunk)?.iter().filter_map(|n| n.field(field)));
+    }
+    Ok(out)
 }
 
 /// Whether you know a word: a studied note holds its headword, or its reading
@@ -570,7 +578,7 @@ fn make_list(backend: &Backend, show: &Show, step: &dyn Fn(&str, f64)) -> Result
     }
     let url = cards::anki_url(backend);
     step("Checking your cards in Anki", 0.8);
-    let studied = studied_words(&url, &field)?;
+    let studied = studied_words(&url, &field, &|p| step("Checking your cards in Anki", 0.8 + 0.2 * p))?;
 
     let mut known_uses = 0;
     let mut words: Vec<(usize, Word)> = Vec::new();

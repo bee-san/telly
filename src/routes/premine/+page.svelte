@@ -129,8 +129,9 @@
 
   {#if list}
     {#if list.withoutSubs.length}
-      <p class="pm-note">{listed(list.withoutSubs)} {list.withoutSubs.length === 1 ? "has" : "have"} no subtitles yet. Premining needs subtitles for every episode.</p>
-    {:else}
+      <p class="pm-note">{listed(list.withoutSubs)} {list.withoutSubs.length === 1 ? "has" : "have"} no subtitles yet and {list.withoutSubs.length === 1 ? "isn’t" : "aren’t"} counted.</p>
+    {/if}
+    {#if list.uses}
       <p class="pm-sum"><b>{Math.floor(known)}%</b> of the words in the show are known</p>
       {#if status && !status.working && status.skipped.length}
         <div class="pm-skipped">

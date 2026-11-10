@@ -1,6 +1,6 @@
 //! Premining: before you watch a show, the fewest words that take you to the
 //! share of its words you choose to know, made into cards in one go, each with
-//! the line it first comes up in. Every episode needs its subtitles first.
+//! the line it first comes up in. Episodes without subtitles are left out.
 //!
 //! - Words: each synced line is split by Lindera (IPADIC, built into Telly).
 //!   Particles, auxiliaries, pronouns, この and その, numbers, symbols, proper
@@ -476,7 +476,7 @@ fn make_list(backend: &Backend, show: &Show, step: &dyn Fn(&str, f64)) -> Result
     episodes.sort_by_key(|e| e.number);
     let deck = premined_deck(backend, show);
 
-    // Every episode's lines; none of the words until every episode has them.
+    // Every episode's lines; an episode without subtitles adds none.
     let mut lines: Vec<Vec<Line>> = Vec::new();
     let mut without_subs = Vec::new();
     for (e, episode) in episodes.iter().enumerate() {
@@ -486,9 +486,6 @@ fn make_list(backend: &Backend, show: &Show, step: &dyn Fn(&str, f64)) -> Result
             without_subs.push(episode.number);
         }
         lines.push(episode_lines);
-    }
-    if !without_subs.is_empty() {
-        return Ok(List { without_subs, deck, ..Default::default() });
     }
 
     step("Reading your card format", 0.15);

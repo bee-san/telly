@@ -117,19 +117,20 @@
       <div class="watching">
         {#each watching as s (s.id)}
           {@const st = statusOf(s)}
-          <button type="button" class="wcard" onclick={() => open(s)} oncontextmenu={(e) => context(e, s)} aria-label="{s.title}. {st.text}. {st.sub}">
+          <div class="wcard card" role="presentation" oncontextmenu={(e) => context(e, s)}>
+            <button type="button" class="hit" onclick={() => open(s)} aria-label="{s.title}. {st.text}. {st.sub}"></button>
             <span class="wcv">
               <Cover cover={s.cover} color={s.coverColor} native={s.titleNative} title={s.title} />
               <span class="wplay"><Icon name="play" /></span>
             </span>
             <span class="w-body">
-              <span class="w-jp" lang="ja">{s.titleNative || s.title}</span>
+              <a class="w-jp title" lang="ja" href="/show?id={s.id}">{s.titleNative || s.title}</a>
               <span class="w-en">{s.titleNative ? s.title : ""}</span>
               <span class="w-next">{st.text}</span>
               <span class="w-sub">{st.sub}</span>
               <span class="bar"><i style:width="{Math.round((100 * s.watched) / Math.max(1, s.episodes))}%"></i></span>
             </span>
-          </button>
+          </div>
         {/each}
       </div>
     {:else}
@@ -141,15 +142,16 @@
       <div class="libgrid">
         {#each rest as s (s.id)}
           {@const st = statusOf(s)}
-          <button type="button" class="lcard" onclick={() => open(s)} oncontextmenu={(e) => context(e, s)} aria-label="{s.title}. {st.text}. {st.sub}">
+          <div class="lcard card" role="presentation" oncontextmenu={(e) => context(e, s)}>
+            <button type="button" class="hit" onclick={() => open(s)} aria-label="{s.title}. {st.text}. {st.sub}"></button>
             <Cover cover={s.cover} color={s.coverColor} native={s.titleNative} title={s.title} />
-            <span class="l-title">{s.title}</span>
+            <a class="l-title title" href="/show?id={s.id}">{s.title}</a>
             <span class="l-status" class:ok={st.ok}>{st.text}</span>
             <span class="l-sub">{st.sub}</span>
             {#if s.status === "getting" && s.next}
               <span class="bar"><i style:width="{Math.round(s.next.mediaProgress * 100)}%"></i></span>
             {/if}
-          </button>
+          </div>
         {/each}
       </div>
     {:else}
@@ -188,13 +190,18 @@
   .shelf-head h2 { font: 600 17px/1.2 var(--font-ui); }
   .shelf-head span { font-size: 13px; color: var(--ink-3); }
   .watching { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 16px; margin-bottom: 30px; }
-  .wcard { all: unset; box-sizing: border-box; display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 16px; align-items: center; padding: 12px 16px 12px 12px; border-radius: 10px; background: var(--surface); border: 1px solid var(--rule); cursor: pointer; transition: border-color .15s, box-shadow .15s; }
+  .card { position: relative; }
+  .hit { all: unset; position: absolute; inset: 0; z-index: 1; cursor: pointer; border-radius: inherit; }
+  .title { position: relative; z-index: 2; justify-self: start; max-width: 100%; color: inherit; text-decoration: none; }
+  .title:hover { text-decoration: underline; }
+  .title:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; border-radius: 2px; }
+  .wcard { box-sizing: border-box; display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 16px; align-items: center; padding: 12px 16px 12px 12px; border-radius: 10px; background: var(--surface); border: 1px solid var(--rule); cursor: pointer; transition: border-color .15s, box-shadow .15s; }
   .wcard:hover { border-color: var(--rule-2); box-shadow: var(--shadow); }
-  .wcard:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+  .wcard:has(.hit:focus-visible) { outline: 2px solid var(--ink); outline-offset: 2px; }
   .wcv { position: relative; display: block; }
   .wplay { position: absolute; left: 50%; top: 50%; width: 36px; height: 36px; margin: -18px 0 0 -18px; border-radius: 50%; display: grid; place-items: center; background: rgba(0, 0, 0, .62); color: #fff; opacity: 0; transition: opacity .15s; }
   .wplay :global(svg) { width: 16px; height: 16px; margin-left: 2px; }
-  .wcard:hover .wplay, .wcard:focus-visible .wplay { opacity: 1; }
+  .wcard:hover .wplay, .wcard:has(.hit:focus-visible) .wplay { opacity: 1; }
   .w-body { display: grid; gap: 3px; min-width: 0; }
   .w-jp { font: 800 16px/1.3 var(--font-jp-title); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .w-en { font-size: 12.5px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -202,10 +209,10 @@
   .w-sub { font-size: 12.5px; color: var(--ink-2); }
   .w-body .bar { margin-top: 8px; }
   .libgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 22px 20px; }
-  .lcard { all: unset; box-sizing: border-box; display: grid; gap: 3px; align-content: start; cursor: pointer; min-width: 0; }
+  .lcard { box-sizing: border-box; display: grid; gap: 3px; align-content: start; cursor: pointer; min-width: 0; }
   .lcard :global(.cv) { transition: transform .15s; }
   .lcard:hover :global(.cv) { transform: translateY(-2px); }
-  .lcard:focus-visible { outline: 2px solid var(--ink); outline-offset: 4px; border-radius: 4px; }
+  .lcard:has(.hit:focus-visible) { outline: 2px solid var(--ink); outline-offset: 4px; border-radius: 4px; }
   .l-title { font: 600 13.5px/1.3 var(--font-ui); margin-top: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .l-status { font: 500 12.5px/1.3 var(--font-ui); }
   .l-status.ok { color: var(--ok); }

@@ -94,7 +94,7 @@
     </label>
     <span class="grow"></span>
     <a class="btn quiet" href="/settings"><Icon name="gear" /><span>Settings</span></a>
-    <button type="button" class="btn" onclick={add}><Icon name="plus" /><span>Add Media…</span></button>
+    <button type="button" class="btn" onclick={add}><Icon name="plus" /><span>Add media…</span></button>
   </div>
 
   {#if lib && (!lib.setup.ffmpeg || !lib.setup.jimaku)}
@@ -108,11 +108,11 @@
 
   {#if lib && lib.shows.length === 0}
     <div class="first">
-      <h2>No Shows Yet</h2>
-      <p>Press <b>Add Media…</b> and pick a folder of rips. Telly works out the show, finds Japanese subtitles, syncs them, and gets each episode ready to play. The files stay where they are.</p>
+      <h2>No shows yet</h2>
+      <p>Press <b>Add media…</b> and pick a folder of rips. Telly works out the show, finds Japanese subtitles, syncs them, and gets each episode ready to play. The files stay where they are.</p>
     </div>
   {:else if lib}
-    <div class="shelf-head"><h2>Currently Watching</h2><span>{count(watching.length)}</span></div>
+    <div class="shelf-head"><h2>Currently watching</h2><span>{count(watching.length)}</span></div>
     {#if watching.length}
       <div class="watching">
         {#each watching as s (s.id)}
@@ -160,11 +160,11 @@
 
 {#if menu}
   <div class="menu" style:left="{menu.x}px" style:top="{menu.y}px" role="menu">
-    <button type="button" role="menuitem" onclick={() => menu && goto(`/show?id=${menu.show.id}`)}>Show Episodes</button>
+    <button type="button" role="menuitem" onclick={() => menu && goto(`/show?id=${menu.show.id}`)}>Show episodes</button>
     {#if menu.show.next?.ready}
       <button type="button" role="menuitem" onclick={() => menu?.show.next && goto(`/watch?ep=${menu.show.next.episodeId}`)}>Play Episode {menu.show.next.number}</button>
     {/if}
-    <button type="button" role="menuitem" class="danger" onclick={() => menu && remove(menu.show)}>Remove From Telly…</button>
+    <button type="button" role="menuitem" class="danger" onclick={() => menu && remove(menu.show)}>Remove from Telly…</button>
   </div>
 {/if}
 

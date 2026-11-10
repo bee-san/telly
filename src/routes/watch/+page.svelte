@@ -873,7 +873,7 @@
       <span class="subnote" title={view.episode.subsFile}>
         {#if view.episode.subsState === "synced"}<Icon name="check" />{/if}{syncNote}{#if nudge !== 0} · {nudge > 0 ? "+" : ""}{(nudge / 1000).toFixed(1)} s{/if}
       </span>
-      <button type="button" class="pbtn txt" onclick={() => leave(`/show?id=${view?.show.id}`)}>Show Episodes</button>
+      <button type="button" class="pbtn txt" onclick={() => leave(`/show?id=${view?.show.id}`)}>Show episodes</button>
     {/if}
   </div>
 
@@ -882,7 +882,7 @@
       <p>{error || videoError}</p>
       <div class="end-actions">
         {#if videoError && view}
-          <button type="button" class="btn" onclick={async () => { if (view) { await call("retryMedia", { id: view.episode.id, force: true }); leave(`/show?id=${view.show.id}`); } }}>Convert This Episode</button>
+          <button type="button" class="btn" onclick={async () => { if (view) { await call("retryMedia", { id: view.episode.id, force: true }); leave(`/show?id=${view.show.id}`); } }}>Convert this episode</button>
         {/if}
         <button type="button" class="btn quiet" onclick={() => leave(view ? `/show?id=${view.show.id}` : "/")}>Back</button>
       </div>
@@ -960,7 +960,7 @@
 
   {#if explaining && view}
     <aside class="tx ex" aria-label="Explain this line">
-      <div class="tx-head"><b>Explain Line</b><button type="button" class="ex-close" title="Close (E)" onclick={() => closeExplain()}>Close</button></div>
+      <div class="tx-head"><b>Explain line</b><button type="button" class="ex-close" title="Close (E)" onclick={() => closeExplain()}>Close</button></div>
       <div class="ex-body scroll">
         {#if lines[explaining.index]}<p class="ex-line" lang="ja" onpointerenter={hoverText}>{@html lineHtml(lines[explaining.index])}</p>{/if}
         {#if explaining.error}
@@ -1039,7 +1039,7 @@
     <div class="endov">
       <div class="end-card">
         <span class="small">Episode {view.episode.number} done{sat.seconds > 30 ? ` · logged to Tidepool` : ""}</span>
-        <h3>{view.next ? `Next: Episode ${view.next.number}` : `That’s the Last Episode Here`}</h3>
+        <h3>{view.next ? `Next: Episode ${view.next.number}` : `That’s the last episode here`}</h3>
         <div class="end-stats">
           <div><b>{Math.round(sat.seconds / 60)}</b><span>minutes</span></div>
           <div><b>{sat.lines}</b><span>lines</span></div>
@@ -1050,10 +1050,10 @@
           <p class="small">Episode {view.next.number} is getting ready{view.next.mediaState === "working" ? ` · ${Math.round(view.next.mediaProgress * 100)}%` : ""}. It’ll start when it can.</p>
         {/if}
         <div class="end-actions">
-          <button type="button" class="btn quiet" onclick={() => leave("/")}>Open Library</button>
+          <button type="button" class="btn quiet" onclick={() => leave("/")}>Open library</button>
           {#if view.next}
             <button type="button" class="btn quiet" onclick={stopCountdown} disabled={countdown === null}>Stop</button>
-            <button type="button" class="btn" onclick={playNext} disabled={!view.next.ready}><Icon name="play" /><span>Play Now</span></button>
+            <button type="button" class="btn" onclick={playNext} disabled={!view.next.ready}><Icon name="play" /><span>Play now</span></button>
           {/if}
         </div>
         {#if countdown !== null}

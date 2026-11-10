@@ -20,6 +20,7 @@ use crate::backend::Backend;
 use crate::clip;
 use crate::db::MineJob;
 use crate::jobs;
+use crate::media;
 use crate::subs::Line;
 use crate::util::{clock, now_ms};
 use anyhow::{anyhow, Result};
@@ -314,7 +315,10 @@ fn finish(backend: &Backend, job: &MineJob) -> Result<()> {
     let (video, audio_index) = if episode.media_state == "ready" && !episode.play_path.is_empty() {
         (PathBuf::from(&episode.play_path), episode.audio_index)
     } else {
-        (PathBuf::from(&episode.path), 0)
+        // The rip itself, as for premined cards ahead of the episodes converted
+        // so far: its Japanese track, which isn't always the first.
+        let probe = tools.ffprobe.as_deref().and_then(|p| media::probe(p, std::path::Path::new(&episode.path)).ok());
+        (PathBuf::from(&episode.path), probe.map(|p| media::japanese_audio(&p) as i64).unwrap_or(0))
     };
     let url = anki_url(backend);
     let f = fields(backend);

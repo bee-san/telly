@@ -174,7 +174,7 @@
 </script>
 
 <div class="set scroll">
-  <button type="button" class="back" onclick={() => goto("/")}><Icon name="back" /><span>Back to Library</span></button>
+  <button type="button" class="back" onclick={() => goto("/")}><Icon name="back" /><span>Back to library</span></button>
   <h1>Settings</h1>
   {#if error}<p class="err">{error}</p>{/if}
 
@@ -186,7 +186,7 @@
         <span class="inline">
           <input class="input mono grow" type={showKey ? "text" : "password"} bind:value={key} onchange={() => set("jimaku.key", key.trim())} />
           <button type="button" class="btn quiet" onclick={() => (showKey = !showKey)}>{showKey ? "Hide" : "Show"}</button>
-          <button type="button" class="btn quiet" onclick={openJimaku}>Get a Key</button>
+          <button type="button" class="btn quiet" onclick={openJimaku}>Get a key</button>
         </span>
         <small>{saved["jimaku.key"] ? "Saved. Telly is looking for subtitles again." : "A free Jimaku account comes with a key. Telly uses it to find each episode’s subtitles and sync them to the rips."}</small>
       </label>
@@ -205,7 +205,7 @@
     <div class="rows two">
       <label class="field"><span>AnkiConnect address</span><input class="input mono" value={str("anki.url", "http://127.0.0.1:8765")} onchange={(e) => set("anki.url", e.currentTarget.value.trim())} /></label>
       <label class="field"><span>Note type</span>
-        <span class="inline"><input class="input grow" value={str("anki.noteType", "kiku_typed")} onchange={(e) => set("anki.noteType", e.currentTarget.value.trim())} /><button type="button" class="btn quiet" onclick={kikuFields}>Check Its Fields</button></span>
+        <span class="inline"><input class="input grow" value={str("anki.noteType", "kiku_typed")} onchange={(e) => set("anki.noteType", e.currentTarget.value.trim())} /><button type="button" class="btn quiet" onclick={kikuFields}>Check its fields</button></span>
       </label>
       <label class="field"><span>Sentence field</span><input class="input" value={status?.fields.sentence ?? "Sentence"} onchange={(e) => set("anki.field.sentence", e.currentTarget.value.trim())} /></label>
       <label class="field"><span>Picture field</span><input class="input" value={status?.fields.picture ?? "Picture"} onchange={(e) => set("anki.field.picture", e.currentTarget.value.trim())} /></label>
@@ -244,7 +244,7 @@
   </section>
 
   <section>
-    <h2>Character Names</h2>
+    <h2>Character names</h2>
     <p class="lede">Telly makes a dictionary of the characters in the shows being watched, from AniList, the way characterdictionary.tokyo does, and adds it to Hachidori as “Telly characters”. Hovering a name shows who it is, with their picture and how they’re being addressed. Their names are also coloured in the subtitles.</p>
     <p class="lede">{namesText}</p>
     <div class="rows">
@@ -253,7 +253,7 @@
       <label class="check"><input type="checkbox" checked={bool("player.names", true)} onchange={(e) => set("player.names", e.currentTarget.checked)} /><span>Colour characters’ names in the subtitles</span></label>
     </div>
     <div class="actions">
-      <button type="button" class="btn quiet" onclick={remakeNames} disabled={!names?.enabled}>Rebuild Dictionary</button>
+      <button type="button" class="btn quiet" onclick={remakeNames} disabled={!names?.enabled}>Rebuild dictionary</button>
     </div>
   </section>
 
@@ -317,10 +317,10 @@
     {:else if !status.tools.whisperModel}
       <p class="lede">Whisper can make subtitles for episodes Jimaku has nothing for, marked as machine-made. It needs a model that knows Japanese (190 MB, from whisper.cpp’s own models).</p>
       <div class="actions">
-        <button type="button" class="btn quiet" onclick={async () => { await call("getWhisperModel"); toast({ key: "whispermodel", state: "working", title: "Getting Whisper’s Japanese model", text: "The title bar shows how it’s going." }); }}>Get Whisper’s Model</button>
+        <button type="button" class="btn quiet" onclick={async () => { await call("getWhisperModel"); toast({ key: "whispermodel", state: "working", title: "Getting Whisper’s Japanese model", text: "The title bar shows how it’s going." }); }}>Get Whisper’s model</button>
       </div>
     {:else}
-      <p class="lede">Ready. On a show’s page, <b>Make Subtitles With Whisper</b> covers the episodes Jimaku has nothing for. They’re marked as machine-made.</p>
+      <p class="lede">Ready. On a show’s page, <b>Make subtitles with Whisper</b> covers the episodes Jimaku has nothing for. They’re marked as machine-made.</p>
       <p class="muted mono path">{status.tools.whisperModel}</p>
     {/if}
   </section>
@@ -334,16 +334,16 @@
     {/if}
     <div class="actions">
       <button type="button" class="btn quiet" onclick={chooseFfmpeg}>Choose ffmpeg.exe…</button>
-      <button type="button" class="btn quiet" onclick={lookAgain}>Look Again</button>
-      {#if str("tools.ffmpeg")}<button type="button" class="link-btn" onclick={async () => { await set("tools.ffmpeg", null); lookAgain(); }}>Forget My Choice</button>{/if}
+      <button type="button" class="btn quiet" onclick={lookAgain}>Look again</button>
+      {#if str("tools.ffmpeg")}<button type="button" class="link-btn" onclick={async () => { await set("tools.ffmpeg", null); lookAgain(); }}>Forget my choice</button>{/if}
     </div>
   </section>
 
   <section>
-    <h2>Disk Space</h2>
+    <h2>Disk space</h2>
     <p class="lede">Telly’s copies of episodes use {bytes(status?.spaceUsed ?? 0)}. The rips stay where they are.</p>
     <div class="actions">
-      <button type="button" class="btn quiet" onclick={freeAll}>Free Up Space</button>
+      <button type="button" class="btn quiet" onclick={freeAll}>Free up space</button>
       <span class="muted">Removes Telly’s copies of watched episodes.</span>
     </div>
     <p class="muted mono path">{status?.dataDir}</p>

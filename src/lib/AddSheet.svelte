@@ -115,13 +115,13 @@
 </script>
 
 <div class="modal-bg" role="presentation" onclick={(e) => e.target === e.currentTarget && phase !== "adding" && onclose()}>
-  <div class="sheet" role="dialog" aria-modal="true" aria-label="Add Media">
+  <div class="sheet" role="dialog" aria-modal="true" aria-label="Add media">
     {#if phase === "scanning"}
       <div class="busy"><span class="spin"></span><span>Reading <span class="mono">{folder}</span>…</span></div>
     {:else if phase === "groups" && result}
       <div class="head-text">
-        <span class="kicker">Add Media</span>
-        <h3>This Folder Holds More Than One Season</h3>
+        <span class="kicker">Add media</span>
+        <h3>This folder holds more than one season</h3>
         <p>Each season is its own show on AniList, so add them one at a time. Which one first?</p>
       </div>
       <div class="groups">
@@ -132,7 +132,7 @@
         {/each}
       </div>
       <div class="sheet-foot">
-        <button type="button" class="btn quiet" onclick={() => (phase = "match")}>Add Whole Folder as One Show</button>
+        <button type="button" class="btn quiet" onclick={() => (phase = "match")}>Add whole folder as one show</button>
         <button type="button" class="btn quiet" onclick={onclose}>Cancel</button>
       </div>
     {:else if phase === "search"}
@@ -158,7 +158,7 @@
         {/each}
       </div>
       <div class="sheet-foot">
-        <button type="button" class="btn quiet" onclick={() => { chosen = null; phase = "match"; }}>Add Without AniList</button>
+        <button type="button" class="btn quiet" onclick={() => { chosen = null; phase = "match"; }}>Add without AniList</button>
         <button type="button" class="btn quiet" onclick={() => (phase = "match")}>Back</button>
       </div>
     {:else if result}
@@ -175,7 +175,7 @@
           {/if}
           <p class="folder mono">{result.scan.folder}</p>
         </div>
-        <button type="button" class="link-btn" onclick={() => { phase = "search"; if (!found.length) search(); }}>{chosen ? "Choose Another Show" : "Find It on AniList"}</button>
+        <button type="button" class="link-btn" onclick={() => { phase = "search"; if (!found.length) search(); }}>{chosen ? "Choose another show" : "Find it on AniList"}</button>
       </div>
 
       <div class="map-top">
@@ -184,7 +184,7 @@
         {#if byOrder}
           <label class="start">Starts at episode <input class="input" type="number" min="1" bind:value={startAt} /></label>
         {:else}
-          <button type="button" class="link-btn" onclick={() => (byOrder = true)}>Number in Folder Order</button>
+          <button type="button" class="link-btn" onclick={() => (byOrder = true)}>Number in folder order</button>
         {/if}
       </div>
       <div class="map" role="list">
@@ -218,7 +218,7 @@
       <p class="sheet-note">Telly never moves or renames the files. Its copies, subtitles, and covers go in its own folder.</p>
       <div class="sheet-foot">
         <button type="button" class="btn quiet" onclick={onclose}>Cancel</button>
-        <button type="button" class="btn" onclick={add} disabled={included.length === 0 || clash}><Icon name="plus" /><span>Add to Library</span></button>
+        <button type="button" class="btn" onclick={add} disabled={included.length === 0 || clash}><Icon name="plus" /><span>Add to library</span></button>
       </div>
     {:else if phase === "adding"}
       <div class="busy"><span class="spin"></span><span>Adding…</span></div>

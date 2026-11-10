@@ -136,7 +136,7 @@
 </script>
 
 <div class="showpg scroll">
-  <button type="button" class="back" onclick={() => goto("/")}><Icon name="back" /><span>Back to Library</span></button>
+  <button type="button" class="back" onclick={() => goto("/")}><Icon name="back" /><span>Back to library</span></button>
   {#if error}<p class="err">{error}</p>{/if}
   {#if card && st}
     <div class="sp-head">
@@ -165,17 +165,18 @@
             <span class="bar"><i style:width="{Math.round((100 * (card.subsReady < card.episodes ? card.subsReady : card.subsFound)) / Math.max(1, card.episodes))}%"></i></span>
           </span>
           <span class="grow"></span>
-          <button type="button" class="btn quiet" onclick={() => { matching = true; query = card?.titleRomaji || card?.title || ""; found = []; search(); }}>Change Match…</button>
+          <button type="button" class="btn quiet" onclick={() => goto(`/premine?show=${id}`)} title="Make cards for the words ahead that you don’t know yet">Premine…</button>
+          <button type="button" class="btn quiet" onclick={() => { matching = true; query = card?.titleRomaji || card?.title || ""; found = []; search(); }}>Change match…</button>
           {#if missing > 0 && view?.whisper.cli}
             {#if view.whisper.model}
-              <button type="button" class="btn quiet" onclick={whisperAll} title="For the {missing} episodes without subtitles; marked as machine-made">Make Subtitles With Whisper</button>
+              <button type="button" class="btn quiet" onclick={whisperAll} title="For the {missing} episodes without subtitles; marked as machine-made">Make subtitles with Whisper</button>
             {:else}
-              <button type="button" class="btn quiet" onclick={getModel} title="So Whisper can make subtitles Jimaku doesn’t have">Get Whisper’s Model</button>
+              <button type="button" class="btn quiet" onclick={getModel} title="So Whisper can make subtitles Jimaku doesn’t have">Get Whisper’s model</button>
             {/if}
           {/if}
-          <button type="button" class="btn quiet" onclick={lookAgain}>Look for New Episodes</button>
-          <button type="button" class="btn quiet" onclick={() => act(() => call("retrySubs", { show: id }))}>Find Subtitles Again</button>
-          <button type="button" class="btn quiet" onclick={freeSpace}>Free Up Space</button>
+          <button type="button" class="btn quiet" onclick={lookAgain}>Look for new episodes</button>
+          <button type="button" class="btn quiet" onclick={() => act(() => call("retrySubs", { show: id }))}>Find subtitles again</button>
+          <button type="button" class="btn quiet" onclick={freeSpace}>Free up space</button>
           <button type="button" class="btn danger" onclick={remove}>Remove…</button>
         </div>
       </div>
@@ -211,21 +212,21 @@
   {@const ep = menu.ep}
   <div class="menu" style:left="{menu.x}px" style:top="{menu.y}px" role="menu">
     {#if ep.mediaState === "ready"}<button type="button" role="menuitem" onclick={() => goto(`/watch?ep=${ep.id}`)}>Play</button>{/if}
-    <button type="button" role="menuitem" onclick={() => act(() => call("markWatched", { id: ep.id, watched: !ep.watched }))}>{ep.watched ? "Mark as Unwatched" : "Mark as Watched"}</button>
-    <button type="button" role="menuitem" onclick={() => chooseSubtitle(ep)}>Use a Subtitle File…</button>
-    <button type="button" role="menuitem" onclick={() => act(() => call("retrySubs", { id: ep.id }))}>Find Subtitles Again</button>
+    <button type="button" role="menuitem" onclick={() => act(() => call("markWatched", { id: ep.id, watched: !ep.watched }))}>{ep.watched ? "Mark as unwatched" : "Mark as watched"}</button>
+    <button type="button" role="menuitem" onclick={() => chooseSubtitle(ep)}>Use a subtitle file…</button>
+    <button type="button" role="menuitem" onclick={() => act(() => call("retrySubs", { id: ep.id }))}>Find subtitles again</button>
     {#if view?.whisper.cli && view.whisper.model}
-      <button type="button" role="menuitem" onclick={() => act(() => call("whisperSubs", { id: ep.id }))}>Make Subtitles With Whisper</button>
+      <button type="button" role="menuitem" onclick={() => act(() => call("whisperSubs", { id: ep.id }))}>Make subtitles with Whisper</button>
     {/if}
     {#if ep.mediaState === "failed" || ep.mediaState === "ready"}
-      <button type="button" role="menuitem" onclick={() => act(() => call("retryMedia", { id: ep.id }))}>{ep.mediaState === "failed" ? "Try Converting Again" : "Convert Again"}</button>
+      <button type="button" role="menuitem" onclick={() => act(() => call("retryMedia", { id: ep.id }))}>{ep.mediaState === "failed" ? "Try converting again" : "Convert again"}</button>
     {/if}
   </div>
 {/if}
 
 {#if matching}
   <div class="modal-bg" role="presentation" onclick={(e) => e.target === e.currentTarget && (matching = false)}>
-    <div class="sheet" role="dialog" aria-modal="true" aria-label="Change Match">
+    <div class="sheet" role="dialog" aria-modal="true" aria-label="Change match">
       <form class="searchrow" onsubmit={(e) => { e.preventDefault(); search(); }}>
         <input class="input grow" bind:value={query} aria-label="Search AniList" />
         <button type="submit" class="btn" disabled={busy}>{busy ? "Searching…" : "Search"}</button>

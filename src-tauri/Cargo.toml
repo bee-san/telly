@@ -39,6 +39,8 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 alass-core = "2"
 webrtc-vad = "0.4"
 firered-vad = "0.1.0"
+# Splits Japanese into words for premining (IPADIC, built into the app).
+lindera = { version = "6", default-features = false, features = ["embed-ipadic"] }
 
 [profile.release]
 codegen-units = 1

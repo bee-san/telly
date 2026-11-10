@@ -10,6 +10,7 @@ use crate::jobs::{self, Jobs, Task};
 use crate::log::{Log, Sitting};
 use crate::mining::{self, Mining};
 use crate::names::{self, Names};
+use crate::premine::{self, Premining};
 use crate::scan;
 use crate::subs::Line;
 use crate::sync;
@@ -92,6 +93,8 @@ pub struct Backend {
     pub asks: Asks,
     /// The character dictionary's worker (names).
     pub names: Names,
+    /// Premining's list and cards (premine.rs).
+    pub premining: Premining,
 }
 
 /// One line that just played, for the log.
@@ -270,6 +273,7 @@ impl Backend {
             mining: OnceLock::new(),
             asks: Asks::default(),
             names: Names::default(),
+            premining: Premining::default(),
         })
     }
 
@@ -940,6 +944,9 @@ impl Backend {
                 let show = self.db.show(arg(&args, "id")?)?.ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?;
                 to_value(names::show_names(self, &show))
             }
+            "premine" => to_value(premine::start_list(self, arg(&args, "show")?, arg(&args, "from")?, arg(&args, "count")?)?),
+            "premineStatus" => to_value(premine::status(self)),
+            "premineCards" => to_value(premine::start_cards(self, arg(&args, "words")?)?),
             "ankiFields" => {
                 let url = cards::anki_url(self);
                 let model: String = arg(&args, "model")?;

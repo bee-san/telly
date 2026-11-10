@@ -8,6 +8,7 @@ An anime player for learning Japanese, for Windows. Point it at a folder of rips
 - shows them as lines you can look up with [Hachidori](https://github.com/bee-san/hachidori), pausing while you read and carrying on when you move back to the picture
 - finishes the cards you mine with an animated AVIF of the line and its audio as Opus
 - explains the line on screen when you press **E**, and when you come back to a show, opens on **Previously on**: the last few episodes in their arcs, the one you left, and key moments to watch again (both by Claude, through the Claude Code on your computer)
+- premines: before you watch, it lists the words in the next episodes that you don't know yet and makes them into cards in your Hachidori card format
 - makes a dictionary of the characters in what you're watching, the way [characterdictionary.tokyo](https://characterdictionary.tokyo) does, adds it to Hachidori and colours their names in the subtitles
 - logs what you watch for [Tidepool](https://github.com/bee-san/tidepool)
 
@@ -52,6 +53,16 @@ It goes into Hachidori as **Telly characters** the way SubMiner sends its own: t
 
 `cargo run --profile measure --example names_check -- <AniList id> <folder>` builds one show's dictionary on its own, to see what it holds.
 
+## Premining
+
+A show's page has **Premine…**: the words in the next episode (or the next 3 or 10) that you have no card for, most useful first, each with the first line it comes up in. Tick the ones you want, or take the top 20, 40 or 80, and **Make cards**.
+
+- **Words** come from the synced subtitles, split by [Lindera](https://github.com/lindera/lindera) with IPADIC (built into Telly). Particles, auxiliaries, pronouns, words only there for the grammar (わけ, こと, ている's いる), numbers, names and the cast are left out. Where nouns run together, the longest stretch Hachidori knows is one word (魔導士 in 魔導士たち, not 魔 and 導).
+- **Hachidori** gives each word's headword, reading and rank in your frequency dictionary, through the Yomitan API that Hachidori Relay serves on port 19633. So premining needs Anki open and sharing on in your browser's Hachidori, as lookups in Telly do.
+- **Anki** says what you have. A note whose word field (the one your card format fills with `{expression}`) holds the word, or its reading (する for 為る), is a card you have, so the word isn't listed. A card 21 days or more apart is mature, and its word is known: that's the share of known words at the top.
+- **Most useful first:** the words that come up most in those episodes, then the most common anywhere.
+- **Cards** are made in your Hachidori card format (the first Template in its Settings → Anki), word audio included, in a **Premined** subdeck of its deck, so you can set how many new ones you see a day. The sentence, its furigana and the cloze come from the word's line. Telly then adds the moving picture, the line's audio and MiscInfo as it does for the cards you mine while watching, and tags them `telly::premine`.
+
 ## How subtitles are matched
 
 Telly tries every file Jimaku has that could be the episode's, syncs each to the episode, and keeps the one that fits best.
@@ -66,7 +77,7 @@ Measured on Fairy Tail's 286 Judas Blu-ray episodes: every one of the 277 TV epi
 
 ## Whisper
 
-When Jimaku has nothing for an episode (or there's no key yet), its show's page offers **Make Subtitles With Whisper**. It uses the whisper.cpp Tidepool downloads for voice input, with whisper.cpp's small multilingual model (190 MB, from Settings → Whisper). Whisper's subtitles are marked as machine-made.
+When Jimaku has nothing for an episode (or there's no key yet), its show's page offers **Make subtitles with Whisper**. It uses the whisper.cpp Tidepool downloads for voice input, with whisper.cpp's small multilingual model (190 MB, from Settings → Whisper). Whisper's subtitles are marked as machine-made.
 
 ## Where things go
 
@@ -85,6 +96,7 @@ Your rips are never moved or changed.
 - `cargo test --manifest-path src-tauri/Cargo.toml --lib` runs the backend's tests.
 - `npm run check` type-checks the frontend.
 - `npm run devserver -- dev-data` runs the backend over HTTP on port 1430, and `npm run dev` then works in an ordinary browser, so the UI can be driven without the app (no Hachidori there).
+- `TELLY_YOMITAN_API` points premining at a stand-in for Hachidori's API, and `TELLY_CLAUDE` Explain and Previously on at a stand-in for Claude Code, for testing without your own.
 - `--profile measure` builds optimised but without the release build's link-time optimisation, for the measuring examples: `sync_real` (subtitle matching over a library), `recap_check` (one Previously on from real subtitles), `explain_check` (how soon Explain answers in the warm session) and `names_check` (one show's character dictionary).
 
 Ports: 8771 is Hachidori Relay's (Telly runs its own while Anki is closed), 8773 is where Telly listens for Anki Beacon.

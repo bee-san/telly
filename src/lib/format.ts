@@ -95,7 +95,7 @@ export function subsHelp(state: string, detail: string, file: string): string {
     case "check":
       return `Telly found subtitles but isn’t sure they’re in time with this video. Watch a little, and use Sync ▾ in the player if they’re off. ${what}`;
     case "none":
-      return `${detail || "No subtitles found for this episode."} Make Subtitles With Whisper can make some.`;
+      return `${detail || "No subtitles found for this episode."} Make subtitles with Whisper can make some.`;
     default:
       return what;
   }

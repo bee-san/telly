@@ -18,6 +18,7 @@ pub mod matching;
 pub mod media;
 pub mod mining;
 pub mod names;
+pub mod premine;
 pub mod relay;
 pub mod scan;
 pub mod subs;

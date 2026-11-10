@@ -389,3 +389,45 @@ export async function setFullscreen(on: boolean): Promise<void> {
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
   await getCurrentWindow().setFullscreen(on);
 }
+
+/** A word to premine, with the first line it comes up in. */
+export interface PremineWord {
+  headword: string;
+  reading: string;
+  /** Its rank in your frequency dictionary: lower is more common. */
+  rank: number | null;
+  /** Times it comes up in these episodes. */
+  count: number;
+  episodeId: number;
+  number: number;
+  start: number;
+  end: number;
+  before: string;
+  word: string;
+  after: string;
+}
+
+export interface PremineList {
+  numbers: number[];
+  withoutSubs: number[];
+  /** Words you have no card for, most useful first. */
+  words: PremineWord[];
+  /** The share of the words used that you know (0 to 1). */
+  known: number;
+  /** Words with cards that aren't mature yet. */
+  learning: number;
+  deck: string;
+}
+
+export interface PremineStatus {
+  show: number;
+  from: number;
+  count: number;
+  working: boolean;
+  step: string;
+  progress: number;
+  list: PremineList | null;
+  error: string;
+  added: number;
+  skipped: string[];
+}

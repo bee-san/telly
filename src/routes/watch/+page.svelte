@@ -929,7 +929,7 @@
             {#if view.tried.length}
               <span class="sm-h">Try another file</span>
               {#each view.tried as f (f.path)}
-                <button type="button" class="sm-file" class:on={f.name === view.episode.subsFile} onclick={() => useFile(f.path, f.name)} disabled={!!f.error}>
+                <button type="button" class="sm-file" class:on={f.name === view.episode.subsFile} title={f.name} onclick={() => useFile(f.path, f.name)} disabled={!!f.error}>
                   <span>{f.name}</span><small>{f.error ? "unreadable" : `${Math.round(f.score * 100)}%`}</small>
                 </button>
               {/each}
@@ -1073,7 +1073,6 @@
   .pic { position: absolute; inset: 0; display: grid; place-items: center; cursor: pointer; }
   .pic video { width: 100%; height: 100%; object-fit: contain; display: block; background: var(--vid); }
   .subs { position: absolute; left: 0; right: 0; bottom: 96px; display: flex; flex-direction: column; align-items: center; gap: 2px; pointer-events: none; z-index: 5; }
-  .player.idle .subs { bottom: 56px; }
   .sub-line { pointer-events: auto; max-width: 86%; margin: 0; padding: 2px 14px 4px; border-radius: 6px; font: 700 var(--sub-size, 36px)/1.42 var(--font-jp); color: var(--sub-ink); text-align: center; letter-spacing: .03em; user-select: text; -webkit-user-select: text; cursor: text; text-shadow: 1px 1px 0 var(--sub-edge), -1px 1px 0 var(--sub-edge), 1px -1px 0 var(--sub-edge), -1px -1px 0 var(--sub-edge), 0 2px 0 var(--sub-edge), 0 -2px 0 var(--sub-edge), 2px 0 0 var(--sub-edge), -2px 0 0 var(--sub-edge), 0 3px 10px rgba(0, 0, 0, .55); transition: filter .2s; }
   .sub-line :global(rt) { font-size: .42em; font-weight: 500; letter-spacing: 0; }
   .sub-line.blur { filter: blur(9px); }
@@ -1104,7 +1103,7 @@
   .pbtn.on { background: var(--vid-hover); }
   .ptime { font: 500 12.5px/1 var(--font-mono); color: var(--vid-ink-2); margin-left: 10px; font-variant-numeric: tabular-nums; }
   .menuwrap { position: relative; }
-  .submenu { position: absolute; right: 0; bottom: 46px; width: 300px; display: grid; gap: 6px; padding: 12px; background: var(--vid-panel); border: 1px solid var(--vid-edge); border-radius: 10px; z-index: 9; }
+  .submenu { position: absolute; right: 0; bottom: 46px; width: 300px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 12px; background: var(--vid-panel); border: 1px solid var(--vid-edge); border-radius: 10px; z-index: 9; }
   .sm-h { font-size: 12px; color: var(--vid-ink-2); margin-top: 4px; }
   .sm-row { display: flex; gap: 6px; }
   .sm-row button, .sm-file { flex: 1; font: 600 12.5px/1 var(--font-ui); color: var(--vid-ink); background: var(--vid-hover); border: 0; border-radius: 6px; padding: 9px 8px; cursor: pointer; }

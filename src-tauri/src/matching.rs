@@ -82,6 +82,8 @@ pub struct Fit {
     pub z: f64,
     /// The file's name carries the rip's release tag ("[Judas]"): made for it.
     pub made_for: bool,
+    /// It fits only cut into pieces (`sync::Synced::cut`).
+    pub cut: bool,
 }
 
 /// The release tag a file name starts with: "[Judas]" in "[Judas] Fairy Tail - 001.mkv".
@@ -99,12 +101,19 @@ pub fn made_for(subtitle: &str, video: &str) -> bool {
     matches!((release_tag(subtitle), release_tag(video)), (Some(a), Some(b)) if a == b)
 }
 
-/// A file that fits beats one that doesn't; of files that fit, clean text
-/// beats furigana or English set as lines, then one made for this very release
-/// (its timing is its own), then the smaller shift, then the tighter fit.
+/// A file synced in one piece beats one that fits only cut into pieces.
+/// Otherwise a file that fits beats one that doesn't; of files that fit, clean
+/// text beats furigana or English set as lines, then one made for this very
+/// release (its timing is its own), then the smaller shift, then the tighter fit.
 pub fn better(a: &Fit, b: &Fit) -> bool {
     const FITS: f64 = 0.75;
     const CLEAN: f64 = 0.85;
+    if a.cut != b.cut {
+        let whole = if a.cut { b } else { a };
+        if whole.score >= crate::jobs::GOOD_SYNC {
+            return !a.cut;
+        }
+    }
     let (fa, fb) = (a.score >= FITS, b.score >= FITS);
     if fa != fb {
         return fa;
@@ -151,7 +160,7 @@ mod tests {
 
     #[test]
     fn picks_the_clean_file_made_for_the_release() {
-        let fit = |score: f64, quality: f64, offset_ms: i64, z: f64| Fit { score, quality, offset_ms, z, made_for: false };
+        let fit = |score: f64, quality: f64, offset_ms: i64, z: f64| Fit { score, quality, offset_ms, z, made_for: false, cut: false };
         let judas = Fit { made_for: true, ..fit(1.0, 0.99, -40, 10.3) };
         let netflix = fit(1.0, 0.98, 1670, 9.7);
         let furigana_lines = fit(1.0, 0.6, 40, 12.9);
@@ -166,6 +175,19 @@ mod tests {
         assert!(made_for("[Judas] Fairy Tail (2009) - 017 [BD 1080p].srt", "[Judas] Fairy Tail (2009) - 017.mkv"));
         assert!(made_for("Pack.zip › [judas] Show - 01.srt", "[Judas] Show - 01.mkv"));
         assert!(!made_for("[Erai-raws] Fairy Tail - 017.srt", "[Judas] Fairy Tail (2009) - 017.mkv"));
+    }
+
+    #[test]
+    fn a_file_that_fits_in_one_piece_beats_one_cut_into_pieces() {
+        let fit = |cut: bool, made_for: bool, z: f64| Fit { score: 1.0, quality: 0.99, offset_ms: 0, z, made_for, cut };
+        // A TV broadcast's file, cut where its ad breaks were, loses to one
+        // that fits with one shift, even one made for another release, and
+        // even one only just synced (Fairy Tail 2014's 45th: 0.52).
+        assert!(better(&fit(false, false, 7.6), &fit(true, true, 30.0)));
+        assert!(!better(&fit(true, true, 30.0), &fit(false, false, 7.6)));
+        assert!(better(&Fit { score: 0.52, ..fit(false, false, 6.3) }, &fit(true, false, 30.0)));
+        // It still beats one that isn't sure to fit.
+        assert!(better(&fit(true, false, 9.0), &Fit { score: 0.3, ..fit(false, false, 5.75) }));
     }
 
     #[test]

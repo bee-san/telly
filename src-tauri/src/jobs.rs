@@ -558,7 +558,17 @@ pub struct Timing {
 
 /// Syncs a file to `timing`, moving it back by the timing's lead.
 pub fn sync_to(lines: &[Line], timing: &Timing) -> sync::Synced {
-    let mut synced = sync::sync_with(lines, &timing.spans, timing.length, &timing.calibration);
+    led(sync::sync_with(lines, &timing.spans, timing.length, &timing.calibration), timing)
+}
+
+/// `lines` cut into pieces to fit `timing` (see `sync::sync_in_pieces`), at
+/// the speed change (`ratio`) their sync with one shift found.
+pub fn sync_to_in_pieces(lines: &[Line], ratio: f64, timing: &Timing) -> Option<sync::Synced> {
+    sync::sync_in_pieces(lines, ratio, &timing.spans, timing.length, &timing.calibration).map(|synced| led(synced, timing))
+}
+
+/// `synced` moved back by the timing's lead.
+fn led(mut synced: sync::Synced, timing: &Timing) -> sync::Synced {
     if timing.lead > 0.0 {
         for line in &mut synced.lines {
             line.start = (line.start - timing.lead).max(0.0);
@@ -705,21 +715,33 @@ fn embedded(backend: &Backend, ffmpeg: &Path, probe: &media::Probe, episode: &Ep
 /// Syncs one file to the episode's timing (its own subtitles or its speech),
 /// with how it compares with the others (see `matching::better`).
 pub fn sync_file(path: &Path, name: &str, timing: &Timing, video: &str) -> Result<(sync::Synced, matching::Fit)> {
-    let bytes = std::fs::read(path)?;
-    let lines = subs::parse(name, &bytes)?;
+    let lines = japanese_lines(path, name)?;
+    let own = is_the_timing(&lines, timing);
+    let synced = if own { as_timed(&lines, timing) } else { sync_to(&lines, timing) };
+    let fit = fit_of(&synced, &lines, own || matching::made_for(name, video));
+    Ok((synced, fit))
+}
+
+/// The same file cut into pieces (see `sync_to_in_pieces`), for one that
+/// didn't sync with one shift (at `ratio`). None if the pieces don't fit.
+pub fn sync_file_in_pieces(path: &Path, name: &str, ratio: f64, timing: &Timing, video: &str) -> Result<Option<(sync::Synced, matching::Fit)>> {
+    let lines = japanese_lines(path, name)?;
+    Ok(sync_to_in_pieces(&lines, ratio, timing).map(|synced| {
+        let fit = fit_of(&synced, &lines, matching::made_for(name, video));
+        (synced, fit)
+    }))
+}
+
+fn japanese_lines(path: &Path, name: &str) -> Result<Vec<Line>> {
+    let lines = subs::parse(name, &std::fs::read(path)?)?;
     if !subs::is_japanese(&lines) {
         return Err(anyhow!("not Japanese"));
     }
-    let own = is_the_timing(&lines, timing);
-    let synced = if own { as_timed(&lines, timing) } else { sync_to(&lines, timing) };
-    let fit = matching::Fit {
-        score: synced.score,
-        quality: subs::quality(&lines),
-        offset_ms: synced.offset_ms,
-        z: synced.standing.above,
-        made_for: own || matching::made_for(name, video),
-    };
-    Ok((synced, fit))
+    Ok(lines)
+}
+
+fn fit_of(synced: &sync::Synced, lines: &[Line], made_for: bool) -> matching::Fit {
+    matching::Fit { score: synced.score, quality: subs::quality(lines), offset_ms: synced.offset_ms, z: synced.standing.above, made_for, cut: synced.cut }
 }
 
 /// Whether `lines` are the subtitles `timing` was read from: the rip's own
@@ -735,7 +757,7 @@ fn is_the_timing(lines: &[Line], timing: &Timing) -> bool {
 /// `lines` as they are, an exact fit to `timing`.
 fn as_timed(lines: &[Line], timing: &Timing) -> sync::Synced {
     let spans: Vec<(f64, f64)> = lines.iter().filter(|l| !l.sign).map(|l| (l.start, l.end)).collect();
-    sync::Synced { lines: lines.to_vec(), score: 1.0, offset_ms: 0, ratio: 1.0, shifts: 1, standing: sync::standing(&spans, &timing.spans, timing.length) }
+    sync::Synced { lines: lines.to_vec(), score: 1.0, offset_ms: 0, ratio: 1.0, shifts: 1, cut: false, standing: sync::standing(&spans, &timing.spans, timing.length) }
 }
 
 /// The file kept for an episode, synced.
@@ -774,13 +796,18 @@ fn screened(file: &jimaku::Local) -> Option<std::sync::Arc<Vec<(f64, f64)>>> {
 /// searches the rest of `pool`: every file is screened by `sync::quick_fit`,
 /// and the few that screen best are synced in full. That finds an episode
 /// filed under a number nothing predicted (Judas's Fairy Tail 2014 runs in
-/// another order than Netflix's from its 48th episode).
+/// another order than Netflix's from its 48th episode). When still nothing
+/// syncs with one shift, each file is tried cut into pieces, as a file timed
+/// to a TV broadcast needs (see `sync::sync_in_pieces`).
 pub fn pick_subtitles(files: &[jimaku::Local], pool: &[jimaku::Local], timing: &Timing, video: &str, mut progress: impl FnMut(&str, f64)) -> (Option<Pick>, Vec<Tried>) {
     let mut tried: Vec<Tried> = Vec::new();
     let mut best: Option<Pick> = None;
-    let consider = |file: &jimaku::Local, tried: &mut Vec<Tried>, best: &mut Option<Pick>| match sync_file(&file.path, &file.name, timing, video) {
+    // The files that synced, with the speed change each took.
+    let mut synced_files: Vec<(jimaku::Local, f64)> = Vec::new();
+    let mut consider = |file: &jimaku::Local, tried: &mut Vec<Tried>, best: &mut Option<Pick>| match sync_file(&file.path, &file.name, timing, video) {
         Ok((synced, fit)) => {
             tried.push(Tried { name: file.name.clone(), path: file.path.to_string_lossy().into_owned(), score: synced.score, offset_ms: synced.offset_ms, error: String::new() });
+            synced_files.push((file.clone(), synced.ratio));
             if best.as_ref().is_none_or(|b| matching::better(&fit, &b.fit)) {
                 *best = Some(Pick { synced, fit, name: file.name.clone(), filed_as: file.episode });
             }
@@ -805,6 +832,18 @@ pub fn pick_subtitles(files: &[jimaku::Local], pool: &[jimaku::Local], timing: &
         for (i, file) in top.iter().enumerate() {
             progress("Searching every subtitle file for", (i + 1) as f64 / top.len() as f64);
             consider(file, &mut tried, &mut best);
+        }
+    }
+    if best.as_ref().is_none_or(|b| b.fit.score < GOOD_SYNC) {
+        for (i, (file, ratio)) in synced_files.iter().enumerate() {
+            progress("Syncing subtitles for", i as f64 / synced_files.len() as f64);
+            let Ok(Some((synced, fit))) = sync_file_in_pieces(&file.path, &file.name, *ratio, timing, video) else { continue };
+            if let Some(t) = tried.iter_mut().find(|t| Path::new(&t.path) == file.path) {
+                (t.score, t.offset_ms) = (synced.score, synced.offset_ms);
+            }
+            if best.as_ref().is_none_or(|b| matching::better(&fit, &b.fit)) {
+                best = Some(Pick { synced, fit, name: file.name.clone(), filed_as: file.episode });
+            }
         }
     }
     (best, tried)
@@ -901,7 +940,12 @@ pub fn use_file(backend: &Backend, episode: &Episode, path: &Path, name: &str) -
     let timing = timing_of(&ffmpeg, &ffprobe, &probe, episode)?;
     let bytes = std::fs::read(path)?;
     let lines = subs::parse(name, &bytes)?;
-    let synced = sync_to(&lines, &timing);
+    let mut synced = sync_to(&lines, &timing);
+    if synced.score < GOOD_SYNC {
+        if let Some(cut) = sync_to_in_pieces(&lines, synced.ratio, &timing) {
+            synced = cut;
+        }
+    }
     write_lines(backend, episode.id, &synced.lines)?;
     let state = if synced.score >= GOOD_SYNC { "synced" } else { "check" };
     let detail = format!("{} · matched to {}", describe(&synced), timing.against);

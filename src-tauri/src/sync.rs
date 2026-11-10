@@ -13,6 +13,10 @@
 //! 5 to 6 spreads up; another episode's file 2 or so. Cuts (scenes cut
 //! differently) are fixed only when they clearly beat a single shift; when
 //! Telly isn't sure, it keeps the single shift and the score says to look.
+//!
+//! A file timed to a TV broadcast is a minute or more out wherever the ads
+//! went, so it doesn't fit with one shift at all. Such a file can be cut into
+//! pieces, judged by where its lines start instead (see `sync_in_pieces`).
 
 use crate::subs::Line;
 use alass_core::{TimePoint, TimeSpan};
@@ -277,6 +281,219 @@ fn piecewise(lines: &[(f64, f64)], speech: &[(f64, f64)]) -> Vec<f64> {
     extra
 }
 
+/// A line agrees with the timing when it starts this close to one of its starts.
+const AGREE: f64 = 0.3;
+/// A broadcast differs from the disc only where it stops for ads or an
+/// opening, so its lines pause at least this long (seconds) where it's cut.
+const PAUSE: f64 = 20.0;
+/// A piece keeps a shift of its own only with at least this many lines
+/// standing this far above chance; and all the pieces together must stand
+/// `PIECES_Z` above it.
+const PIECE_LINES: usize = 10;
+const PIECE_Z: f64 = 2.0;
+const PIECES_Z: f64 = 6.5;
+/// The most pieces a file may be cut into.
+const MAX_PIECES: usize = 6;
+
+/// How many of `starts`, moved by `shift`, agree with `refs` (sorted).
+fn agreeing(starts: &[f64], refs: &[f64], shift: f64) -> usize {
+    starts
+        .iter()
+        .filter(|&&s| {
+            let i = refs.partition_point(|&r| r < s + shift - AGREE);
+            i < refs.len() && refs[i] <= s + shift + AGREE
+        })
+        .count()
+}
+
+/// The shift within half a second of `shift` at which most of `starts` agree
+/// (the middle of the run of such shifts).
+fn centre_on_starts(starts: &[f64], refs: &[f64], shift: f64) -> f64 {
+    let counts: Vec<usize> = (-50..=50).map(|i| agreeing(starts, refs, shift + i as f64 * 0.01)).collect();
+    let best = counts.iter().copied().max().unwrap_or(0);
+    let peak = counts.iter().position(|&c| c == best).unwrap_or(50);
+    let end = peak + counts[peak..].iter().take_while(|&&c| c == best).count() - 1;
+    shift + (peak + end) as f64 * 0.005 - 0.5
+}
+
+/// How far the agreement of `starts` at `shift` stands above chance: the
+/// most that agree within half a second of it, against the most within half
+/// a second of each shift 23 seconds to 3¼ minutes away (round the episode,
+/// `length` long), in spreads of those.
+fn agreement_z(starts: &[f64], refs: &[f64], shift: f64, length: f64) -> f64 {
+    // Shifts in steps of 0.05 s (20 to a second), from 197.5 s before `shift`
+    // (step 0) to 197.5 s after (step 2 × MID); `shift` is step MID.
+    const STEP: f64 = 0.05;
+    const MID: usize = 3950;
+    let here = (-10..=10).map(|i| agreeing(starts, refs, shift + i as f64 * STEP)).max().unwrap_or(0) as f64;
+    // How many agree at every step, counted in one go: each line agrees over
+    // a stretch of steps around each of the timing's starts (and those an
+    // episode away, for lines moved round it).
+    let from = shift - MID as f64 * STEP;
+    let last = 2 * MID;
+    let mut round: Vec<f64> = (-2..=2).flat_map(|j| refs.iter().map(move |r| r + j as f64 * length)).collect();
+    round.sort_by(|a, b| a.total_cmp(b));
+    let mut change = vec![0i32; last + 2];
+    for &s in starts {
+        let mut run: Option<(usize, usize)> = None;
+        let first = round.partition_point(|&r| r < s + from - AGREE);
+        for &r in round[first..].iter().take_while(|&&r| r <= s + from + last as f64 * STEP + AGREE) {
+            let (a, b) = (((r - s - AGREE - from) / STEP).ceil().max(0.0), ((r - s + AGREE - from) / STEP).floor().min(last as f64));
+            if a > b {
+                continue;
+            }
+            let (a, b) = (a as usize, b as usize);
+            run = match run {
+                Some((ra, rb)) if a <= rb + 1 => Some((ra, rb.max(b))),
+                Some((ra, rb)) => {
+                    change[ra] += 1;
+                    change[rb + 1] -= 1;
+                    Some((a, b))
+                }
+                None => Some((a, b)),
+            };
+        }
+        if let Some((ra, rb)) = run {
+            change[ra] += 1;
+            change[rb + 1] -= 1;
+        }
+    }
+    let mut count = 0;
+    let counts: Vec<i32> = change[..=last]
+        .iter()
+        .map(|c| {
+            count += c;
+            count
+        })
+        .collect();
+    let others: Vec<f64> = (23..=197).flat_map(|k| [MID + 20 * k, MID - 20 * k]).map(|m| counts[m - 10..=m + 10].iter().copied().max().unwrap_or(0) as f64).collect();
+    let n = others.len() as f64;
+    let mean = others.iter().sum::<f64>() / n;
+    let spread = (others.iter().map(|c| (c - mean).powi(2)).sum::<f64>() / n).sqrt();
+    if spread <= 1e-9 { 0.0 } else { (here - mean) / spread }
+}
+
+/// Lines `first..end` of a file, moved by `shift`.
+#[derive(Clone, Copy)]
+struct Piece {
+    first: usize,
+    end: usize,
+    shift: f64,
+    /// How far its line starts stand above chance, once judged.
+    z: Option<f64>,
+}
+
+/// A file cut into pieces, each with its own shift.
+struct Pieces {
+    /// The shift of each line of `lines` (in order).
+    shifts: Vec<f64>,
+    /// How many pieces.
+    count: usize,
+    /// The shift of the piece with the most lines.
+    main: f64,
+    /// How far the pieces' line starts stand above chance together
+    /// (`above`), and the weakest piece's (`alone`).
+    standing: Standing,
+}
+
+/// `lines` (sorted by start) cut into pieces where a TV broadcast differs
+/// from the disc (ad breaks, a recap, the opening moved), each moved to where
+/// its line starts agree best with `reference` (`length` long).
+///
+/// alass finds the cuts. A cut is kept only where the broadcast's lines
+/// pause: elsewhere alass has moved a scene onto a song whose sung lines,
+/// thick and fast, agree with anything (Fairy Tail's last scenes went onto
+/// the closing song). A piece of fewer than `PIECE_LINES` lines, or one whose
+/// line starts don't stand `PIECE_Z` spreads above chance, follows the piece
+/// before it (or after it).
+///
+/// Coverage can't judge pieces: cut up, another episode's file covers the
+/// timing as well as one that belongs. Line starts can: a piece that belongs
+/// starts its lines where the timing does far more often than the same piece
+/// moved 23 seconds to 3¼ minutes away. The pieces are kept only if there are
+/// 2 to `MAX_PIECES` of them and together they stand `PIECES_Z` above chance.
+///
+/// Measured on Fairy Tail 1 to 40: the 23 TV-timed files that don't fit with
+/// one shift came apart into 2 or 3 pieces standing 8.1 to 20 above chance
+/// together against the rip's English subtitles (5.5 to 12 against its
+/// speech, heard by FireRedVAD), their lines where the Judas files have them;
+/// 508 other episodes' files (TV and Netflix-timed, 1, 2, 5 and 11 episodes
+/// away) stood at most 4.4.
+fn in_pieces(lines: &[(f64, f64)], reference: &[(f64, f64)], length: f64) -> Option<Pieces> {
+    let mut refs: Vec<f64> = reference.iter().map(|r| r.0).collect();
+    refs.sort_by(|a, b| a.total_cmp(b));
+    let starts: Vec<f64> = lines.iter().map(|l| l.0).collect();
+    let length = length.max(lines.last().map_or(0.0, |l| l.1)).max(1.0);
+    let incoming: Vec<TimeSpan> = lines
+        .iter()
+        .map(|&(s, e)| TimeSpan::new(TimePoint::from(to_unit(s)), TimePoint::from(to_unit(e).max(to_unit(s) + 1))))
+        .collect();
+    let (deltas, _) = alass_core::align(&spans_of(reference), &incoming, 7.0, Some(3.0), alass_core::standard_scoring, alass_core::NoProgressHandler);
+    let mut pieces: Vec<Piece> = Vec::new();
+    for (i, d) in deltas.iter().enumerate() {
+        match pieces.last_mut() {
+            Some(p) if (to_unit(p.shift) - d.as_i64()).abs() <= 1 => p.end = i + 1,
+            _ => pieces.push(Piece { first: i, end: i + 1, shift: d.as_i64() as f64 * UNIT_MS / 1000.0, z: None }),
+        }
+    }
+    // Where the broadcast runs straight on, the two pieces are one, at the
+    // shift of the longer.
+    let mut ended = f64::MIN;
+    let pause: Vec<f64> = lines
+        .iter()
+        .map(|&(s, e)| {
+            let gap = s - ended;
+            ended = ended.max(e);
+            gap
+        })
+        .collect();
+    let mut i = 1;
+    while i < pieces.len() {
+        let (a, b) = (pieces[i - 1], pieces[i]);
+        if pause[b.first] < PAUSE {
+            let shift = if b.end - b.first > a.end - a.first { b.shift } else { a.shift };
+            pieces[i - 1] = Piece { first: a.first, end: b.end, shift, z: None };
+            pieces.remove(i);
+        } else {
+            i += 1;
+        }
+    }
+    for p in &mut pieces {
+        p.shift = centre_on_starts(&starts[p.first..p.end], &refs, p.shift);
+    }
+    // Pieces too small to judge, or no better than chance, follow a neighbour.
+    while pieces.len() > 1 {
+        let weak = (0..pieces.len()).find(|&i| {
+            let p = &mut pieces[i];
+            p.end - p.first < PIECE_LINES || *p.z.get_or_insert_with(|| agreement_z(&starts[p.first..p.end], &refs, p.shift, length)) < PIECE_Z
+        });
+        let Some(i) = weak else { break };
+        let j = if i == 0 { 1 } else { i - 1 };
+        let (a, b) = (pieces[i.min(j)], pieces[i.max(j)]);
+        let shift = centre_on_starts(&starts[a.first..b.end], &refs, pieces[j].shift);
+        pieces[i.min(j)] = Piece { first: a.first, end: b.end, shift, z: None };
+        pieces.remove(i.max(j));
+    }
+    // Each piece's z weighted by the square root of its lines: one z over all of them.
+    let judged: Vec<(f64, f64)> = pieces.iter().map(|p| ((p.end - p.first) as f64, p.z.unwrap_or(0.0))).collect();
+    let together = judged.iter().map(|&(n, z)| n.sqrt() * z).sum::<f64>() / judged.iter().map(|j| j.0).sum::<f64>().sqrt();
+    let weakest = judged.iter().map(|j| j.1).fold(f64::INFINITY, f64::min);
+    let kept = (2..=MAX_PIECES).contains(&pieces.len()) && together >= PIECES_Z;
+    if std::env::var_os("TELLY_SYNC_DEBUG").is_some() {
+        let list: Vec<String> = pieces.iter().map(|p| format!("[{} {:+.2} z {:.1}]", p.end - p.first, p.shift, p.z.unwrap_or(0.0))).collect();
+        eprintln!("pieces: {} together {together:.2} weakest {weakest:.2} → {} | {}", pieces.len(), if kept { "kept" } else { "not kept" }, list.join(" "));
+    }
+    if !kept {
+        return None;
+    }
+    let mut shifts = Vec::with_capacity(lines.len());
+    for p in &pieces {
+        shifts.extend(std::iter::repeat_n(p.shift, p.end - p.first));
+    }
+    let main = pieces.iter().max_by_key(|p| p.end - p.first).map_or(0.0, |p| p.shift);
+    Some(Pieces { shifts, count: pieces.len(), main, standing: Standing { above: together, alone: weakest } })
+}
+
 /// Coverage of `lines` (sorted, `total` long) moved by `shift`, wrapping round
 /// an episode `length` long, so every moved line still lands somewhere.
 fn wrapped_coverage(lines: &[(f64, f64)], total: f64, speech: &[(f64, f64)], shift: f64, length: f64) -> f64 {
@@ -344,14 +561,19 @@ pub struct Synced {
     pub ratio: f64,
     /// How many different shifts the lines got.
     pub shifts: usize,
-    /// How far the fit stands above chance (what `score` comes from).
+    /// The file fits only cut into pieces (see `sync_in_pieces`), not with one shift.
+    #[serde(skip)]
+    pub cut: bool,
+    /// How far the fit stands above chance (what `score` comes from): by its
+    /// coverage, or for a file cut into pieces, by their line starts.
     #[serde(skip)]
     pub standing: Standing,
 }
 
 /// How sure a fit is, for the timing it's matched to: how many spreads above
 /// chance scores 0 and 1, and how high a file must stand with one shift before
-/// Telly looks for cuts (cuts let a file that doesn't belong fit in pieces).
+/// Telly looks for cuts within it (cuts let a file that doesn't belong fit in
+/// pieces; `sync_in_pieces` judges a file cut into pieces another way).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Calibration {
     pub zero: f64,
@@ -379,7 +601,7 @@ pub fn sync_with(lines: &[Line], speech: &[(f64, f64)], length: f64, cal: &Calib
     let dialogue: Vec<usize> = (0..lines.len()).filter(|&i| !lines[i].sign).collect();
     let spans: Vec<(f64, f64)> = dialogue.iter().map(|&i| (lines[i].start, lines[i].end)).collect();
     if spans.is_empty() || speech.is_empty() {
-        return Synced { lines: lines.to_vec(), score: 0.0, offset_ms: 0, ratio: 1.0, shifts: 0, standing: Standing::default() };
+        return Synced { lines: lines.to_vec(), score: 0.0, offset_ms: 0, ratio: 1.0, shifts: 0, cut: false, standing: Standing::default() };
     }
     let reference = spans_of(speech);
     let incoming = spans_of(&spans);
@@ -446,22 +668,55 @@ pub fn sync_with(lines: &[Line], speech: &[(f64, f64)], length: f64, cal: &Calib
         eprintln!("sync: ratio {ratio:.4} shift {one_s:+.2} one {z_one:?} split {z_split:?} jumps {jumps} → {}", if use_split { "split" } else { "one" });
     }
     let (z, shifts) = if use_split { (z_split, jumps + 1) } else { (z_one, 1) };
+    let moves = if use_split { split } else { vec![one_s; spans.len()] };
+    Synced { lines: place(lines, &dialogue, ratio, &moves), score: score_with(z, cal), offset_ms: (one_s * 1000.0).round() as i64, ratio, shifts, cut: false, standing: z }
+}
 
-    // Signs and songs follow the dialogue line nearest them.
+/// `lines` sped up by `ratio` and each dialogue line (`dialogue` holds their
+/// indices) moved by its own of `moves`. Signs and songs follow the dialogue
+/// line nearest them.
+fn place(lines: &[Line], dialogue: &[usize], ratio: f64, moves: &[f64]) -> Vec<Line> {
     let mut out = Vec::with_capacity(lines.len());
     for (i, line) in lines.iter().enumerate() {
         let k = match dialogue.binary_search(&i) {
             Ok(k) => k,
             Err(k) => k.min(dialogue.len() - 1),
         };
-        let d = if use_split { split.get(k).copied().unwrap_or(one_s) } else { one_s };
         let mut l = line.clone();
-        l.start = (line.start * ratio + d).max(0.0);
-        l.end = (line.end * ratio + d).max(l.start + 0.05);
+        l.start = (line.start * ratio + moves[k]).max(0.0);
+        l.end = (line.end * ratio + moves[k]).max(l.start + 0.05);
         out.push(l);
     }
     out.sort_by(|a, b| a.start.total_cmp(&b.start));
-    Synced { lines: out, score: score_with(z, cal), offset_ms: (one_s * 1000.0).round() as i64, ratio, shifts, standing: z }
+    out
+}
+
+/// `lines` cut into pieces to fit `speech` (see `in_pieces`), at the speed
+/// change (`ratio`) their sync with one shift found: for a file that doesn't
+/// fit with one shift, such as one timed to a TV broadcast. None if the pieces
+/// don't fit either.
+pub fn sync_in_pieces(lines: &[Line], ratio: f64, speech: &[(f64, f64)], length: f64, cal: &Calibration) -> Option<Synced> {
+    let dialogue: Vec<usize> = (0..lines.len()).filter(|&i| !lines[i].sign).collect();
+    if dialogue.is_empty() || speech.is_empty() {
+        return None;
+    }
+    let mut order: Vec<usize> = (0..dialogue.len()).collect();
+    order.sort_by(|&a, &b| lines[dialogue[a]].start.total_cmp(&lines[dialogue[b]].start));
+    let scaled: Vec<(f64, f64)> = order.iter().map(|&k| (lines[dialogue[k]].start * ratio, lines[dialogue[k]].end * ratio)).collect();
+    let pieces = in_pieces(&scaled, speech, length)?;
+    let mut moves = vec![0.0; dialogue.len()];
+    for (rank, &k) in order.iter().enumerate() {
+        moves[k] = pieces.shifts[rank];
+    }
+    Some(Synced {
+        lines: place(lines, &dialogue, ratio, &moves),
+        score: score_with(pieces.standing, cal),
+        offset_ms: (pieces.main * 1000.0).round() as i64,
+        ratio,
+        shifts: pieces.count,
+        cut: true,
+        standing: pieces.standing,
+    })
 }
 
 /// The score shown (0 to 1): 2 spreads above the moved fits or less is chance,
@@ -542,5 +797,36 @@ mod tests {
         let other: Vec<Line> = speech_from(12345, 0x9E37_79B9_7F4A_7C15).iter().map(|&(s, e)| line(s - 0.1, e + 0.2)).collect();
         let synced = sync(&other, &sp, 1320.0);
         assert!(synced.score < 0.4, "score {}", synced.score);
+    }
+
+    /// Lines timed like a TV broadcast's captions, each running on to the
+    /// next (3 seconds at most), `late(t)` seconds late at time `t`.
+    fn broadcast(sp: &[(f64, f64)], late: impl Fn(f64) -> f64) -> Vec<Line> {
+        sp.iter()
+            .enumerate()
+            .map(|(i, &(s, e))| {
+                let end = sp.get(i + 1).map_or(e, |next| next.0).min(e + 3.0);
+                line(s - 0.1 + late(s), end - 0.1 + late(s))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_broadcast_with_ad_breaks_fits_in_pieces() {
+        let sp = speech();
+        // 30 seconds before the episode, then ad breaks of 90 and 75 seconds.
+        let ads = |t: f64| if t < 430.0 { 30.0 } else if t < 870.0 { 120.0 } else { 195.0 };
+        let lines = broadcast(&sp, ads);
+        let one = sync_with(&lines, &sp, 1320.0, &Calibration::CLEAN);
+        assert!(one.score < 0.5, "fits with one shift: {}", one.score);
+        let synced = sync_in_pieces(&lines, one.ratio, &sp, 1320.0, &Calibration::CLEAN).expect("fits in pieces");
+        assert!(synced.cut && synced.shifts == 3, "cut {} shifts {}", synced.cut, synced.shifts);
+        assert!(synced.score >= 0.75, "score {}", synced.score);
+        for (l, &(s, _)) in synced.lines.iter().zip(&sp) {
+            assert!((l.start - (s - 0.1)).abs() < 0.3, "{:.2} should be at {:.2}", l.start, s - 0.1);
+        }
+        // Another episode's lines, cut the same way, don't fit.
+        let other = broadcast(&speech_from(12345, 0x9E37_79B9_7F4A_7C15), ads);
+        assert!(sync_in_pieces(&other, 1.0, &sp, 1320.0, &Calibration::CLEAN).is_none());
     }
 }

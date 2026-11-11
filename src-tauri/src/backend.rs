@@ -324,6 +324,7 @@ impl Backend {
             std::thread::Builder::new().name("telly-cards".into()).spawn(move || cards::worker(&for_cards)).ok();
             backend.watch_folders();
             backend.fill_covers();
+            recommend::gather(&backend);
             premine::start_shares(&backend, None);
             names::start(backend.clone());
         });
@@ -703,6 +704,7 @@ impl Backend {
         let new = Self::new_show_from(anime.as_ref(), new);
         let id = self.db.add_show(&new)?;
         self.fetch_cover(id, new.cover_url.clone());
+        recommend::gather(self);
         self.jobs.poke();
         Ok(json!({ "id": id }))
     }
@@ -714,6 +716,7 @@ impl Backend {
         self.db.set_show_anilist(id, &new)?;
         self.remove_cover(id);
         self.fetch_cover(id, new.cover_url.clone());
+        recommend::gather(self);
         // Subtitles were found under the old show's name.
         self.db.requeue_subs(Some(id), &["none", "failed", "check", "synced", "nokey"])?;
         self.jobs.forget_jimaku();

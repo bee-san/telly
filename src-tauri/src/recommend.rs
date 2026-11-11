@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 /// Setting: the AniList IDs of picks hidden from the page.
 const HIDDEN: &str = "recommended.hidden";
@@ -140,6 +141,9 @@ fn kept_path(backend: &Backend) -> PathBuf {
 /// What AniList says about each of `ids`: kept answers, and fresh ones for
 /// shows it hasn't been asked about this week.
 fn sources_for(backend: &Backend, ids: &[i64]) -> Result<Vec<Source>> {
+    // One asking at a time: a page opened while `gather` is asking waits for its answers rather than asking again.
+    static ASKING: Mutex<()> = Mutex::new(());
+    let _asking = ASKING.lock();
     let path = kept_path(backend);
     let mut kept: Vec<Source> = std::fs::read(&path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
     kept.retain(|s| ids.contains(&s.id));
@@ -240,6 +244,16 @@ pub fn hide(backend: &Backend, id: i64) -> Result<()> {
     let mut ids = hidden(backend);
     ids.insert(id);
     backend.db.set_setting(HIDDEN, &json!(ids))
+}
+
+/// Asks AniList, in the background, about the shows it hasn't been asked about
+/// this week: at start-up and when a show is added, so the Recommended page
+/// has its answers when it opens.
+pub fn gather(backend: &Arc<Backend>) {
+    let backend = backend.clone();
+    std::thread::spawn(move || {
+        let _ = view(&backend);
+    });
 }
 
 /// The Recommended page: the picks, and how many of the library's shows they come from.

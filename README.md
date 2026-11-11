@@ -87,7 +87,7 @@ A show's page also shows, for each episode with subtitles, the share of its word
 
 ## Recommended
 
-**Recommended**, in the library's toolbar, lists anime to watch next. It goes on the shows in your library and needs no AniList sign-in. On AniList, people pair shows ("liked this, try that") and vote each pair up or down; Telly asks for the 25 most voted pairs of every show AniList knows, 50 shows to a request.
+**Recommended**, in the library's toolbar, lists anime to watch next. It goes on the shows in your library and needs no AniList sign-in. On AniList, people pair shows ("liked this, try that") and vote each pair up or down; Telly asks for the 25 most voted pairs of every show AniList knows, 50 shows to a request. It asks when Telly starts and when a show is added, about the shows it hasn't asked about that week, so the page opens with its answers.
 
 - **Adding up:** each show has a say on a pick, counted by the size of its votes (log2(1 + votes)): 6,000 votes count about twice as much as 80. So a pick liked from many of your shows beats one that a single well-known show carries. A show watched to the end counts double one not started.
 - **Series:** a show's seasons, films and side stories (AniList's relations) have one say between them, the most votes any of them gives. The rest of a series you have isn't offered as a pick.

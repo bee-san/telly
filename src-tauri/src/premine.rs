@@ -7,6 +7,9 @@
 //!   nouns and the cast's names are left out. Where nouns run together, the
 //!   longest stretch Hachidori knows is one word (魔導士 in 魔導士たち, rather
 //!   than 魔 and 導).
+//! - Only what's said counts. Closed captions also describe sounds （爆発音）,
+//!   name who's speaking （ナツ） and carry song lyrics (♪): words there are
+//!   left out, so a card's sentence and audio are someone speaking.
 //! - Each word's headword, reading and frequency come from Hachidori, so
 //!   they're what a lookup would show: Telly's own (own_hachidori.rs), or,
 //!   when Telly is linked to the Hachidori in your browser, that one through
@@ -531,6 +534,21 @@ pub fn prepare(backend: &Backend, episode_id: i64) {
     }
 }
 
+/// Whether the word at byte `at` of a caption is said: not in brackets, where
+/// captions describe a sound （爆発音） or name the speaker, and not in a
+/// line of a song (♪).
+fn said(text: &str, at: usize) -> bool {
+    let mut depth = 0;
+    for c in text[..at].chars() {
+        match c {
+            '（' | '(' => depth += 1,
+            '）' | ')' if depth > 0 => depth -= 1,
+            _ => {}
+        }
+    }
+    depth == 0 && !text.contains('♪')
+}
+
 /// The words to premine in `show`.
 fn make_list(backend: &Backend, show: &Show, step: &dyn Fn(&str, f64)) -> Result<List> {
     let mut episodes: Vec<Episode> = backend.db.episodes(show.id)?;
@@ -555,7 +573,8 @@ fn make_list(backend: &Backend, show: &Show, step: &dyn Fn(&str, f64)) -> Result
             continue;
         }
         for u in episode_uses(backend, e.id, &episode_lines)? {
-            if !cast.contains(&u.headword) && !cast.contains(&episode_lines[u.line].text[u.from..u.to]) {
+            let text = &episode_lines[u.line].text;
+            if said(text, u.from) && !cast.contains(&u.headword) && !cast.contains(&text[u.from..u.to]) {
                 let term = Term { headword: u.headword, reading: u.reading, rank: u.rank };
                 uses.push((term, Use { episode, line: u.line, from: u.from, to: u.to }));
             }
@@ -997,6 +1016,24 @@ mod tests {
         let shown = json!({ "dictionaryIndex": 0, "frequency": 481, "frequencyMode": "occurrence-based", "displayValue": "#459 (sum)" });
         assert_eq!(rank_of(&shown), Some(459));
         assert_eq!(rank_of(&json!({ "frequency": 42, "frequencyMode": "occurrence-based", "displayValue": "42" })), None);
+    }
+
+    #[test]
+    fn only_words_that_are_said_count() {
+        let at = |text: &str, word: &str| said(text, text.find(word).unwrap());
+        assert!(at("腹は減ったし", "腹"));
+        // A sound, described.
+        assert!(!at("（爆発音）", "爆発"));
+        assert!(!at("ンッ！
+(蹴る音)", "蹴る"));
+        // After the speaker's name, the line is said; a bracket left open by nothing isn't one.
+        assert!(at("はい…
+（シャルル）何なの？ こいつ", "何"));
+        assert!(!at("はい…
+（魔導士）覇気がねえよ", "魔導士"));
+        assert!(at("たち）乾杯！", "乾杯"));
+        // A song.
+        assert!(!at("♪ 生き続ける言葉", "言葉"));
     }
 
     #[test]

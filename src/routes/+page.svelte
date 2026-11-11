@@ -126,7 +126,7 @@
           <div class="wcard card" role="presentation" onpointerenter={() => ahead(s)} oncontextmenu={(e) => context(e, s)}>
             <button type="button" class="hit" onclick={() => open(s)} aria-label="{s.title}. {st.text}. {st.sub}"></button>
             <span class="wcv">
-              <Cover cover={s.cover} color={s.coverColor} native={s.titleNative} title={s.title} />
+              <Cover cover={s.cover} color={s.coverColor} native={s.titleNative} title={s.title} caption={s.coverCaption} />
               <span class="wplay"><Icon name="play" /></span>
             </span>
             <span class="w-body">
@@ -150,7 +150,7 @@
           {@const st = statusOf(s)}
           <div class="lcard card" role="presentation" onpointerenter={() => ahead(s)} oncontextmenu={(e) => context(e, s)}>
             <button type="button" class="hit" onclick={() => open(s)} aria-label="{s.title}. {st.text}. {st.sub}"></button>
-            <Cover cover={s.cover} color={s.coverColor} native={s.titleNative} title={s.title} />
+            <Cover cover={s.cover} color={s.coverColor} native={s.titleNative} title={s.title} caption={s.coverCaption} />
             <a class="l-title title" href="/show?id={s.id}">{s.title}</a>
             <span class="l-status" class:ok={st.ok}>{st.text}</span>
             <span class="l-sub">{st.sub}</span>

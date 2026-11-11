@@ -9,6 +9,7 @@ pub mod backend;
 pub mod cards;
 pub mod claude;
 pub mod clip;
+pub mod covers;
 pub mod db;
 mod hachidori;
 pub mod jimaku;

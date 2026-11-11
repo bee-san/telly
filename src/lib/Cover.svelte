@@ -7,7 +7,8 @@
     color = "",
     native = "",
     title = "",
-  }: { cover?: string; color?: string; native?: string; title?: string } = $props();
+    caption = false,
+  }: { cover?: string; color?: string; native?: string; title?: string; caption?: boolean } = $props();
 
   let failed = $state(false);
   // Telly's own copy of the cover, or one still on AniList (a recommendation's).
@@ -22,9 +23,10 @@
   const bg = $derived(color || fallback);
 </script>
 
-<span class="cv" class:type={!cover || failed} style:--cv-bg={bg} style:--cv-ink={inkFor(bg)}>
+<span class="cv" class:type={!cover || failed} class:shot={caption && !!cover && !failed} style:--cv-bg={bg} style:--cv-ink={inkFor(bg)}>
   {#if cover && !failed}
     <img {src} alt="" loading="lazy" onerror={() => (failed = true)} />
+    {#if caption}<span class="cv-en">{title}</span>{/if}
   {:else}
     {#if native}<span class="cv-jp" lang="ja">{native}</span>{/if}
     <span class="cv-en">{title}</span>

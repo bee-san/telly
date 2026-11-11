@@ -156,18 +156,18 @@
   {#if error}<p class="err">{error}</p>{/if}
   {#if card && st}
     <div class="sp-head">
-      <Cover cover={card.cover} color={card.coverColor} native={card.titleNative} title={card.title} />
+      <Cover cover={card.cover} color={card.coverColor} native={card.titleNative} title={card.title} caption={card.coverCaption} />
       <div>
         <h2 lang="ja">{card.titleNative || card.title}</h2>
         <p class="sp-meta">
           {card.title}{card.format ? ` · ${card.format.replace("_", " ")}` : ""}{card.year ? ` · ${card.year}` : ""}
-          · {card.episodes}{card.anilistEpisodes ? ` of ${card.anilistEpisodes}` : ""} episodes here
+          {#if !card.movie}· {card.episodes}{card.anilistEpisodes ? ` of ${card.anilistEpisodes}` : ""} episodes here{/if}
         </p>
         <p class="sp-folder mono">{card.folder}</p>
         <div class="sp-actions">
           {#if next}
             <button type="button" class="btn" disabled={!next.ready} onclick={() => next && play({ id: next.episodeId, mediaState: next.mediaState })}>
-              <Icon name="play" /><span>{next.ready ? (next.resume ? `Resume Episode ${next.number}` : `Watch Episode ${next.number}`) : st.sub}</span>
+              <Icon name="play" /><span>{next.ready ? (card.movie ? (next.resume ? "Resume" : "Watch") : next.resume ? `Resume Episode ${next.number}` : `Watch Episode ${next.number}`) : st.sub}</span>
             </button>
           {/if}
           <span class="sp-state">

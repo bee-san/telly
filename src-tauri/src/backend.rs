@@ -5,6 +5,7 @@
 use crate::anilist::{self, Anime};
 use crate::ask::{self, Asks};
 use crate::cards::{self, Event};
+use crate::covers;
 use crate::db::{Db, Episode, NewShow, Show};
 use crate::jobs::{self, Jobs, Task};
 use crate::log::{Log, Sitting};
@@ -133,6 +134,10 @@ pub struct ShowCard {
     pub show: Show,
     /// The cover, served by Telly ("" when there's none yet).
     pub cover: String,
+    /// The cover is a frame from the video: the title is drawn over it.
+    pub cover_caption: bool,
+    /// A film, listed as one rather than as an episode.
+    pub movie: bool,
     pub episodes: usize,
     pub watched: usize,
     pub media_ready: usize,
@@ -187,6 +192,17 @@ fn arg<T: for<'de> Deserialize<'de>>(args: &Value, key: &str) -> Result<T> {
 
 fn to_value<T: Serialize>(v: T) -> Result<Value> {
     Ok(serde_json::to_value(v)?)
+}
+
+/// Whether a show is a film: AniList says so (`format`), or AniList doesn't
+/// know it (`matched` is false) and it's one file, an hour or more long.
+fn is_movie(format: &str, matched: bool, lengths: &[f64]) -> bool {
+    format == "MOVIE" || (!matched && lengths.len() == 1 && lengths[0] >= 3600.0)
+}
+
+/// The setting that says a show's cover is a frame from its video.
+fn frame_setting(show_id: i64) -> String {
+    format!("cover.frame.{show_id}")
 }
 
 fn settled(state: &str) -> bool {
@@ -303,6 +319,7 @@ impl Backend {
             let for_cards = backend.clone();
             std::thread::Builder::new().name("telly-cards".into()).spawn(move || cards::worker(&for_cards)).ok();
             backend.watch_folders();
+            backend.fill_covers();
             names::start(backend.clone());
         });
     }
@@ -394,9 +411,52 @@ impl Backend {
 
     fn fetch_cover(self: &Arc<Self>, show_id: i64, url: String) {
         let backend = self.clone();
-        std::thread::spawn(move || {
-            let _ = anilist::download_cover(&url, &backend.cover_path(show_id));
-        });
+        std::thread::spawn(move || backend.get_cover(show_id, &url));
+    }
+
+    /// Gets a show its cover: AniList's (`url`) when it has one; else the
+    /// poster from Wikipedia's article about a film or series of that name;
+    /// else a frame from its first episode.
+    fn get_cover(&self, show_id: i64, url: &str) {
+        let path = self.cover_path(show_id);
+        // A frame has the show's title drawn over it, as a poster has; a real poster has its own.
+        let framed = |is: bool| {
+            let _ = self.db.set_setting(&frame_setting(show_id), &if is { Value::Bool(true) } else { Value::Null });
+        };
+        if !url.is_empty() {
+            if anilist::download_cover(url, &path).is_ok() {
+                framed(false);
+            }
+            return;
+        }
+        let Ok(Some(show)) = self.db.show(show_id) else { return };
+        if let Ok(Some(poster)) = covers::wikipedia_poster(&show.title) {
+            if anilist::download_cover(&poster, &path).is_ok() {
+                framed(false);
+                return;
+            }
+        }
+        let first = self.db.episodes(show_id).ok().and_then(|episodes| episodes.into_iter().next());
+        if let (Some(ffmpeg), Some(first)) = (self.tools().ffmpeg, first) {
+            if covers::frame(&ffmpeg, Path::new(&first.path), first.duration, &path).is_ok() {
+                framed(true);
+            }
+        }
+    }
+
+    /// Shows without a cover (added before Telly made its own, or offline) get one.
+    fn fill_covers(self: &Arc<Self>) {
+        let backend = self.clone();
+        std::thread::Builder::new()
+            .name("telly-covers".into())
+            .spawn(move || {
+                for show in backend.db.shows().unwrap_or_default() {
+                    if !backend.cover_path(show.id).is_file() {
+                        backend.get_cover(show.id, &show.cover_url);
+                    }
+                }
+            })
+            .ok();
     }
 
     fn card(&self, show: Show, cards_by_show: &std::collections::HashMap<i64, i64>) -> Result<ShowCard> {
@@ -423,8 +483,11 @@ impl Backend {
             _ => "new",
         };
         let cover = if self.cover_path(show.id).is_file() { format!("/cover/{}?v={}", show.id, show.anilist_id.unwrap_or(0)) } else { String::new() };
+        let lengths: Vec<f64> = episodes.iter().map(|e| e.duration).collect();
         Ok(ShowCard {
             cards: cards_by_show.get(&show.id).copied().unwrap_or(0),
+            movie: is_movie(&show.format, show.anilist_id.is_some(), &lengths),
+            cover_caption: !cover.is_empty() && self.db.setting_bool(&frame_setting(show.id), false),
             show,
             cover,
             episodes: episodes.len(),
@@ -608,9 +671,7 @@ impl Backend {
         }
         let new = Self::new_show_from(anime.as_ref(), new);
         let id = self.db.add_show(&new)?;
-        if !new.cover_url.is_empty() {
-            self.fetch_cover(id, new.cover_url.clone());
-        }
+        self.fetch_cover(id, new.cover_url.clone());
         self.jobs.poke();
         Ok(json!({ "id": id }))
     }
@@ -1166,6 +1227,19 @@ impl Backend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_film_is_what_anilist_calls_one_or_one_long_file_it_doesn_t_know() {
+        assert!(is_movie("MOVIE", true, &[6000.0]));
+        // A film kept as two versions is still a film.
+        assert!(is_movie("MOVIE", true, &[5500.0, 5510.0]));
+        // Live action: AniList has nothing, and it's one file of two hours.
+        assert!(is_movie("", false, &[7200.0]));
+        // One episode of a series, a folder of specials, and a series AniList knows.
+        assert!(!is_movie("", false, &[1440.0]));
+        assert!(!is_movie("", false, &[6060.0, 660.0, 1440.0]));
+        assert!(!is_movie("TV", true, &[7200.0]));
+    }
 
     #[test]
     fn serves_ranges() {

@@ -81,6 +81,10 @@ export interface NextUp {
 
 export interface ShowCard extends Show {
   cover: string;
+  /** The cover is a frame from the video: the title is drawn over it. */
+  coverCaption: boolean;
+  /** A film, listed as one rather than as an episode. */
+  movie: boolean;
   episodes: number;
   watched: number;
   mediaReady: number;

@@ -54,7 +54,7 @@ Claude Code takes 3 to 15 seconds to start, longer than Haiku takes to answer. S
 
 ## Filters
 
-**Filters** in the player (V) opens a panel of tiles, each showing the frame through one filter. The filter is drawn over the picture only, so the subtitles stay sharp, and it's remembered for each show.
+**Filters** in the player (V) opens a panel of tiles, each showing the frame through one filter. The filter is drawn over the picture only, so the subtitles stay sharp, and it's remembered for each show. When an episode fills well over its own size on screen (1.5× or more) and its show has no filter picked, a note suggests Anime4K, once.
 
 - **Deband** smooths the bands in skies and dark gradients, and **Sharpen** crisps lines.
 - **Anime4K** S, M and L are [Anime4K](https://github.com/bloc97/Anime4K)'s 2× upscalers, for a rip smaller than the screen. L looks best and needs the most from the graphics card.

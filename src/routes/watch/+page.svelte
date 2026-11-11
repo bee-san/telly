@@ -322,6 +322,7 @@
 
   async function sendTick() {
     if (!view || !video || closed) return;
+    suggestFilter();
     const batch = pendingLines.splice(0);
     try {
       const r = await call<{ events: CardEvent[]; watched: boolean }>("tick", {
@@ -564,9 +565,27 @@
 
   // ---- filters (V) ------------------------------------------------------------------
 
+  /** Keeps the show's filter. "none" is kept too: a show with one kept isn't offered Anime4K. */
+  function keepFilter(id: string) {
+    if (!view) return;
+    const key = `player.filter.${view.show.id}`;
+    settings[key] = id;
+    call("setSetting", { key, value: id }).catch(() => {});
+  }
+
   function pickFilter(id: string) {
     filter = id;
-    if (view) call("setSetting", { key: `player.filter.${view.show.id}`, value: id === "none" ? null : id }).catch(() => {});
+    keepFilter(id);
+  }
+
+  /** Anime4K is for a picture shown at well over its own size: says so, once, for a show with no filter picked. */
+  function suggestFilter() {
+    if (!view || !video?.videoHeight || recap || settings[`player.filter.${view.show.id}`] !== undefined) return;
+    const box = video.parentElement as HTMLElement;
+    const stretch = Math.min(box.clientWidth / video.videoWidth, box.clientHeight / video.videoHeight) * devicePixelRatio;
+    if (stretch < 1.5) return;
+    flash("Low-resolution picture: try Anime4K (V)", 6000);
+    keepFilter("none");
   }
 
   // The filtered picture: drawn again for each frame of the video, and when the window's size changes.

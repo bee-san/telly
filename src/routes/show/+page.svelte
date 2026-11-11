@@ -277,9 +277,9 @@
   .ep-row { display: grid; grid-template-columns: 44px minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1.2fr) 96px 120px; gap: 12px; align-items: center; padding: 9px 6px; border-bottom: 1px solid var(--rule); font-size: 13px; color: var(--ink-2); }
   .ep-row.head { font: 600 12px/1 var(--font-ui); color: var(--ink-3); padding: 10px 6px; }
   button.ep-row { all: unset; box-sizing: border-box; display: grid; grid-template-columns: 44px minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1.2fr) 96px 120px; gap: 12px; align-items: center; padding: 9px 6px; border-bottom: 1px solid var(--rule); font-size: 13px; color: var(--ink-2); width: 100%; cursor: pointer; }
-  button.ep-row:hover { background: var(--surface); }
   /* Rows off screen aren't laid out or painted until they're scrolled to. */
   button.ep-row { content-visibility: auto; contain-intrinsic-size: auto 43px; }
+  button.ep-row:hover { background: var(--surface); }
   button.ep-row.next { background: var(--surface); }
   button.ep-row:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
   .ep-n { font: 500 13px/1 var(--font-mono); color: var(--ink); font-variant-numeric: tabular-nums; }

@@ -1,20 +1,21 @@
 //! What's in a rip (ffprobe), what WebView2 can play, and making a copy it
 //! can (ffmpeg).
 //!
-//! WebView2 plays H.264, VP9 and AV1 with AAC, MP3 or Opus. Rips straight from
-//! MakeMKV are usually MPEG-2 with AC-3, and Blu-ray encodes are often 10-bit
-//! HEVC, which it can't. So each episode gets one of four plans:
+//! WebView2 plays H.264, HEVC, VP9 and AV1, 8-bit or 10-bit, with AAC, MP3,
+//! Opus, FLAC, AC-3 or E-AC-3, in MP4 or MKV (one file of each kind played in
+//! Edge 157's engine, HEVC on the graphics card). Rips straight from MakeMKV
+//! are usually MPEG-2, which it can't. So each episode gets one of four plans:
 //!
-//!   direct  it plays as it is
-//!   remux   right codecs, wrong container (MKV): copied into MP4, in seconds
-//!   audio   the audio is converted to AAC and the video copied
+//!   direct  it plays as it is: the player loads the rip itself
+//!   remux   right codecs, wrong container (AVI): copied into MP4, in seconds
+//!   audio   the audio (DTS, TrueHD) is converted to AAC and the video copied
 //!   video   converted to H.264, on the GPU's encoder when there is one, with
 //!           the DVD's telecine undone or the picture deinterlaced, square
 //!           pixels, and a keyframe every 2 seconds so seeking is instant
 //!
 //! The Japanese audio track is picked by its language tag, unless the player
-//! picked another for the show. It's the only one in Telly's copy, so it's the
-//! one that plays.
+//! picked another for the show. A rip that plays as it is keeps all its
+//! tracks, and the player switches to that one; Telly's copy holds only it.
 
 use crate::util::command;
 use anyhow::{anyhow, Context, Result};
@@ -223,29 +224,39 @@ pub fn japanese_audio(probe: &Probe) -> usize {
 fn video_plays(v: &VideoInfo) -> bool {
     let eight_bit = matches!(v.pix_fmt.as_str(), "yuv420p" | "yuvj420p" | "nv12");
     match v.codec.as_str() {
-        "h264" => eight_bit && !v.profile.to_lowercase().contains("10"),
+        // 10-bit H.264 has no hardware decoder: the processor decodes it.
+        "h264" | "hevc" | "av1" => eight_bit || v.pix_fmt == "yuv420p10le",
         "vp8" | "vp9" => eight_bit,
-        "av1" => eight_bit || v.pix_fmt == "yuv420p10le",
         _ => false,
     }
 }
 
+/// Audio that goes into Telly's MP4 copy as it is; the rest is converted to AAC.
 fn audio_plays_in_mp4(a: &AudioInfo) -> bool {
     matches!(a.codec.as_str(), "aac" | "mp3" | "opus")
 }
 
+/// Audio the player plays from the rip itself. It doesn't list a track it
+/// can't play (DTS, TrueHD) among the rip's audio tracks.
+pub fn audio_plays(a: &AudioInfo) -> bool {
+    audio_plays_in_mp4(a) || matches!(a.codec.as_str(), "flac" | "ac3" | "eac3")
+}
+
 fn container_plays(probe: &Probe, path: &Path) -> bool {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-    probe.format.contains("mp4") && matches!(ext.as_str(), "mp4" | "m4v" | "mov")
+    (probe.format.contains("mp4") && matches!(ext.as_str(), "mp4" | "m4v" | "mov"))
+        || (probe.format.contains("matroska") && matches!(ext.as_str(), "mkv" | "webm"))
 }
 
 /// How to get an episode playing with its audio track `audio` (a position
 /// among the audio tracks).
 pub fn plan(probe: &Probe, path: &Path, audio: usize) -> Plan {
     let Some(video) = &probe.video else { return Plan::Video };
-    let audio_ok = probe.audio.get(audio).is_some_and(audio_plays_in_mp4);
-    match (video_plays(video), audio_ok) {
-        (true, true) if container_plays(probe, path) && audio == 0 => Plan::Direct,
+    let track = probe.audio.get(audio);
+    if video_plays(video) && track.is_some_and(audio_plays) && container_plays(probe, path) {
+        return Plan::Direct;
+    }
+    match (video_plays(video), track.is_some_and(audio_plays_in_mp4)) {
         (true, true) => Plan::Remux,
         (true, false) => Plan::Audio,
         _ => Plan::Video,
@@ -712,14 +723,29 @@ mod tests {
         j["streams"][0]["codec_name"] = json!("h264");
         j["streams"][0]["profile"] = json!("High");
         j["streams"][2]["codec_name"] = json!("aac");
+        // An MKV plays as it is, whichever of its audio tracks is the Japanese one.
         let p = parse_probe(&j);
-        assert_eq!(plan(&p, Path::new("a.mkv"), 1), Plan::Remux);
+        assert_eq!(plan(&p, Path::new("a.mkv"), 1), Plan::Direct);
         j["streams"][2]["codec_name"] = json!("flac");
-        assert_eq!(plan(&parse_probe(&j), Path::new("a.mkv"), 1), Plan::Audio);
+        assert_eq!(plan(&parse_probe(&j), Path::new("a.mkv"), 1), Plan::Direct);
+        // So does 10-bit HEVC, and 10-bit H.264.
         j["streams"][0]["codec_name"] = json!("hevc");
         j["streams"][0]["pix_fmt"] = json!("yuv420p10le");
+        assert_eq!(plan(&parse_probe(&j), Path::new("a.mkv"), 1), Plan::Direct);
+        j["streams"][0]["codec_name"] = json!("h264");
+        j["streams"][0]["profile"] = json!("High 10");
+        assert_eq!(plan(&parse_probe(&j), Path::new("a.mkv"), 1), Plan::Direct);
+        // Audio the player can't play is converted, and the picture copied.
+        j["streams"][2]["codec_name"] = json!("dts");
+        assert_eq!(plan(&parse_probe(&j), Path::new("a.mkv"), 1), Plan::Audio);
+        // 4:4:4 hasn't been seen to play.
+        j["streams"][2]["codec_name"] = json!("aac");
+        j["streams"][0]["pix_fmt"] = json!("yuv444p10le");
         assert_eq!(plan(&parse_probe(&j), Path::new("a.mkv"), 1), Plan::Video);
-        // An MP4 with the Japanese track first plays as it is.
+        // The right codecs in an AVI are copied into MP4.
+        j["streams"][0]["pix_fmt"] = json!("yuv420p");
+        j["format"]["format_name"] = json!("avi");
+        assert_eq!(plan(&parse_probe(&j), Path::new("a.avi"), 1), Plan::Remux);
         let mp4 = json!({"format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2", "duration": "1400"},
           "streams": [{"index": 0, "codec_type": "video", "codec_name": "h264", "pix_fmt": "yuv420p", "profile": "High"},
                       {"index": 1, "codec_type": "audio", "codec_name": "aac", "tags": {"language": "jpn"}}]});

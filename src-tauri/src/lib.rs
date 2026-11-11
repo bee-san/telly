@@ -114,12 +114,14 @@ fn set_host_status(app: &AppHandle, status: HostStatus) {
 }
 
 /// WebView2's browser arguments, for every window (WebView2 refuses windows that
-/// share a data folder but not their arguments). Tauri passes its own, which
-/// makes WebView2 ignore WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, so when that's
-/// set it's added to Tauri's here (`--remote-debugging-port=9222` lets DevTools drive the app).
-fn browser_args() -> Option<String> {
-    let extra = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").ok().filter(|a| !a.trim().is_empty())?;
-    Some(format!("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required {extra}"))
+/// share a data folder but not their arguments): Tauri's own, and AudioVideoTracks,
+/// which gives the player a rip's audio tracks to choose from (a rip that plays
+/// as it is keeps all of them). Passing any makes WebView2 ignore
+/// WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, so that's added here
+/// (`--remote-debugging-port=9222` lets DevTools drive the app).
+fn browser_args() -> String {
+    let extra = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
+    format!("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required --enable-blink-features=AudioVideoTracks {extra}")
 }
 
 /// Opens (or reloads) the hidden window that keeps Hachidori's engine running
@@ -158,20 +160,19 @@ async fn hachidori_start(app: AppHandle, backend: State<'_, Arc<Backend>>, state
         window.navigate(url).map_err(|e| e.to_string())?;
         return Ok(true);
     }
-    let mut host = WebviewWindowBuilder::new(&app, HOST_WINDOW, WebviewUrl::External(url))
+    WebviewWindowBuilder::new(&app, HOST_WINDOW, WebviewUrl::External(url))
         .title("Hachidori engine")
         .visible(false)
         .skip_taskbar(true)
         .browser_extensions_enabled(true)
+        .additional_browser_args(&browser_args())
         .on_document_title_changed(|window, title| {
             if let Some(status) = HostStatus::from_title(&title) {
                 set_host_status(window.app_handle(), status);
             }
-        });
-    if let Some(args) = browser_args() {
-        host = host.additional_browser_args(&args);
-    }
-    host.build().map_err(|e| e.to_string())?;
+        })
+        .build()
+        .map_err(|e| e.to_string())?;
     Ok(true)
 }
 
@@ -190,14 +191,13 @@ async fn open_hachidori_settings(app: AppHandle, state: State<'_, HachidoriState
         return Ok(());
     }
     let url = hachidori::page_url(prepared, "settings.html").parse::<Url>().map_err(|e| e.to_string())?;
-    let mut window = WebviewWindowBuilder::new(&app, SETTINGS_WINDOW, WebviewUrl::External(url))
+    WebviewWindowBuilder::new(&app, SETTINGS_WINDOW, WebviewUrl::External(url))
         .title("Hachidori settings — Telly")
         .inner_size(1100.0, 820.0)
-        .browser_extensions_enabled(true);
-    if let Some(args) = browser_args() {
-        window = window.additional_browser_args(&args);
-    }
-    window.build().map_err(|e| e.to_string())?;
+        .browser_extensions_enabled(true)
+        .additional_browser_args(&browser_args())
+        .build()
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -289,12 +289,10 @@ pub fn run() {
                 .inner_size(1280.0, 820.0)
                 .min_inner_size(960.0, 600.0)
                 .decorations(false)
-                .browser_extensions_enabled(cfg!(windows));
+                .browser_extensions_enabled(cfg!(windows))
+                .additional_browser_args(&browser_args());
             if let Some(dir) = &hachidori.extensions_dir {
                 main = main.extensions_path(dir);
-            }
-            if let Some(args) = browser_args() {
-                main = main.additional_browser_args(&args);
             }
             main.build()?;
             app.manage(HachidoriState { hachidori, status: Mutex::new(None), starts: AtomicU64::new(0) });

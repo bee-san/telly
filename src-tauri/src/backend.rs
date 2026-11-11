@@ -714,6 +714,7 @@ impl Backend {
             "opening": media::opening(&probe).map(|(start, end)| json!({ "start": start, "end": end })),
             "audio": audio,
             "audioTrack": jobs::playing_track(&episode, &probe),
+            "listedAudio": jobs::listed_track(&episode, &probe),
             "src": format!("/ep/{id}?v={}-{}", episode.media_plan, episode.audio_track.unwrap_or(-1)),
             "episode": episode,
             "lines": lines,

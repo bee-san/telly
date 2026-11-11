@@ -210,6 +210,8 @@ export interface PlayerView {
   /** The rip's audio tracks, by name, and which one plays. */
   audio: string[];
   audioTrack: number;
+  /** Which of the audio tracks the player lists is that one (it lists those of the file it loads that it can play). */
+  listedAudio: number;
   /** openPlayer only: how long since the show was last open, in ms (null the first time). */
   awayMs?: number | null;
   /** openPlayer only: whether there's an episode before this one to recap, and whether its recap is written. */
@@ -245,6 +247,8 @@ export interface Moment {
   episodeId: number;
   number: number;
   src: string;
+  /** As PlayerView's. */
+  listedAudio: number;
   playable: boolean;
   nudgeMs: number;
 }

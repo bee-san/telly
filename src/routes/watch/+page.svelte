@@ -294,8 +294,15 @@
     return 0;
   }
 
+  /** Plays the audio track `listed` of those the player lists: a rip that plays as it is has all its tracks, and starts on its first. */
+  function pickAudio(el: HTMLVideoElement, listed: number) {
+    const tracks = (el as HTMLVideoElement & { audioTracks?: ArrayLike<{ enabled: boolean }> }).audioTracks;
+    if (tracks?.[listed] && !tracks[listed].enabled) tracks[listed].enabled = true;
+  }
+
   function onLoaded() {
     if (!video) return;
+    if (view) pickAudio(video, view.listedAudio);
     duration = video.duration || view?.episode.duration || 0;
     const reload = reloadAt;
     reloadAt = null;
@@ -470,6 +477,7 @@
       reloadAt = { t: video.currentTime, paused: video.paused };
       view.episode = v.episode;
       view.audioTrack = v.audioTrack;
+      view.listedAudio = v.listedAudio;
       view.src = v.src;
       toast({ key: "audio", state: "done", title: "Audio changed", text: name });
     } catch (e) {
@@ -850,6 +858,7 @@
   /** Seeks to the moment playing and plays it (on load, for another episode). */
   function startMoment() {
     if (!montage || !montageVideo) return;
+    pickAudio(montageVideo, moments[montage.i].listedAudio);
     montageVideo.currentTime = moments[montage.i].start;
     montageVideo.play().catch(() => {});
   }

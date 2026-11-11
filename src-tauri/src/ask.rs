@@ -558,6 +558,7 @@ fn recap_view(backend: &Backend, show_id: i64, source: &Source, recap: &Recap) -
                 "episodeId": e.id,
                 "number": e.number,
                 "src": format!("/ep/{}?v={}", e.id, e.media_plan),
+                "listedAudio": jobs::stored_probe(backend, e.id).map(|p| jobs::listed_track(e, &p)).unwrap_or(0),
                 "playable": e.media_state == "ready",
                 "nudgeMs": e.subs_nudge_ms,
             }));

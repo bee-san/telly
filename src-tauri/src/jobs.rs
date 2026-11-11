@@ -273,6 +273,13 @@ pub fn playing_track(episode: &Episode, probe: &media::Probe) -> usize {
     episode.audio_track.map(|t| t as usize).unwrap_or_else(|| media::japanese_audio(probe))
 }
 
+/// Which of the audio tracks the player lists is the one a ready episode
+/// plays. The player lists the tracks it can play of the file it loads, in
+/// the file's order: all of a rip that plays as it is, the only one of a copy.
+pub fn listed_track(episode: &Episode, probe: &media::Probe) -> usize {
+    probe.audio.iter().take(episode.audio_index as usize).filter(|a| media::audio_plays(a)).count()
+}
+
 /// What ffprobe found in an episode's rip when it was got ready.
 pub fn stored_probe(backend: &Backend, episode_id: i64) -> Option<media::Probe> {
     serde_json::from_str(&backend.db.probe(episode_id).ok()?).ok()
@@ -1189,6 +1196,18 @@ mod tests {
             subs_offset_ms: None,
             subs_nudge_ms: 0,
         }
+    }
+
+    #[test]
+    fn the_player_s_list_leaves_out_tracks_it_can_t_play() {
+        let track = |codec: &str| media::AudioInfo { codec: codec.into(), ..Default::default() };
+        let probe = media::Probe { audio: vec![track("dts"), track("ac3"), track("opus")], ..Default::default() };
+        // The rip's third track is the second the player lists: it can't play DTS.
+        let mut rip = ep(1, false, 0.0, 0);
+        rip.audio_index = 2;
+        assert_eq!(listed_track(&rip, &probe), 1);
+        // Telly's copy holds one track.
+        assert_eq!(listed_track(&ep(2, false, 0.0, 0), &probe), 0);
     }
 
     #[test]

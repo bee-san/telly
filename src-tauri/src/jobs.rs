@@ -109,6 +109,8 @@ pub struct Jobs {
     catching_up: Mutex<Option<Task>>,
     /// The episodes `catch_up_worker` has looked at since Telly started.
     caught_up: Mutex<HashSet<i64>>,
+    /// The episodes `keep_own_files` has looked beside since Telly started.
+    looked_beside: Mutex<HashSet<i64>>,
     /// A download (Whisper's model).
     pub download: Mutex<Option<Task>>,
     /// Stops the running conversion (the show was removed, or Telly is closing).
@@ -132,6 +134,7 @@ impl Default for Jobs {
             subs: std::array::from_fn(|_| Mutex::new(None)),
             catching_up: Mutex::new(None),
             caught_up: Mutex::new(HashSet::new()),
+            looked_beside: Mutex::new(HashSet::new()),
             download: Mutex::new(None),
             cancel_media: AtomicBool::new(false),
             jimaku_files: Mutex::new(HashMap::new()),
@@ -621,6 +624,9 @@ fn subs_worker(backend: &Backend, n: usize) {
     loop {
         backend.jobs.wait(&mut seen, Duration::from_secs(5));
         let tools = backend.tools();
+        if n == 0 {
+            keep_own_files(backend);
+        }
         let (Some(ffmpeg), Some(ffprobe)) = (tools.ffmpeg.clone(), tools.ffprobe.clone()) else { continue };
         while let Some((show, episode, count)) = take(backend, "subs") {
             set_task(slot, Some(task(&show, &episode, "Finding subtitles for")));
@@ -1137,8 +1143,28 @@ fn embedded(backend: &Backend, tracks: &[media::TrackTiming], episode: &Episode)
     out
 }
 
+/// Where a subtitle file beside a rip stands among the others there, from
+/// what its name adds to the rip's (".alass.srt"): one you re-timed with alass
+/// first, then one marked as Japanese (".ja.srt", ".jpn.srt"), then one named
+/// just as the rip (".srt"), and a machine-made one (".ai.srt") last. Of two
+/// alike, the shorter name: ".ja.srt" before ".jp[sdh].ja.srt".
+fn beside_rank(added: &str) -> (u8, usize) {
+    let added = added.to_lowercase();
+    let kind = if added.contains(".alass.") {
+        0
+    } else if added.contains(".ai.") {
+        3
+    } else if added.matches('.').count() == 1 {
+        2
+    } else {
+        1
+    };
+    (kind, added.len())
+}
+
 /// Japanese subtitle files beside the rip and named after it: "Episode 01.srt",
-/// "Episode 01.ja.srt", "Episode 01.alass.srt".
+/// "Episode 01.ja.srt", "Episode 01.alass.srt". The one to use comes first
+/// (see `beside_rank`).
 fn beside(episode: &Episode) -> Vec<jimaku::Local> {
     let rip = Path::new(&episode.path);
     let (Some(folder), Some(stem)) = (rip.parent(), rip.file_stem().and_then(|s| s.to_str())) else { return Vec::new() };
@@ -1155,8 +1181,58 @@ fn beside(episode: &Episode) -> Vec<jimaku::Local> {
             wanted.then(|| jimaku::Local { name, path, episode: Some(episode.number) })
         })
         .collect();
-    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out.sort_by(|a, b| beside_rank(&a.name[stem.len()..]).cmp(&beside_rank(&b.name[stem.len()..])).then(a.name.cmp(&b.name)));
     out
+}
+
+/// In an episode's details when its subtitles are a file of yours, untouched.
+const AS_IT_IS: &str = "as it is";
+/// In an episode's details when you picked its subtitle file yourself.
+const BY_HAND: &str = "chosen by hand";
+
+/// Uses a Japanese subtitle file beside the rip as it is: the first of `own`
+/// (see `beside`). Nothing of the rip is read, and no sync moves the file: you
+/// put it there. The others stay on the episode's page to switch to.
+fn keep_beside(backend: &Backend, episode: &Episode, own: &[jimaku::Local]) -> Result<()> {
+    let file = &own[0];
+    write_lines(backend, episode.id, &japanese_lines(&file.path, &file.name)?)?;
+    let tried: Vec<Tried> = own.iter().map(|f| Tried { name: f.name.clone(), path: f.path.to_string_lossy().into_owned(), score: 0.0, offset_ms: 0, error: String::new() }).collect();
+    std::fs::write(tried_path(backend, episode.id), serde_json::to_vec(&tried)?)?;
+    backend.db.set_subs(episode.id, "synced", &format!("beside the rip · {AS_IT_IS}"), &file.name, None, Some(0))?;
+    crate::premine::prepare(backend, episode.id);
+    Ok(())
+}
+
+/// Gives every episode with a Japanese subtitle file beside its rip that file,
+/// all shows through, before any rip is read: thousands of episodes in the
+/// time one rip takes to read. Once, it also goes back over episodes Telly
+/// settled another way although such a file was there (a sync had moved the
+/// file, swapped it for one of Jimaku's, or found it didn't fit), but not
+/// those whose file you picked.
+fn keep_own_files(backend: &Backend) {
+    let again = backend.db.setting_i64("subs.own", 0) < 1;
+    for show in shows_in_order(backend) {
+        for episode in backend.db.episodes(show.id).unwrap_or_default() {
+            let waiting = episode.subs_state == "pending";
+            let settled_otherwise = again
+                && matches!(episode.subs_state.as_str(), "synced" | "check" | "none")
+                && !episode.subs_detail.contains(AS_IT_IS)
+                && !episode.subs_detail.contains(BY_HAND);
+            if !(waiting || settled_otherwise) || !backend.jobs.looked_beside.lock().unwrap_or_else(|e| e.into_inner()).insert(episode.id) {
+                continue;
+            }
+            let own = beside(&episode);
+            if own.is_empty() || (waiting && !backend.db.claim_subs(episode.id).unwrap_or(false)) {
+                continue;
+            }
+            if let Err(e) = keep_beside(backend, &episode, &own) {
+                let _ = backend.db.set_subs_state(episode.id, "failed", &format!("{e:#}"));
+            }
+        }
+    }
+    if again {
+        let _ = backend.db.set_setting("subs.own", &serde_json::json!(1));
+    }
 }
 
 /// A file a sync would move less than this is in sync already (a sync centres
@@ -1193,7 +1269,7 @@ fn keep_own(backend: &Backend, episode: &Episode, own: &[jimaku::Local], timing:
     let Some((file, synced, _)) = best else { return Ok(false) };
     write_lines(backend, episode.id, &japanese_lines(&file.path, &file.name)?)?;
     std::fs::write(tried_path(backend, episode.id), serde_json::to_vec(&tried)?)?;
-    let detail = format!("in sync as it is · matched to {}", timing.against);
+    let detail = format!("in sync {AS_IT_IS} · matched to {}", timing.against);
     backend.db.set_subs(episode.id, "synced", &detail, &file.name, Some(synced.score), Some(0))?;
     crate::premine::prepare(backend, episode.id);
     Ok(true)
@@ -1337,6 +1413,10 @@ pub fn pick_subtitles(files: &[jimaku::Local], pool: &[jimaku::Local], timing: &
 }
 
 fn find_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &Path, ffprobe: &Path, show: &Show, episode: &Episode, count: usize) -> Result<()> {
+    let own = beside(episode);
+    if !own.is_empty() {
+        return keep_beside(backend, episode, &own);
+    }
     let key = backend.db.setting_str("jimaku.key");
     let rip = Path::new(&episode.path);
     let probe = media::probe(ffprobe, rip)?;
@@ -1368,7 +1448,6 @@ fn find_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &Path, 
         rip_tracks();
     }
     let mut files = if probe.subtitles.iter().any(|s| japanese_text(&s.language, &s.codec)) { embedded(backend, rip_tracks(), episode) } else { Vec::new() };
-    files.extend(beside(episode));
     let video = rip.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let read_timing = || match subtitle_timing(&probe, rip_tracks()) {
         Some(timing) => Ok(timing),
@@ -1377,8 +1456,8 @@ fn find_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &Path, 
             speech_timing(ffmpeg, &probe, episode).context("reading the episode’s timing")
         }
     };
-    // The rip's own Japanese subtitles (a track inside it, a file beside it)
-    // are kept as they are when they're in sync already, and Jimaku isn't asked.
+    // A Japanese track inside the rip is kept as it is when it's in sync
+    // already, and Jimaku isn't asked.
     let mut timing = None;
     if !files.is_empty() {
         let read = read_timing()?;
@@ -1489,7 +1568,7 @@ pub fn use_file(backend: &Backend, episode: &Episode, path: &Path, name: &str) -
     }
     write_lines(backend, episode.id, &synced.lines)?;
     let state = if synced.score >= GOOD_SYNC { "synced" } else { "check" };
-    let detail = format!("{} · matched to {}", describe(&synced), timing.against);
+    let detail = format!("{} · matched to {} · {BY_HAND}", describe(&synced), timing.against);
     backend.db.set_subs(episode.id, state, &detail, name, Some(synced.score), Some(synced.offset_ms))?;
     crate::premine::prepare(backend, episode.id);
     Ok(synced)
@@ -1549,6 +1628,40 @@ mod tests {
         backend.db.media_reset(first.id).unwrap();
         assert_eq!(take(&backend, "probe").map(|(_, e, _)| e.number), Some(2));
         assert_eq!(take(&backend, "media").map(|(_, e, _)| e.number), Some(1));
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_japanese_file_beside_the_rip_is_used_as_it_is() {
+        let dir = std::env::temp_dir().join(format!("telly-own-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let rips = dir.join("rips");
+        std::fs::create_dir_all(&rips).unwrap();
+        let japanese = "1\n00:00:01,000 --> 00:00:03,000\nそこは魔法の世界。\n\n2\n00:00:04,000 --> 00:00:06,000\n彼らは魔道士と呼ばれる。\n";
+        // Episode 1 has a file of its own, episode 2 had one but Telly kept nothing, episode 3 was picked by hand, episode 4 has none.
+        for name in ["Show - 01.ja.srt", "Show - 01.srt", "Show - 02.ja.srt", "Show - 03.ja.srt"] {
+            std::fs::write(rips.join(name), japanese).unwrap();
+        }
+        let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let episodes = (1..=4).map(|number| crate::db::NewEpisode { number, path: rips.join(format!("Show - 0{number}.mkv")).to_string_lossy().into_owned(), size: 1, duration: 1400.0 }).collect();
+        let show = backend.db.add_show(&crate::db::NewShow { folder: rips.to_string_lossy().into_owned(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let ids: Vec<i64> = backend.db.episodes(show).unwrap().iter().map(|e| e.id).collect();
+        backend.db.set_subs(ids[1], "none", "None of Jimaku’s 3 files fit this episode", "", Some(0.0), None).unwrap();
+        backend.db.set_subs(ids[2], "synced", &format!("shifted +1.0 s · matched to the speech · {BY_HAND}"), "Other.srt", Some(0.9), Some(1000)).unwrap();
+        // No rip is there to read, and none is.
+        keep_own_files(&backend);
+        let after = backend.db.episodes(show).unwrap();
+        let told: Vec<(&str, &str, &str)> = after.iter().map(|e| (e.subs_state.as_str(), e.subs_file.as_str(), e.subs_detail.as_str())).collect();
+        assert_eq!(told[0], ("synced", "Show - 01.ja.srt", "beside the rip · as it is"));
+        assert_eq!(told[1], ("synced", "Show - 02.ja.srt", "beside the rip · as it is"));
+        assert_eq!((told[2].0, told[2].1), ("synced", "Other.srt"));
+        assert_eq!(told[3].0, "pending");
+        // Its lines are where the file has them, and the other file is there to switch to.
+        let starts: Vec<f64> = read_lines(&backend, ids[0]).iter().map(|l| l.start).collect();
+        assert_eq!(starts, [1.0, 4.0]);
+        let others: Vec<String> = read_tried(&backend, ids[0]).into_iter().map(|t| t.name).collect();
+        assert_eq!(others, ["Show - 01.ja.srt", "Show - 01.srt"]);
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -1620,15 +1733,16 @@ mod tests {
         std::fs::create_dir_all(&folder).unwrap();
         let japanese = "1\n00:00:01,000 --> 00:00:03,000\nそこは魔法の世界。\n\n2\n00:00:04,000 --> 00:00:06,000\n彼らは魔道士と呼ばれる。\n";
         let english = "1\n00:00:01,000 --> 00:00:03,000\nA world of magic.\n\n2\n00:00:04,000 --> 00:00:06,000\nThey are called wizards.\n";
-        for (name, text) in [("Show - 01.mkv", ""), ("Show - 01.srt", english), ("Show - 01.jpn.srt", japanese), ("Show - 01.alass.srt", japanese), ("Show - 010.srt", japanese), ("Show - 01.txt", japanese)] {
+        for (name, text) in [("Show - 01.mkv", ""), ("Show - 01.en.srt", english), ("Show - 01.srt", japanese), ("Show - 01.ai.srt", japanese), ("Show - 01.jp[sdh].ja.srt", japanese), ("Show - 01.jpn.srt", japanese), ("Show - 01.alass.srt", japanese), ("Show - 010.srt", japanese), ("Show - 01.txt", japanese)] {
             std::fs::write(folder.join(name), text).unwrap();
         }
         let mut rip = ep(1, false, 0.0, 0);
         rip.path = folder.join("Show - 01.mkv").to_string_lossy().into_owned();
         let found: Vec<String> = beside(&rip).into_iter().map(|f| f.name).collect();
         std::fs::remove_dir_all(&folder).unwrap();
-        // Not the English file, another episode's, or one that isn't subtitles.
-        assert_eq!(found, ["Show - 01.alass.srt", "Show - 01.jpn.srt"]);
+        // Not the English file, another episode's, or one that isn't subtitles. The one
+        // re-timed with alass first, then those marked Japanese, the bare one, the machine-made one.
+        assert_eq!(found, ["Show - 01.alass.srt", "Show - 01.jpn.srt", "Show - 01.jp[sdh].ja.srt", "Show - 01.srt", "Show - 01.ai.srt"]);
     }
 
     #[test]

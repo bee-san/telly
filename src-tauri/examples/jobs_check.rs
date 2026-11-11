@@ -1,6 +1,6 @@
 //! Runs Telly's background work over a library until every episode's
-//! subtitles are settled, and says when each was and what the title bar said
-//! meanwhile.
+//! subtitles are settled and nothing more is going on, and says when each was
+//! and what the title bar said meanwhile.
 //!
 //!   cargo run --profile measure --example jobs_check -- <data dir>
 //!
@@ -36,11 +36,16 @@ fn main() -> anyhow::Result<()> {
     jobs::start(backend.clone());
     let mut settled = HashSet::new();
     let mut bar = String::new();
+    // When the title bar last said something: work may start a moment after the last ended.
+    let mut busy_at = 0.0;
     loop {
         std::thread::sleep(Duration::from_millis(250));
         let at = started.elapsed().as_secs_f64();
         let activity = backend.call("activity", json!({}))?;
         let now = title_bar(&activity);
+        if activity["tasks"].as_array().is_some_and(|t| !t.is_empty()) {
+            busy_at = at;
+        }
         if now != bar {
             println!("{at:>7.1} s  title bar: {now}");
             bar = now;
@@ -52,8 +57,8 @@ fn main() -> anyhow::Result<()> {
                 println!("{at:>7.1} s  {title} {}: {} ({}), video {}", e.number, e.subs_state, e.subs_detail, e.media_state);
             }
         }
-        if settled.len() == episodes.len() && activity["tasks"].as_array().is_none_or(|t| t.is_empty()) {
-            println!("{at:.1} s for {} episodes", episodes.len());
+        if settled.len() == episodes.len() && at - busy_at >= 3.0 {
+            println!("{busy_at:.1} s for {} episodes", episodes.len());
             return Ok(());
         }
     }

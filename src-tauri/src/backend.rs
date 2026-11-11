@@ -828,7 +828,7 @@ impl Backend {
 
     /// The seek bar's pictures of an episode, beside where Telly's copy goes.
     fn sheet_path(&self, episode: &Episode) -> PathBuf {
-        jobs::copy_path(self, episode.show_id, episode.id).with_extension("jpg")
+        jobs::sheet_path(self, episode.show_id, episode.id)
     }
 
     /// The seek bar's pictures of an episode, made the first time it's asked for.

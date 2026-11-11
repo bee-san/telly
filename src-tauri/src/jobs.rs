@@ -3,7 +3,10 @@
 //!   - one worker converts video (heavy, one at a time)
 //!   - one reads what's in rips nobody has looked at yet, so a rip that plays
 //!     as it is doesn't wait behind a conversion
-//!   - a few find and sync subtitles (`SUBS_WORKERS`)
+//!   - a few find and sync subtitles (`SUBS_WORKERS`). The one read of a rip
+//!     that takes also makes what the player would else read the rip for when
+//!     the episode first plays: the seek bar's pictures and its English lines
+//!   - one catches up episodes got ready before that was so
 //!
 //! Work isn't queued as such. Each worker looks at the library and takes the
 //! most useful episode still waiting, which no other worker then gets:
@@ -24,7 +27,7 @@ use crate::jimaku;
 use crate::{anilist, matching, openrouter, scan};
 use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -97,11 +100,15 @@ impl Drop for Turn<'_> {
 pub struct Jobs {
     wake: Mutex<u64>,
     signal: Condvar,
-    /// What each worker is doing, for the title bar: the one converting,
-    /// the one reading rips for the first time, and each one finding subtitles.
+    /// What each worker is doing, for the title bar: the one converting, the
+    /// one reading rips for the first time, each one finding subtitles, and
+    /// the one catching up.
     media: Mutex<Option<Task>>,
     probing: Mutex<Option<Task>>,
     subs: [Mutex<Option<Task>>; SUBS_WORKERS],
+    catching_up: Mutex<Option<Task>>,
+    /// The episodes `catch_up_worker` has looked at since Telly started.
+    caught_up: Mutex<HashSet<i64>>,
     /// A download (Whisper's model).
     pub download: Mutex<Option<Task>>,
     /// Stops the running conversion (the show was removed, or Telly is closing).
@@ -123,6 +130,8 @@ impl Default for Jobs {
             media: Mutex::new(None),
             probing: Mutex::new(None),
             subs: std::array::from_fn(|_| Mutex::new(None)),
+            catching_up: Mutex::new(None),
+            caught_up: Mutex::new(HashSet::new()),
             download: Mutex::new(None),
             cancel_media: AtomicBool::new(false),
             jimaku_files: Mutex::new(HashMap::new()),
@@ -168,7 +177,7 @@ impl Jobs {
 
     /// What the workers are doing now, for the title bar.
     pub fn tasks(&self) -> Vec<Task> {
-        [&self.media, &self.probing].into_iter().chain(&self.subs).chain([&self.download]).filter_map(|slot| slot.lock().ok()?.clone()).collect()
+        [&self.media, &self.probing].into_iter().chain(&self.subs).chain([&self.catching_up, &self.download]).filter_map(|slot| slot.lock().ok()?.clone()).collect()
     }
 
     /// Turns at the drive `rip` is on. A worker takes one to read a rip from
@@ -214,7 +223,16 @@ fn shows_in_order(backend: &Backend) -> Vec<Show> {
     shows
 }
 
-/// The most useful episode waiting for `kind` ("media" or "subs") work.
+/// Whether an episode ready to play may be without its seek-bar pictures or
+/// its English lines: one of the files isn't there, and `catch_up_worker`
+/// hasn't looked at the episode yet.
+fn behind(backend: &Backend, episode: &Episode) -> bool {
+    let looked = backend.jobs.caught_up.lock().unwrap_or_else(|e| e.into_inner()).contains(&episode.id);
+    !looked && !(sheet_path(backend, episode.show_id, episode.id).is_file() && translation_path(backend, episode.id).is_file())
+}
+
+/// The most useful episode waiting for `kind` work: "media", "probe", "subs",
+/// "whisper" or "catch up".
 fn pick(backend: &Backend, kind: &str) -> Option<(Show, Episode, usize)> {
     let ahead = backend.db.setting_i64("convert.ahead", 10).max(1);
     let convert_rest = backend.db.setting_bool("convert.rest", false);
@@ -230,6 +248,8 @@ fn pick(backend: &Backend, kind: &str) -> Option<(Show, Episode, usize)> {
                 // A rip nobody has looked at yet has no plan.
                 "probe" => e.media_state == "pending" && e.media_plan.is_empty(),
                 "whisper" => e.subs_state == "whisper",
+                // While its subtitles are still to find, finding them reads the rip and makes these.
+                "catch up" => e.media_state == "ready" && !matches!(e.subs_state.as_str(), "pending" | "working") && behind(backend, &e),
                 _ => e.subs_state == "pending",
             };
             if !waiting {
@@ -304,6 +324,7 @@ pub fn start(backend: Arc<Backend>) {
     };
     start("telly-media".into(), |backend, _| media_worker(backend), 0);
     start("telly-probe".into(), |backend, _| probe_worker(backend), 0);
+    start("telly-catch-up".into(), |backend, _| catch_up_worker(backend), 0);
     for n in 0..SUBS_WORKERS {
         start(format!("telly-subs-{n}"), subs_worker, n);
     }
@@ -360,6 +381,45 @@ fn probe_worker(backend: &Backend) {
                     let _ = backend.db.media_failed(episode.id, &format!("{e:#}"));
                 }
             }
+        }
+    }
+}
+
+/// Makes the seek bar's pictures and keeps the rip's English lines for
+/// episodes got ready before `find_subtitles` made them, so the player doesn't
+/// read the rip from end to end when one first plays.
+fn catch_up_worker(backend: &Backend) {
+    let slot = &backend.jobs.catching_up;
+    let mut seen = 0;
+    loop {
+        backend.jobs.wait(&mut seen, Duration::from_secs(5));
+        let Some(ffmpeg) = backend.tools().ffmpeg else { continue };
+        while let Some((show, episode, _)) = pick(backend, "catch up") {
+            backend.jobs.caught_up.lock().unwrap_or_else(|e| e.into_inner()).insert(episode.id);
+            let Some(probe) = stored_probe(backend, episode.id) else { continue };
+            let rip = Path::new(&episode.path);
+            let sheet = sheet_path(backend, show.id, episode.id);
+            let pictures = !sheet.is_file();
+            let english = lacks_translation(backend, episode.id, &probe);
+            if !pictures && !english {
+                continue;
+            }
+            let doing = if pictures { "Making the seek bar’s pictures for" } else { "Reading the English lines of" };
+            set_task(slot, Some(task(&show, &episode, doing)));
+            let _ = std::fs::create_dir_all(sheet.parent().expect("a folder"));
+            // Telly's copy of an episode is quick to read: its pictures are made from it, on their own.
+            let from_rip = pictures && episode.play_path == episode.path;
+            if pictures && !from_rip {
+                let _ = media::make_sheet(&ffmpeg, Path::new(&episode.play_path), episode.duration, &sheet);
+            }
+            if from_rip || english {
+                let drive = backend.jobs.drive(rip);
+                let _turn = drive.take();
+                if let Ok(tracks) = media::read_rip(&ffmpeg, rip, &probe, from_rip.then_some(sheet.as_path())) {
+                    keep_translation(backend, episode.id, &probe, &tracks);
+                }
+            }
+            set_task(slot, None);
         }
     }
 }
@@ -430,6 +490,11 @@ pub fn copy_path(backend: &Backend, show_id: i64, episode_id: i64) -> PathBuf {
     backend.media_dir().join(show_id.to_string()).join(format!("{episode_id}.mp4"))
 }
 
+/// The seek bar's pictures of an episode, beside where Telly's copy goes.
+pub fn sheet_path(backend: &Backend, show_id: i64, episode_id: i64) -> PathBuf {
+    copy_path(backend, show_id, episode_id).with_extension("jpg")
+}
+
 /// Moves Telly's copies of episodes into the copies folder (Settings just
 /// chose another one), in the background. A copy on another drive is copied
 /// across, then deleted where it was.
@@ -472,6 +537,14 @@ pub fn move_copies(backend: Arc<Backend>) {
     });
 }
 
+/// How an episode gets playing, from what ffprobe found in its rip, and the
+/// audio track it plays.
+fn plan_for(backend: &Backend, episode: &Episode, probe: &media::Probe) -> (Plan, usize) {
+    let forced = backend.db.setting_bool(&format!("convert.force.{}", episode.id), false);
+    let audio = audio_track(backend, episode.show_id, probe);
+    (if forced { Plan::Video } else { media::plan(probe, Path::new(&episode.path), audio) }, audio)
+}
+
 /// Reads what's in an episode's rip and plans how to get it playing. A rip
 /// that plays as it is is ready there and then: None. Otherwise, what
 /// `convert_video` needs: what ffprobe found, the plan and the audio track.
@@ -481,9 +554,7 @@ fn plan_video(backend: &Backend, ffprobe: &Path, show: &Show, episode: &Episode)
         return Err(anyhow!("The file isn’t there any more: {}", episode.path));
     }
     let probe = media::probe(ffprobe, &source)?;
-    let forced = backend.db.setting_bool(&format!("convert.force.{}", episode.id), false);
-    let audio = audio_track(backend, show.id, &probe);
-    let plan = if forced { Plan::Video } else { media::plan(&probe, &source, audio) };
+    let (plan, audio) = plan_for(backend, episode, &probe);
     let probe_json = serde_json::to_string(&probe).unwrap_or_default();
     backend.db.set_probe(episode.id, &probe_json, probe.duration, media::ending_at(&probe), plan.name())?;
     if plan == Plan::Direct {
@@ -535,6 +606,8 @@ fn convert_video(backend: &Backend, ffmpeg: &Path, encoder: &str, show: &Show, e
         return Err(e);
     }
     std::fs::rename(&partial, &output).context("saving the converted video")?;
+    // The seek bar's pictures of the copy, so the player needn't make them when it first plays.
+    let _ = media::make_sheet(ffmpeg, &output, probe.duration, &sheet_path(backend, show.id, episode.id));
     backend.db.media_ready(episode.id, &output.to_string_lossy(), 0, audio as i64)?;
     Ok(())
 }
@@ -824,9 +897,37 @@ pub fn translation_path(backend: &Backend, episode_id: i64) -> PathBuf {
     backend.dirs.subs().join(format!("{episode_id}.en.json"))
 }
 
+/// Whether a rip has English lines as text that aren't kept yet.
+fn lacks_translation(backend: &Backend, episode_id: i64, probe: &media::Probe) -> bool {
+    media::english_text_track(probe).is_some() && !translation_path(backend, episode_id).is_file()
+}
+
+/// Keeps a rip's English lines for the player, without its signs: `text` is
+/// the track as a subtitle file of the kind `format`. A track with no lines
+/// Telly can read is kept as none, so the rip isn't read for them again.
+fn keep_lines(backend: &Backend, episode_id: i64, text: &str, format: &str) -> Result<Vec<Line>> {
+    let lines: Vec<Line> = subs::parse(&format!("track.{format}"), text.as_bytes()).unwrap_or_default().into_iter().filter(|l| !l.sign).collect();
+    std::fs::create_dir_all(backend.dirs.subs())?;
+    std::fs::write(translation_path(backend, episode_id), serde_json::to_vec(&lines)?)?;
+    Ok(lines)
+}
+
+/// Keeps a rip's English lines from its tracks as `media::read_rip` just read
+/// them, when they aren't kept yet: the player then never reads the rip for them.
+fn keep_translation(backend: &Backend, episode_id: i64, probe: &media::Probe, tracks: &[media::TrackTiming]) {
+    if !lacks_translation(backend, episode_id, probe) {
+        return;
+    }
+    let read = media::english_text_track(probe).and_then(|english| tracks.iter().find(|t| t.index == english.index));
+    if let Some(track) = read.filter(|t| !t.text.is_empty()) {
+        let _ = keep_lines(backend, episode_id, &track.text, media::text_format(&track.codec));
+    }
+}
+
 /// The rip's own English subtitles, timed to it already, for the player to
-/// show while Tab is held. Read from the rip once, then kept. None when the
-/// rip has none as text (picture subtitles can't be shown this way).
+/// show while Tab is held. Kept when the rip is read for its subtitles; else
+/// read from the rip once, then kept. None when the rip has none as text
+/// (picture subtitles can't be shown this way).
 pub fn translation(backend: &Backend, episode: &Episode) -> Result<Vec<Line>> {
     let kept = translation_path(backend, episode.id);
     if let Some(lines) = std::fs::read(&kept).ok().and_then(|b| serde_json::from_slice(&b).ok()) {
@@ -835,12 +936,9 @@ pub fn translation(backend: &Backend, episode: &Episode) -> Result<Vec<Line>> {
     let Some(probe) = stored_probe(backend, episode.id) else { return Ok(Vec::new()) };
     let Some(track) = media::english_text_track(&probe) else { return Ok(Vec::new()) };
     let ffmpeg = backend.tools().ffmpeg.ok_or_else(|| anyhow!("Telly needs ffmpeg for this. Choose it in Settings."))?;
-    let format = if matches!(track.codec.as_str(), "ass" | "ssa") { "ass" } else { "srt" };
+    let format = media::text_format(&track.codec);
     let text = media::read_subtitle_track(&ffmpeg, Path::new(&episode.path), track.index, format)?;
-    let lines: Vec<Line> = subs::parse(&format!("track.{format}"), text.as_bytes())?.into_iter().filter(|l| !l.sign).collect();
-    std::fs::create_dir_all(backend.dirs.subs())?;
-    std::fs::write(&kept, serde_json::to_vec(&lines)?)?;
-    Ok(lines)
+    keep_lines(backend, episode.id, &text, format)
 }
 
 /// Where people speak in an episode, from its Japanese track, and how long it
@@ -916,7 +1014,7 @@ pub fn language_name(code: &str) -> &'static str {
 /// The rip's own dialogue subtitles when it has them: timed to this very
 /// video, they place a file far more surely than the speech does. Otherwise its speech.
 pub fn timing_of(ffmpeg: &Path, probe: &media::Probe, episode: &Episode) -> Result<Timing> {
-    let tracks = media::subtitle_timings(ffmpeg, Path::new(&episode.path), probe).unwrap_or_default();
+    let tracks = media::read_rip(ffmpeg, Path::new(&episode.path), probe, None).unwrap_or_default();
     match subtitle_timing(probe, &tracks) {
         Some(timing) => Ok(timing),
         None => speech_timing(ffmpeg, probe, episode),
@@ -924,7 +1022,7 @@ pub fn timing_of(ffmpeg: &Path, probe: &media::Probe, episode: &Episode) -> Resu
 }
 
 /// The timing the rip's own dialogue subtitles give, from its subtitle tracks
-/// as `media::subtitle_timings` read them. None when it has no such track.
+/// as `media::read_rip` read them. None when it has no such track.
 fn subtitle_timing(probe: &media::Probe, tracks: &[media::TrackTiming]) -> Option<Timing> {
     let track = media::dialogue_track(tracks)?;
     let end = track.events.last().map(|e| e.1).unwrap_or(0.0);
@@ -1249,14 +1347,26 @@ fn find_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &Path, 
         update_task(slot, Some(&format!("Reading the timing of {} {}", show.title, episode.number)), 0.0);
         turn
     };
+    // The seek bar's pictures are made in the same read when the rip itself
+    // is what plays, and its English lines kept: the player then needn't read
+    // the rip when the episode first plays.
+    let sheet = Some(sheet_path(backend, show.id, episode.id)).filter(|sheet| !sheet.is_file() && plan_for(backend, episode, &probe).0 == Plan::Direct);
     // The rip's own subtitle tracks, read in one pass over it the first time they're wanted.
     let tracks = std::cell::OnceCell::new();
     let rip_tracks = || {
         tracks.get_or_init(|| {
             let _turn = reading();
-            media::subtitle_timings(ffmpeg, rip, &probe).unwrap_or_default()
+            if let Some(folder) = sheet.as_deref().and_then(Path::parent) {
+                let _ = std::fs::create_dir_all(folder);
+            }
+            let tracks = media::read_rip(ffmpeg, rip, &probe, sheet.as_deref()).unwrap_or_default();
+            keep_translation(backend, episode.id, &probe, &tracks);
+            tracks
         })
     };
+    if sheet.is_some() || lacks_translation(backend, episode.id, &probe) {
+        rip_tracks();
+    }
     let mut files = if probe.subtitles.iter().any(|s| japanese_text(&s.language, &s.codec)) { embedded(backend, rip_tracks(), episode) } else { Vec::new() };
     files.extend(beside(episode));
     let video = rip.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -1439,6 +1549,41 @@ mod tests {
         backend.db.media_reset(first.id).unwrap();
         assert_eq!(take(&backend, "probe").map(|(_, e, _)| e.number), Some(2));
         assert_eq!(take(&backend, "media").map(|(_, e, _)| e.number), Some(1));
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn what_the_player_wants_of_a_rip_is_kept_or_caught_up() {
+        let dir = std::env::temp_dir().join(format!("telly-catch-up-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let episodes = (1..=2).map(|number| crate::db::NewEpisode { number, path: format!("{number}.mkv"), size: 1, duration: 1400.0 }).collect();
+        let show = backend.db.add_show(&crate::db::NewShow { folder: "D:\\Anime\\Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let first = backend.db.episodes(show).unwrap().remove(0);
+        // The rip's English lines are kept from its tracks as they were read: the full track's, without its signs.
+        let track = |index: i64, title: &str, text: &str| (
+            media::SubtitleInfo { index, codec: "subrip".into(), language: "eng".into(), title: title.into() },
+            media::TrackTiming { index, codec: "subrip".into(), text: text.into(), ..Default::default() },
+        );
+        let (signs, read_signs) = track(2, "Signs & Songs", "1\n00:00:01,000 --> 00:00:03,000\nFAIRY TAIL\n\n");
+        let (full, read_full) = track(3, "Full", "1\n00:00:01,000 --> 00:00:03,000\nA world of magic.\n\n");
+        let probe = media::Probe { subtitles: vec![signs, full], ..Default::default() };
+        assert!(lacks_translation(&backend, first.id, &probe));
+        keep_translation(&backend, first.id, &probe, &[read_signs, read_full]);
+        assert!(!lacks_translation(&backend, first.id, &probe));
+        // The player gets them without the rip (which isn't even there) being read.
+        let lines: Vec<String> = translation(&backend, &first).unwrap().into_iter().map(|l| l.text).collect();
+        assert_eq!(lines, ["A world of magic."]);
+        // An episode whose subtitles are still to find gets its pictures then; one ready before is caught up.
+        assert!(pick(&backend, "catch up").is_none());
+        backend.db.media_ready(first.id, &first.path, 0, 0).unwrap();
+        backend.db.set_subs(first.id, "synced", "", "", None, None).unwrap();
+        assert_eq!(pick(&backend, "catch up").map(|(_, e, _)| e.number), Some(1));
+        let sheet = sheet_path(&backend, show, first.id);
+        std::fs::create_dir_all(sheet.parent().unwrap()).unwrap();
+        std::fs::write(&sheet, "pictures").unwrap();
+        assert!(pick(&backend, "catch up").is_none());
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

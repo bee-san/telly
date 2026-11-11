@@ -463,19 +463,29 @@ pub fn sheet_rows(duration: f64) -> usize {
     pictures.div_ceil(SHEET_COLUMNS)
 }
 
-/// ffmpeg's arguments for making the seek bar's pictures of `video`. Only
-/// keyframes are decoded, so it takes seconds; a picture is the keyframe
+/// How ffmpeg decodes a video for the seek bar's pictures, said before the
+/// input: keyframes only, each on several cores. Keyframes are seconds apart,
+/// so ffmpeg's usual threads (a frame each) decode them one after another:
+/// a 24-minute 1080p HEVC episode took 17.7 s that way and 4.6 s this way,
+/// for the same pictures.
+const SHEET_DECODING: [&str; 4] = ["-thread_type:v", "slice", "-skip_frame:v", "nokey"];
+
+/// ffmpeg's arguments for the seek bar's pictures of the input, `duration`
+/// seconds long, as one more thing it writes: a picture is the keyframe
 /// nearest its moment.
-pub fn sheet_args(video: &Path, duration: f64, output: &Path) -> Vec<String> {
+fn sheet_output(duration: f64, output: &Path) -> Vec<String> {
     // The last picture repeats to the sheet's end: after the last keyframe there would be black.
     let filter = format!("fps=1/{SHEET_EVERY},scale={SHEET_WIDTH}:-2,tpad=stop=-1:stop_mode=clone,tile={SHEET_COLUMNS}x{}", sheet_rows(duration));
-    [
-        "-nostdin", "-hide_banner", "-v", "error", "-y", "-skip_frame", "nokey", "-i", &video.to_string_lossy(),
-        "-map", "0:v:0", "-an", "-sn", "-vf", &filter, "-frames:v", "1", "-q:v", "5", "-f", "mjpeg", &output.to_string_lossy(),
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect()
+    ["-map", "0:v:0", "-an", "-sn", "-vf", &filter, "-frames:v", "1", "-q:v", "5", "-f", "mjpeg", &output.to_string_lossy()].iter().map(|s| s.to_string()).collect()
+}
+
+/// ffmpeg's arguments for making the seek bar's pictures of `video`. Only
+/// keyframes are decoded, so it takes seconds.
+pub fn sheet_args(video: &Path, duration: f64, output: &Path) -> Vec<String> {
+    let mut args: Vec<String> = ["-nostdin", "-hide_banner", "-v", "error", "-y"].iter().chain(&SHEET_DECODING).map(|s| s.to_string()).collect();
+    args.extend(["-i".into(), video.to_string_lossy().into_owned()]);
+    args.extend(sheet_output(duration, output));
+    args
 }
 
 /// Makes the seek bar's pictures of `video` at `output`.
@@ -636,10 +646,15 @@ fn picture_events(mut packets: Vec<(f64, f64, f64)>) -> Vec<(f64, f64)> {
 /// ffmpeg's arguments for reading every subtitle track of `path` in one pass
 /// over it, each into its own file in `folder`, named by its place in
 /// `tracks`: a text track as a subtitle file, a picture track as a list of
-/// its packets (nothing decoded). None when there's no track it can read.
-fn subtitle_args(path: &Path, tracks: &[TrackTiming], folder: &Path) -> Option<Vec<String>> {
-    let mut args: Vec<String> = ["-nostdin", "-hide_banner", "-v", "error", "-y", "-i"].iter().map(|a| a.to_string()).collect();
-    args.push(path.to_string_lossy().into_owned());
+/// its packets (nothing decoded). With `sheet` (how long the video is, and
+/// where to), the same pass makes the seek bar's pictures. None when there's
+/// nothing for it to write.
+fn rip_args(path: &Path, tracks: &[TrackTiming], folder: &Path, sheet: Option<(f64, &Path)>) -> Option<Vec<String>> {
+    let mut args: Vec<String> = ["-nostdin", "-hide_banner", "-v", "error", "-y"].iter().map(|a| a.to_string()).collect();
+    if sheet.is_some() {
+        args.extend(SHEET_DECODING.iter().map(|a| a.to_string()));
+    }
+    args.extend(["-i".into(), path.to_string_lossy().into_owned()]);
     let before = args.len();
     for (i, track) in tracks.iter().enumerate() {
         let format = if picture_codec(&track.codec) {
@@ -655,16 +670,24 @@ fn subtitle_args(path: &Path, tracks: &[TrackTiming], folder: &Path) -> Option<V
         }
         args.extend(["-f".into(), format.into(), folder.join(i.to_string()).to_string_lossy().into_owned()]);
     }
+    if let Some((duration, output)) = sheet {
+        args.extend(sheet_output(duration, output));
+    }
     (args.len() > before).then_some(args)
 }
 
-/// When the subtitles of each of the rip's subtitle tracks show, whatever
-/// their language, pictures included: the timing a release's own subtitles
-/// give its dialogue. Every track is read in one ffmpeg pass over the rip: a
-/// film on a USB hard drive takes minutes to read through, and a rip can
-/// carry 40 tracks. Text tracks are decoded, so their signs can be left out,
-/// and their text is kept; picture tracks are timed by their packets.
-pub fn subtitle_timings(ffmpeg: &Path, path: &Path, probe: &Probe) -> Result<Vec<TrackTiming>> {
+/// Reads a rip from end to end, once, for everything Telly wants of it.
+///
+/// When the subtitles of each of its subtitle tracks show, whatever their
+/// language, pictures included: the timing a release's own subtitles give its
+/// dialogue. Every track is read in the one ffmpeg pass: a film on a USB hard
+/// drive takes minutes to read through, and a rip can carry 40 tracks. Text
+/// tracks are decoded, so their signs can be left out, and their text is
+/// kept; picture tracks are timed by their packets.
+///
+/// With `sheet`, the same pass makes the seek bar's pictures there, as
+/// `make_sheet` would of this rip.
+pub fn read_rip(ffmpeg: &Path, path: &Path, probe: &Probe, sheet: Option<&Path>) -> Result<Vec<TrackTiming>> {
     static RUNS: AtomicU64 = AtomicU64::new(0);
     let mut out: Vec<TrackTiming> = probe
         .subtitles
@@ -672,13 +695,21 @@ pub fn subtitle_timings(ffmpeg: &Path, path: &Path, probe: &Probe) -> Result<Vec
         .map(|s| TrackTiming { index: s.index, title: s.title.clone(), language: s.language.clone(), codec: s.codec.clone(), ..Default::default() })
         .collect();
     let folder = std::env::temp_dir().join(format!("telly-tracks-{}-{}", std::process::id(), RUNS.fetch_add(1, Ordering::SeqCst)));
-    let Some(args) = subtitle_args(path, &out, &folder) else { return Ok(out) };
+    // Not `make_sheet`'s name for it: the player may ask for the pictures meanwhile.
+    let partial = sheet.map(|s| s.with_extension("jpg.reading"));
+    let Some(args) = rip_args(path, &out, &folder, partial.as_deref().map(|p| (probe.duration, p))) else { return Ok(out) };
     std::fs::create_dir_all(&folder)?;
     let ran = command(ffmpeg).args(args).stdin(Stdio::null()).output();
     let written: Vec<Option<Vec<u8>>> = (0..out.len()).map(|i| std::fs::read(folder.join(i.to_string())).ok()).collect();
     let _ = std::fs::remove_dir_all(&folder);
     if !ran.context("starting ffmpeg")?.status.success() {
-        return Err(anyhow!("ffmpeg couldn’t read the subtitle tracks of {}", path.display()));
+        if let Some(partial) = &partial {
+            let _ = std::fs::remove_file(partial);
+        }
+        return Err(anyhow!("ffmpeg couldn’t read {}", path.display()));
+    }
+    if let (Some(partial), Some(sheet)) = (&partial, sheet) {
+        std::fs::rename(partial, sheet).context("saving the seek bar’s pictures")?;
     }
     for (track, bytes) in out.iter_mut().zip(written) {
         let Some(bytes) = bytes else { continue };
@@ -773,7 +804,7 @@ mod tests {
         assert_eq!(sheet_rows(50.0), 1);
         assert_eq!(sheet_rows(50.1), 2);
         let args = sheet_args(Path::new("ep.mp4"), 1437.0, Path::new("ep.jpg")).join(" ");
-        assert!(args.contains("-skip_frame nokey -i ep.mp4") && args.contains("fps=1/5,scale=160:-2,tpad=stop=-1:stop_mode=clone,tile=10x29"), "{args}");
+        assert!(args.contains("-thread_type:v slice -skip_frame:v nokey -i ep.mp4") && args.contains("fps=1/5,scale=160:-2,tpad=stop=-1:stop_mode=clone,tile=10x29"), "{args}");
     }
 
     #[test]
@@ -836,14 +867,21 @@ mod tests {
     fn reads_every_subtitle_track_in_one_pass_over_the_rip() {
         let track = |index: i64, codec: &str| TrackTiming { index, codec: codec.into(), ..Default::default() };
         let tracks = [track(2, "ass"), track(3, "subrip"), track(4, "hdmv_pgs_subtitle"), track(5, "eia_608")];
-        let args = subtitle_args(Path::new("rip.mkv"), &tracks, Path::new("out")).unwrap();
+        let args = rip_args(Path::new("rip.mkv"), &tracks, Path::new("out"), None).unwrap();
         let file = |n: &str| Path::new("out").join(n).to_string_lossy().into_owned();
         // The rip is opened once. Text comes out as a subtitle file, pictures as a list of their packets.
         let wanted = ["-i", "rip.mkv", "-map", "0:2", "-f", "ass", &file("0"), "-map", "0:3", "-f", "srt", &file("1"), "-map", "0:4", "-c", "copy", "-f", "framecrc", &file("2")];
         assert_eq!(args[args.len() - wanted.len()..], wanted);
         assert_eq!(args.iter().filter(|a| *a == "-i").count(), 1);
         // Captions ffmpeg can't write as text or list are left alone.
-        assert_eq!(subtitle_args(Path::new("rip.mkv"), &tracks[3..], Path::new("out")), None);
+        assert_eq!(rip_args(Path::new("rip.mkv"), &tracks[3..], Path::new("out"), None), None);
+        // The seek bar's pictures are made in the same pass, as `sheet_args` makes them on their own.
+        let with_sheet = rip_args(Path::new("rip.mkv"), &tracks, Path::new("out"), Some((1437.0, Path::new("ep.jpg")))).unwrap().join(" ");
+        let alone = sheet_args(Path::new("rip.mkv"), 1437.0, Path::new("ep.jpg")).join(" ");
+        let (decoding, pictures) = alone.split_once(" -i rip.mkv ").unwrap();
+        assert!(with_sheet.starts_with(&format!("{decoding} -i rip.mkv -map 0:2 ")) && with_sheet.ends_with(&format!("framecrc {} {pictures}", file("2"))), "{with_sheet}");
+        // A rip without subtitles is still read for them.
+        assert!(rip_args(Path::new("rip.mkv"), &[], Path::new("out"), Some((1437.0, Path::new("ep.jpg")))).is_some());
     }
 
     #[test]

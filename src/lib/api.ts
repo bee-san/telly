@@ -85,6 +85,9 @@ export interface ShowCard extends Show {
   coverCaption: boolean;
   /** A film, listed as one rather than as an episode. */
   movie: boolean;
+  /** The uses of words in its scored episodes, and how many are of words you know (0 and 0 when none is scored). */
+  wordsUses: number;
+  wordsKnown: number;
   episodes: number;
   watched: number;
   mediaReady: number;
@@ -394,6 +397,15 @@ export interface Status {
 }
 
 export type Settings = Record<string, unknown>;
+
+/** What Settings → Known words chooses from: Anki's decks, its note types with the word's field, and how many notes the choice finds. */
+export interface KnownSources {
+  field: string;
+  decks: string[];
+  noteTypes: string[];
+  studied: number;
+  mature: number;
+}
 
 // ---- Hachidori (app only) -----------------------------------------------------
 

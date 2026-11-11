@@ -8,6 +8,7 @@ use crate::cards::{self, Event};
 use crate::covers;
 use crate::db::{Db, Episode, NewShow, Show};
 use crate::jobs::{self, Jobs, Task};
+use crate::known;
 use crate::log::{Log, Sitting};
 use crate::media;
 use crate::mining::{self, Mining};
@@ -138,6 +139,9 @@ pub struct ShowCard {
     pub cover_caption: bool,
     /// A film, listed as one rather than as an episode.
     pub movie: bool,
+    /// The uses of words in its scored episodes, and how many are of words you know (0 and 0 when none is scored).
+    pub words_uses: i64,
+    pub words_known: i64,
     pub episodes: usize,
     pub watched: usize,
     pub media_ready: usize,
@@ -320,6 +324,7 @@ impl Backend {
             std::thread::Builder::new().name("telly-cards".into()).spawn(move || cards::worker(&for_cards)).ok();
             backend.watch_folders();
             backend.fill_covers();
+            premine::start_shares(&backend, None);
             names::start(backend.clone());
         });
     }
@@ -459,7 +464,7 @@ impl Backend {
             .ok();
     }
 
-    fn card(&self, show: Show, cards_by_show: &std::collections::HashMap<i64, i64>) -> Result<ShowCard> {
+    fn card(&self, show: Show, cards_by_show: &std::collections::HashMap<i64, i64>, scores: &std::collections::HashMap<i64, (i64, i64, String)>) -> Result<ShowCard> {
         let episodes = self.db.episodes(show.id)?;
         let watched = episodes.iter().filter(|e| e.watched_at.is_some()).count();
         let media_ready = episodes.iter().filter(|e| e.media_state == "ready").count();
@@ -484,7 +489,10 @@ impl Backend {
         };
         let cover = if self.cover_path(show.id).is_file() { format!("/cover/{}?v={}", show.id, show.anilist_id.unwrap_or(0)) } else { String::new() };
         let lengths: Vec<f64> = episodes.iter().map(|e| e.duration).collect();
+        let (words_uses, words_known) = episodes.iter().filter_map(|e| scores.get(&e.id)).fold((0, 0), |(uses, known), s| (uses + s.0, known + s.1));
         Ok(ShowCard {
+            words_uses,
+            words_known,
             cards: cards_by_show.get(&show.id).copied().unwrap_or(0),
             movie: is_movie(&show.format, show.anilist_id.is_some(), &lengths),
             cover_caption: !cover.is_empty() && self.db.setting_bool(&frame_setting(show.id), false),
@@ -530,10 +538,11 @@ impl Backend {
 
     fn library(&self) -> Result<Value> {
         let cards_by_show = self.db.cards_per_show().unwrap_or_default();
+        let scores = self.db.word_scores().unwrap_or_default();
         let shows = self.db.shows()?;
         let mut cards = Vec::with_capacity(shows.len());
         for s in shows {
-            cards.push(self.card(s, &cards_by_show)?);
+            cards.push(self.card(s, &cards_by_show, &scores)?);
         }
         Ok(json!({ "shows": cards, "activity": self.activity(), "setup": self.setup() }))
     }
@@ -554,7 +563,7 @@ impl Backend {
                 episode: e,
             })
             .collect();
-        let card = self.card(show, &cards_by_show)?;
+        let card = self.card(show, &cards_by_show, &self.db.word_scores().unwrap_or_default())?;
         let tools = self.tools();
         let listener = jobs::listener(self, &tools);
         let whisper = json!({
@@ -1042,7 +1051,16 @@ impl Backend {
             }
             "events" => to_value(self.events_since(arg::<Option<u64>>(&args, "since")?.unwrap_or(0))),
             "settings" => Ok(Value::Object(self.db.settings()?)),
-            "setSetting" => self.set_setting(&arg::<String>(&args, "key")?, &args.get("value").cloned().unwrap_or(Value::Null)),
+            "setSetting" => {
+                let key: String = arg(&args, "key")?;
+                let done = self.set_setting(&key, &args.get("value").cloned().unwrap_or(Value::Null))?;
+                // Which cards count as known changed: every share is worked out again.
+                if key.starts_with("known.") {
+                    premine::start_shares(self, None);
+                }
+                Ok(done)
+            }
+            "knownSources" => known::sources(self),
             "status" => Ok(self.status()),
             "findTools" => {
                 self.refind_tools();

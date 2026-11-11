@@ -5,7 +5,7 @@
   import AddSheet from "$lib/AddSheet.svelte";
   import Cover from "$lib/Cover.svelte";
   import Icon from "$lib/Icon.svelte";
-  import { call, callKept, errorText, kept, pickFolder, setWindowTitle, type Library, type ShowCard } from "$lib/api";
+  import { call, callKept, errorText, kept, pickFolder, setWindowTitle, type Library, type Settings, type ShowCard } from "$lib/api";
   import { statusOf } from "$lib/format";
   import { app } from "$lib/state.svelte";
 
@@ -40,9 +40,14 @@
     timer = setTimeout(loop, 2000);
     const close = () => (menu = null);
     window.addEventListener("click", close);
+    window.addEventListener("resize", measure);
+    callKept<Settings>("settings").then((s) => (settings = s)).catch(() => {});
+    // Each show's share of known words is brought up to date with Anki as it is now.
+    call("wordShares").catch(() => {});
     return () => {
       clearTimeout(timer);
       window.removeEventListener("click", close);
+      window.removeEventListener("resize", measure);
     };
   });
 
@@ -57,6 +62,51 @@
     shows.filter((s) => s.status === "watching" || (s.status === "getting" && (s.watched > 0 || !!s.next?.resume))).sort((a, b) => (b.lastWatchedAt ?? 0) - (a.lastWatchedAt ?? 0)),
   );
   const rest = $derived(shows.filter((s) => !watching.includes(s)));
+
+  // Which of the Library's shows are listed, and in what order. Kept in Settings.
+  type Kind = "all" | "series" | "movies";
+  type Sort = "added" | "name" | "released" | "known";
+  let settings = $state<Settings>(kept<Settings>("settings") ?? {});
+  const kind = $derived<Kind>(["series", "movies"].includes(settings["library.show"] as string) ? (settings["library.show"] as Kind) : "all");
+  const sort = $derived<Sort>(["name", "released", "known"].includes(settings["library.sort"] as string) ? (settings["library.sort"] as Sort) : "added");
+
+  function choose(key: string, value: string) {
+    settings = { ...settings, [key]: value };
+    call("setSetting", { key, value }).catch(() => {});
+  }
+
+  /** The share of a show's words you know, in per cent; null when none of its episodes is scored yet. */
+  const knownOf = (s: ShowCard) => (s.wordsUses ? (100 * s.wordsKnown) / s.wordsUses : null);
+
+  const listed = $derived.by(() => {
+    const list = rest.filter((s) => kind === "all" || (kind === "movies") === s.movie);
+    const byName = (a: ShowCard, b: ShowCard) => a.title.localeCompare(b.title);
+    if (sort === "name") return list.sort(byName);
+    // Newest first; a show with no year goes last.
+    if (sort === "released") return list.sort((a, b) => (b.year ?? 0) - (a.year ?? 0) || byName(a, b));
+    // Most words known first; a show with no score yet goes last.
+    if (sort === "known") return list.sort((a, b) => (knownOf(b) ?? -1) - (knownOf(a) ?? -1) || byName(a, b));
+    return list;
+  });
+
+  // The shows being watched sit in one row that scrolls sideways.
+  let row = $state<HTMLElement | null>(null);
+  let edges = $state({ start: true, end: true });
+
+  /** Whether the row has more to its left and to its right. */
+  function measure() {
+    if (row) edges = { start: row.scrollLeft <= 1, end: row.scrollLeft + row.clientWidth >= row.scrollWidth - 1 };
+  }
+
+  function slide(by: number) {
+    row?.scrollBy({ left: by * row.clientWidth, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  }
+
+  $effect(() => {
+    void watching.length;
+    void row;
+    measure();
+  });
 
   async function add() {
     const folder = await pickFolder();
@@ -86,8 +136,9 @@
     load();
   }
 
-  function count(n: number) {
-    return `${n} ${n === 1 ? "show" : "shows"}`;
+  function count(n: number, what: Kind = "all") {
+    if (what === "movies") return `${n} ${n === 1 ? "movie" : "movies"}`;
+    return what === "series" ? `${n} series` : `${n} ${n === 1 ? "show" : "shows"}`;
   }
 </script>
 
@@ -118,9 +169,16 @@
       <p>Press <b>Add media…</b> and pick a folder of rips. Telly works out the show, finds Japanese subtitles, syncs them, and gets each episode ready to play. The files stay where they are.</p>
     </div>
   {:else if lib}
-    <div class="shelf-head"><h2>Currently watching</h2><span>{count(watching.length)}</span></div>
+    <div class="shelf-head">
+      <h2>Currently watching</h2><span>{count(watching.length)}</span>
+      {#if !(edges.start && edges.end)}
+        <span class="grow"></span>
+        <button type="button" class="pager" aria-label="Show previous" title="Show previous" disabled={edges.start} onclick={() => slide(-1)}><Icon name="back" /></button>
+        <button type="button" class="pager next" aria-label="Show next" title="Show next" disabled={edges.end} onclick={() => slide(1)}><Icon name="back" /></button>
+      {/if}
+    </div>
     {#if watching.length}
-      <div class="watching">
+      <div class="watching" bind:this={row} onscroll={measure}>
         {#each watching as s (s.id)}
           {@const st = statusOf(s)}
           <div class="wcard card" role="presentation" onpointerenter={() => ahead(s)} oncontextmenu={(e) => context(e, s)}>
@@ -143,10 +201,27 @@
       <p class="empty">{q ? "No show in progress matches." : "Nothing in progress. Pick something from the library."}</p>
     {/if}
 
-    <div class="shelf-head"><h2>Library</h2><span>{count(rest.length)}</span></div>
-    {#if rest.length}
+    <div class="shelf-head">
+      <h2>Library</h2><span>{count(listed.length, kind)}</span>
+      <span class="grow"></span>
+      <div class="seg" role="group" aria-label="Show">
+        {#each [["all", "All"], ["series", "Series"], ["movies", "Movies"]] as [value, label] (value)}
+          <button type="button" aria-pressed={kind === value} onclick={() => choose("library.show", value)}>{label}</button>
+        {/each}
+      </div>
+      <label class="sort">
+        <span>Sort</span>
+        <select class="input" value={sort} onchange={(e) => choose("library.sort", e.currentTarget.value)}>
+          <option value="added">Recently added</option>
+          <option value="name">Name</option>
+          <option value="released">Released</option>
+          <option value="known">Words known</option>
+        </select>
+      </label>
+    </div>
+    {#if listed.length}
       <div class="libgrid">
-        {#each rest as s (s.id)}
+        {#each listed as s (s.id)}
           {@const st = statusOf(s)}
           <div class="lcard card" role="presentation" onpointerenter={() => ahead(s)} oncontextmenu={(e) => context(e, s)}>
             <button type="button" class="hit" onclick={() => open(s)} aria-label="{s.title}. {st.text}. {st.sub}"></button>
@@ -154,6 +229,7 @@
             <a class="l-title title" href="/show?id={s.id}">{s.title}</a>
             <span class="l-status" class:ok={st.ok}>{st.text}</span>
             <span class="l-sub">{st.sub}</span>
+            {#if s.wordsUses}<span class="l-known">{Math.round((100 * s.wordsKnown) / s.wordsUses)}% known</span>{/if}
             {#if s.status === "getting" && s.next}
               <span class="bar"><i style:width="{Math.round(s.next.mediaProgress * 100)}%"></i></span>
             {/if}
@@ -161,7 +237,7 @@
         {/each}
       </div>
     {:else}
-      <p class="empty">{q ? "No shows match." : "Every show in the library is in progress."}</p>
+      <p class="empty">{q ? "No shows match." : kind === "movies" ? "No movies here." : kind === "series" ? "No series here." : "Every show in the library is in progress."}</p>
     {/if}
   {/if}
 </div>
@@ -192,10 +268,19 @@
   .first { max-width: 60ch; padding: 60px 0; display: grid; gap: 10px; }
   .first h2 { font: 600 22px/1.25 var(--font-display); }
   .first p { color: var(--ink-2); font-size: 15px; }
-  .shelf-head { display: flex; align-items: baseline; gap: 10px; margin: 0 0 14px; }
+  .shelf-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-height: 36px; margin: 0 0 14px; }
   .shelf-head h2 { font: 600 17px/1.2 var(--font-ui); }
-  .shelf-head span { font-size: 13px; color: var(--ink-3); }
-  .watching { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 16px; margin-bottom: 30px; }
+  .shelf-head > span { font-size: 13px; color: var(--ink-3); }
+  .sort { display: inline-flex; align-items: center; gap: 8px; }
+  .sort span { font: 600 12.5px/1 var(--font-ui); color: var(--ink-2); }
+  .pager { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 1px solid var(--rule-2); border-radius: 6px; background: transparent; color: var(--ink); cursor: pointer; }
+  .pager:hover:not(:disabled) { background: var(--sunk); }
+  .pager:disabled { opacity: .35; cursor: default; }
+  .pager :global(svg) { width: 16px; height: 16px; }
+  .pager.next :global(svg) { transform: scaleX(-1); }
+  /* One row, three cards across, that scrolls sideways; the little padding keeps a card's focus ring whole. */
+  .watching { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(330px, calc((100% - 32px) / 3)); gap: 16px; margin: -3px -3px 27px; padding: 3px; overflow-x: auto; scroll-snap-type: x proximity; scroll-padding-inline: 3px; scrollbar-width: none; }
+  .watching > :global(*) { scroll-snap-align: start; }
   .card { position: relative; }
   .hit { all: unset; position: absolute; inset: 0; z-index: 1; cursor: pointer; border-radius: inherit; }
   .title { position: relative; z-index: 2; justify-self: start; max-width: 100%; color: inherit; text-decoration: none; }
@@ -223,6 +308,7 @@
   .l-status { font: 500 12.5px/1.3 var(--font-ui); }
   .l-status.ok { color: var(--ok); }
   .l-sub { font-size: 12px; color: var(--ink-3); }
+  .l-known { font-size: 12px; color: var(--ink-2); }
   .lcard .bar { margin-top: 5px; }
   .empty { font-size: 14px; color: var(--ink-2); margin-bottom: 34px; }
   .menu { position: fixed; z-index: 80; min-width: 190px; display: grid; padding: 5px; background: var(--surface); border: 1px solid var(--rule-2); border-radius: 8px; box-shadow: var(--shadow-lg); }

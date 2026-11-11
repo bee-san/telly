@@ -14,6 +14,7 @@ pub mod db;
 mod hachidori;
 pub mod jimaku;
 pub mod jobs;
+pub mod known;
 pub mod log;
 pub mod matching;
 pub mod media;

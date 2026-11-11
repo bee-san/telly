@@ -197,7 +197,7 @@
     </div>
 
     <div class="eps">
-      <div class="ep-row head"><span>#</span><span>Video</span><span>Subtitles</span><span>Sync</span><span class="right" title={view?.wordsError || "The share of each episode’s words that are on cards studied in Anki"}>Words known</span><span class="right">Watched</span></div>
+      <div class="ep-row head"><span>#</span><span>Video</span><span>Subtitles</span><span>Sync</span><span class="right" title={view?.wordsError || "The share of each episode’s words that are known (Settings → Known words)"}>Words known</span><span class="right">Watched</span></div>
       {#each episodes as ep (ep.id)}
         {@const m = mediaLabel(ep.mediaState, ep.mediaPlan, ep.mediaProgress)}
         {@const s = subsLabel(ep.subsState, ep.subsScore, ep.subsFile, maker)}

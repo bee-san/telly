@@ -3,6 +3,7 @@
 An anime player for learning Japanese, for Windows. Point it at a folder of rips and it:
 
 - works out the show on AniList and puts the episodes in order
+- lists your library as movies, series or both, sorted by when it was added, name, year released or the share of its words you know; what you're watching is one row that scrolls sideways
 - gives what AniList doesn't know (live action, a folder of specials) a cover too: the poster from Wikipedia's article of that very name, else a frame from the video, taken at random when it's added, with the title drawn over it as on a poster. A film is listed as a movie, with its length
 - plays each episode straight from the rip when WebView2 can (H.264, HEVC and AV1, 8-bit or 10-bit, in MKV or MP4), and converts what it can't (MPEG-2 DVD rips, DTS audio) in the background, next episode first
 - finds Japanese subtitles on [Jimaku](https://jimaku.cc) and syncs them to your rip: to the rip's own subtitles when it has any (in any language, pictures included), or to its speech, heard by [FireRedVAD](https://github.com/FireRedTeam/FireRedVAD)
@@ -78,11 +79,11 @@ A show's page has **Premine…**: the words in the next episode (or the next 3 o
 
 - **Words** come from the synced subtitles, split by [Lindera](https://github.com/lindera/lindera) with IPADIC (built into Telly). Particles, auxiliaries, pronouns, words only there for the grammar (わけ, こと, ている's いる), numbers, names and the cast are left out. So is what closed captions add that nobody says: sounds in brackets （爆発音）, the speaker's name and song lyrics (♪), so a card's sentence and audio are someone speaking. Where nouns run together, the longest stretch Hachidori knows is one word (魔導士 in 魔導士たち, not 魔 and 導).
 - **Hachidori** gives each word's headword, reading and rank in your frequency dictionary: Telly's own, through Hachidori's own API code running in its engine page, or, when Telly is linked to the Hachidori in your browser, that one, through the Yomitan API Hachidori Relay serves on port 19633.
-- **Anki** says what you have. A note whose word field (the one your card format fills with `{expression}`) holds the word, or its reading (する for 為る), is a card you have, so the word isn't listed. A card 21 days or more apart is mature, and its word is known: that's the share of known words at the top.
+- **Anki** says what you have. A note whose word field (the one your card format fills with `{expression}`) holds the word, or its reading (する for 為る), with a card you've studied, is a card you have, so the word isn't listed. Which cards count as known is chosen in Settings → Known words: a deck, the note types, the field, and whether a card need only be studied or must be mature (21 days or more from its next review, as Anki counts it). That's the share of known words at the top.
 - **Most useful first:** the words that come up most in those episodes, then the most common anywhere.
 - **Cards** are made in your Hachidori card format (the first Template in its Settings → Anki), word audio included, in a **Premined** subdeck of the show's deck (`Type::Fairy Tail::Premined`), so you can set how many new ones you see a day. The sentence, its furigana and the cloze come from the word's line. Telly then adds the moving picture, the line's audio and MiscInfo as it does for the cards you mine while watching, and tags them `telly::premine`.
 
-A show's page also shows, for each episode with subtitles, the share of its words that are on cards you've studied in Anki, counted the same way. It's worked out when the page opens, with Anki open.
+A show's page also shows, for each episode with subtitles, the share of its words that are known, counted the same way, and the Library shows each show's. Telly keeps the shares, and a copy of the words Anki says you have, so both are there at once and with Anki closed. With Anki open they're brought up to date when the Library or a show's page opens: two searches for note ids, then only the notes Telly hasn't read.
 
 ## Recommended
 
@@ -124,6 +125,7 @@ With an OpenRouter API key in Settings, a model on [OpenRouter](https://openrout
 | `%LOCALAPPDATA%\Telly\media` | Telly's copies of episodes WebView2 can't play as they are. Settings → Disk space can move them to another folder, on an external drive, say |
 | `%LOCALAPPDATA%\Telly\subtitles` | synced subtitles, one file per episode |
 | `%LOCALAPPDATA%\Telly\names` | casts from AniList, their portraits, and the character dictionary |
+| `%LOCALAPPDATA%\Telly\known-words.json` | Telly's copy of the words Anki says you have a studied card for |
 | `%LOCALAPPDATA%\Telly\recommended.json` | what AniList's users recommend for each of your shows, kept for a week |
 | `%APPDATA%\Telly\telly-log.sqlite` | what you watched, for Tidepool (counts only, never the text) |
 

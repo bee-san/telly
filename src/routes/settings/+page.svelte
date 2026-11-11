@@ -20,7 +20,7 @@
     type HostStatus,
     type NamesStatus,
     type OwnHachidori,
-    type Settings,
+    type KnownSources, type Settings,
     type Status,
   } from "$lib/api";
   import { bytes } from "$lib/format";
@@ -38,6 +38,8 @@
   let claude = $state<ClaudeStatus | null>(kept<ClaudeStatus>("claudeStatus"));
   let names = $state<NamesStatus | null>(kept<NamesStatus>("namesStatus"));
   let own = $state<OwnHachidori | null>(kept<OwnHachidori>("ownHachidori"));
+  /** What Known words chooses from; null while Anki is closed. */
+  let sources = $state<KnownSources | null>(kept<KnownSources>("knownSources"));
 
   /** Every part is asked for at once, and shows as it comes. */
   async function load() {
@@ -53,6 +55,7 @@
         callKept<NamesStatus>("namesStatus").then((n) => (names = n)),
         callKept<OwnHachidori>("ownHachidori").then((o) => (own = o)),
         callKept<ClaudeStatus>("claudeStatus").then((c) => (claude = c)),
+        callKept<KnownSources>("knownSources").then((k) => (sources = k)).catch(() => (sources = null)),
       ]);
     } catch (e) {
       error = errorText(e);
@@ -92,6 +95,22 @@
     } catch (e) {
       toast({ key: "set", state: "failed", title: "Not saved", text: errorText(e) });
     }
+  }
+
+  /** A choice of which cards count as known, and how many notes it finds. */
+  async function setKnown(k: string, value: unknown) {
+    await set(k, value);
+    callKept<KnownSources>("knownSources").then((s) => (sources = s)).catch(() => {});
+  }
+
+  /** The note types that count: none chosen means every one with the word's field. */
+  const knownTypes = $derived(Array.isArray(settings["known.noteTypes"]) ? (settings["known.noteTypes"] as string[]) : []);
+
+  function toggleKnownType(type: string) {
+    const all = sources?.noteTypes ?? [];
+    const now = knownTypes.length ? knownTypes : all;
+    const next = now.includes(type) ? now.filter((t) => t !== type) : [...now, type];
+    setKnown("known.noteTypes", next.length === all.length ? [] : next);
   }
 
   const str = (k: string, d = "") => String(settings[k] ?? d);
@@ -305,6 +324,40 @@
       </p>
       <p><i class:ok={status?.tools.canClip} class:bad={status && !status.tools.canClip}></i><span>{status?.tools.canClip ? "ffmpeg can make animated AVIF and Opus" : "This ffmpeg can’t make AVIF and Opus (it needs libsvtav1 and libopus)"}</span></p>
     </div>
+  </section>
+
+  <section>
+    <h2>Known words</h2>
+    <p class="lede">A word is known when Anki has a card for it that counts. Telly reads these cards and never changes them.</p>
+    {#if sources}
+      <div class="rows two">
+        <label class="field"><span>Deck</span>
+          <select class="input" value={str("known.deck")} onchange={(e) => setKnown("known.deck", e.currentTarget.value)}>
+            <option value="">Every deck</option>
+            {#each sources.decks as deck (deck)}<option value={deck}>{deck}</option>{/each}
+          </select>
+        </label>
+        <label class="field"><span>Word field</span><input class="input" value={str("known.field") || sources.field} onchange={(e) => setKnown("known.field", e.currentTarget.value.trim())} /></label>
+      </div>
+      <div class="field">
+        <span>Note types</span>
+        {#each sources.noteTypes as type (type)}
+          <label class="check"><input type="checkbox" checked={knownTypes.length === 0 || knownTypes.includes(type)} onchange={() => toggleKnownType(type)} /><span>{type}</span></label>
+        {/each}
+      </div>
+      <div class="field">
+        <span>A card counts when it’s</span>
+        <div class="seg" role="group" aria-label="A card counts when it’s">
+          {#each [["studied", "Studied"], ["mature", "Mature"]] as [value, label] (value)}
+            <button type="button" aria-pressed={str("known.when", "studied") === value} onclick={() => setKnown("known.when", value)}>{label}</button>
+          {/each}
+        </div>
+        <small class="muted">Studied: reviewed at least once. Mature: its next review is 21 days or more away, as Anki counts it.</small>
+      </div>
+      <p class="muted">{sources.studied.toLocaleString("en-GB")} {sources.studied === 1 ? "note" : "notes"} studied, {sources.mature.toLocaleString("en-GB")} of them mature.</p>
+    {:else}
+      <p class="muted">Open Anki to choose which cards count.</p>
+    {/if}
   </section>
 
   <section>

@@ -27,7 +27,7 @@ use crate::backend::Backend;
 use crate::db::{Episode, Show};
 use crate::names::kana::{contains_japanese, contains_kanji, kata_to_hira};
 use crate::subs::Line;
-use crate::{anki, cards, jobs, names, own_hachidori};
+use crate::{anki, cards, jobs, known, names, own_hachidori};
 use anyhow::{anyhow, Result};
 use lindera::dictionary::load_dictionary;
 use lindera::mode::Mode;
@@ -49,9 +49,6 @@ fn api_address() -> String {
 /// Words asked of Hachidori at a time: each answer carries every dictionary's
 /// entries, and the relay waits 30 seconds at most for one.
 const LOOKUPS_PER_REQUEST: usize = 40;
-/// Notes read from Anki at a time: a note with its definitions is about 10 KB,
-/// and Anki's whole answer has to arrive within its 15 seconds.
-const NOTES_PER_READ: usize = 500;
 /// The subdeck of your card format's deck that premined cards go in.
 const SUBDECK: &str = "Premined";
 const NO_RELAY: &str = "Premining needs Anki open, with Hachidori Relay. Open Anki and try again.";
@@ -126,15 +123,15 @@ pub struct Share {
     pub known: usize,
 }
 
-/// Each episode's share of known words, for the show's page.
+/// Working out each episode's share of known words, for a show's page and the
+/// Library. The shares themselves are kept in the database.
 #[derive(Default)]
 struct Shares {
-    /// By episode id.
-    by_episode: HashMap<i64, Share>,
-    /// Why the last show asked for has none ("" when it worked).
+    /// Why they couldn't be brought up to date ("" when they were).
     error: String,
-    /// The show to work out next, and whether a worker is going.
-    wanted: Option<i64>,
+    /// What's asked for next (a show's page asks for its show first; the
+    /// Library for none in particular), and whether a worker is going.
+    wanted: Option<Option<i64>>,
     working: bool,
 }
 
@@ -443,21 +440,12 @@ fn card_format(backend: &Backend) -> Result<CardFormat> {
 
 // ---- Anki ----
 
-/// What `field` holds in each note with a card you've studied (young or
-/// mature). One search, then the notes read in chunks: a search per word reads
-/// the whole collection each time.
-fn studied_words(url: &str, field: &str, step: &dyn Fn(f64)) -> Result<HashSet<String>> {
-    let ids = anki::invoke(url, "findNotes", json!({ "query": format!("\"{field}:_*\" -is:new") }))?;
-    let ids: Vec<i64> = ids.as_array().map(|a| a.iter().filter_map(Value::as_i64).collect()).unwrap_or_default();
-    let mut out = HashSet::new();
-    for (k, chunk) in ids.chunks(NOTES_PER_READ).enumerate() {
-        step(k as f64 * NOTES_PER_READ as f64 / ids.len() as f64);
-        out.extend(anki::notes_info(url, chunk)?.iter().filter_map(|n| n.field(field)));
-    }
-    Ok(out)
+/// The field your card format puts the word in.
+pub fn word_field(backend: &Backend) -> Result<String> {
+    Ok(card_format(backend)?.word_field())
 }
 
-/// Whether you know a word: a studied note holds its headword, or its reading
+/// Whether a word is among `studied`: a note there holds its headword, or its reading
 /// where the note has the word in kana (する for 為る, こと for 事).
 fn known(studied: &HashSet<String>, term: &Term) -> bool {
     studied.contains(&term.headword) || (!term.reading.is_empty() && studied.contains(&term.reading))
@@ -516,15 +504,19 @@ fn counts(text: &str, u: &SavedUse, cast: &HashSet<String>) -> bool {
     said(text, u.from) && !cast.contains(&u.headword) && !cast.contains(&text[u.from..u.to])
 }
 
+/// An episode's saved words, when they were worked out for these very lines.
+fn saved_uses(backend: &Backend, episode_id: i64, lines: &[Line]) -> Option<Vec<SavedUse>> {
+    let saved = std::fs::read(words_path(backend, episode_id)).ok().and_then(|b| serde_json::from_slice::<Saved>(&b).ok())?;
+    (saved.lines == fingerprint(lines)).then_some(saved.uses)
+}
+
 /// An episode's words: saved ones, or worked out (by Lindera and Hachidori) and saved.
 fn episode_uses(backend: &Backend, episode_id: i64, lines: &[Line]) -> Result<Vec<SavedUse>> {
+    if let Some(uses) = saved_uses(backend, episode_id, lines) {
+        return Ok(uses);
+    }
     let print = fingerprint(lines);
     let path = words_path(backend, episode_id);
-    if let Some(saved) = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice::<Saved>(&b).ok()) {
-        if saved.lines == print {
-            return Ok(saved.uses);
-        }
-    }
     let mut found: Vec<(usize, Candidate)> = Vec::new();
     for (l, line) in lines.iter().enumerate() {
         for candidate in candidates(&line.text)? {
@@ -555,8 +547,14 @@ pub fn prepare(backend: &Backend, episode_id: i64) {
     if lines.is_empty() {
         return;
     }
-    if let Err(e) = episode_uses(backend, episode_id, &lines) {
-        eprintln!("premining words for episode {episode_id} not saved: {e}");
+    match episode_uses(backend, episode_id, &lines) {
+        Ok(uses) => {
+            let show = backend.db.episode(episode_id).ok().flatten().and_then(|e| backend.db.show(e.show_id).ok().flatten());
+            let cast: HashSet<String> = show.map(|s| names::show_names(backend, &s).into_iter().map(|n| n.term).collect()).unwrap_or_default();
+            let share = share_of(&lines, uses, &cast, &known::words(backend).known);
+            let _ = backend.db.set_word_score(episode_id, share.uses as i64, share.known as i64, &known::stamp(backend));
+        }
+        Err(e) => eprintln!("premining words for episode {episode_id} not saved: {e}"),
     }
 }
 
@@ -582,8 +580,7 @@ fn make_list(backend: &Backend, show: &Show, step: &dyn Fn(&str, f64)) -> Result
     let deck = premined_deck(backend, show);
 
     step("Reading your card format", 0.0);
-    let format = card_format(backend)?;
-    let field = format.word_field();
+    card_format(backend)?;
     let cast: HashSet<String> = names::show_names(backend, show).into_iter().map(|n| n.term).collect();
 
     // Each use of each word, episode by episode; an episode without subtitles adds none.
@@ -621,15 +618,18 @@ fn make_list(backend: &Backend, show: &Show, step: &dyn Fn(&str, f64)) -> Result
             }
         }
     }
-    let url = cards::anki_url(backend);
     step("Checking your cards in Anki", 0.8);
-    let studied = studied_words(&url, &field, &|p| step("Checking your cards in Anki", 0.8 + 0.2 * p))?;
+    known::refresh(backend)?;
+    let have = known::words(backend);
 
     let mut known_uses = 0;
     let mut words: Vec<(usize, Word)> = Vec::new();
     for term in &order {
-        if known(&studied, term) {
-            known_uses += seen[&(term.headword.clone(), term.reading.clone())].1;
+        // A word you have a card for isn't listed; it counts as known when Settings says its card does.
+        if known(&have.studied, term) {
+            if known(&have.known, term) {
+                known_uses += seen[&(term.headword.clone(), term.reading.clone())].1;
+            }
             continue;
         }
         let (first, count) = seen[&(term.headword.clone(), term.reading.clone())];
@@ -667,18 +667,22 @@ fn sort_words(words: &mut [(usize, Word)]) {
 
 // ---- Each episode's share of known words ----
 
-/// Each episode's share, and why there are none ("" when there are).
+/// Each scored episode's share, and why the shares couldn't be brought up to
+/// date ("" when they were).
 pub fn shares(backend: &Backend) -> (HashMap<i64, Share>, String) {
-    backend.premining.shares.lock().map(|s| (s.by_episode.clone(), s.error.clone())).unwrap_or_default()
+    let scores = backend.db.word_scores().unwrap_or_default();
+    let shares = scores.into_iter().map(|(id, (uses, known, _))| (id, Share { uses: uses as usize, known: known as usize })).collect();
+    (shares, backend.premining.shares.lock().map(|s| s.error.clone()).unwrap_or_default())
 }
 
-/// Works out each episode's share of known words for `show_id`, in the
-/// background: the show's page asks when it opens. One show at a time; asking
-/// for another stops the one going.
-pub fn start_shares(backend: &Arc<Backend>, show_id: i64) {
+/// Brings every episode's share of known words up to date, in the background:
+/// Telly's copy of Anki's words first, then the shares of `first`'s episodes (a
+/// show's page asks when it opens), then the rest of the library's. Asking
+/// again while it's going starts it over with the new `first`.
+pub fn start_shares(backend: &Arc<Backend>, first: Option<i64>) {
     {
         let Ok(mut shares) = backend.premining.shares.lock() else { return };
-        shares.wanted = Some(show_id);
+        shares.wanted = Some(first);
         if shares.working {
             return;
         }
@@ -691,40 +695,64 @@ pub fn start_shares(backend: &Arc<Backend>, show_id: i64) {
             s.working = next.is_some();
             next
         });
-        let Some(show_id) = next else { break };
-        let error = work_out_shares(&worker, show_id).err().map(|e| format!("{e:#}")).unwrap_or_default();
+        let Some(first) = next else { break };
+        let error = work_out_shares(&worker, first).err().map(|e| format!("{e:#}")).unwrap_or_default();
         if let Ok(mut shares) = worker.premining.shares.lock() {
             shares.error = error;
         }
     });
 }
 
-fn work_out_shares(backend: &Backend, show_id: i64) -> Result<()> {
-    let show = backend.db.show(show_id)?.ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?;
-    let field = card_format(backend)?.word_field();
-    let studied = studied_words(&cards::anki_url(backend), &field, &|_| {})?;
-    let cast: HashSet<String> = names::show_names(backend, &show).into_iter().map(|n| n.term).collect();
-    for e in backend.db.episodes(show_id)? {
-        // Another show's page is open now.
-        if backend.premining.shares.lock().is_ok_and(|s| s.wanted.is_some()) {
-            break;
-        }
-        let lines = spoken_lines(backend, e.id);
-        if lines.is_empty() {
-            continue;
-        }
-        let mut share = Share::default();
-        for u in episode_uses(backend, e.id, &lines)? {
-            if counts(&lines[u.line].text, &u, &cast) {
-                share.uses += 1;
-                share.known += known(&studied, &Term { headword: u.headword, reading: u.reading, rank: u.rank }) as usize;
-            }
-        }
-        if let Ok(mut shares) = backend.premining.shares.lock() {
-            shares.by_episode.insert(e.id, share);
+/// How much of an episode's words (`uses`, found in `lines`) are among `known_words`.
+fn share_of(lines: &[Line], uses: Vec<SavedUse>, cast: &HashSet<String>, known_words: &HashSet<String>) -> Share {
+    let mut share = Share::default();
+    for u in uses {
+        if counts(&lines[u.line].text, &u, cast) {
+            share.uses += 1;
+            share.known += known(known_words, &Term { headword: u.headword, reading: u.reading, rank: u.rank }) as usize;
         }
     }
-    Ok(())
+    share
+}
+
+fn work_out_shares(backend: &Backend, first: Option<i64>) -> Result<()> {
+    // With Anki closed the copy Telly has stands, and the page says why it may be old.
+    let asked = known::refresh(backend);
+    let known_words = known::words(backend).known;
+    // A share worked out from another state of Anki's words, or another choice in Settings, is worked out again.
+    let stamp = known::stamp(backend);
+    let scores = backend.db.word_scores()?;
+    let mut shows = backend.db.shows()?;
+    shows.sort_by_key(|s| Some(s.id) != first);
+    for show in shows {
+        let cast: HashSet<String> = names::show_names(backend, &show).into_iter().map(|n| n.term).collect();
+        for e in backend.db.episodes(show.id)? {
+            // Asked again (another show's page opened): start over, that show first.
+            if backend.premining.shares.lock().is_ok_and(|s| s.wanted.is_some()) {
+                return Ok(());
+            }
+            if scores.get(&e.id).is_some_and(|(_, _, of)| *of == stamp) {
+                continue;
+            }
+            let lines = spoken_lines(backend, e.id);
+            if lines.is_empty() {
+                continue;
+            }
+            // The show whose page is open has its words worked out when they aren't saved;
+            // the rest of the library's are when their subtitles sync.
+            let uses = if Some(show.id) == first {
+                episode_uses(backend, e.id, &lines)?
+            } else {
+                match saved_uses(backend, e.id, &lines) {
+                    Some(uses) => uses,
+                    None => continue,
+                }
+            };
+            let share = share_of(&lines, uses, &cast, &known_words);
+            backend.db.set_word_score(e.id, share.uses as i64, share.known as i64, &stamp)?;
+        }
+    }
+    asked.map(|_| ())
 }
 
 // ---- Cards ----
@@ -1021,6 +1049,17 @@ mod tests {
     /// The words in a line, with a dictionary that knows only the words alone.
     fn bases(text: &str) -> Vec<String> {
         candidates(text).unwrap().into_iter().flat_map(|c| c.words(text, |_| false)).map(|w| w.0).collect()
+    }
+
+    #[test]
+    fn an_episode_s_share_is_of_the_words_said_that_are_known() {
+        let line = |text: &str| Line { start: 0.0, end: 1.0, text: text.into(), ruby: vec![], speaker: String::new(), sign: false };
+        let lines = vec![line("腹は減った"), line("（ナツ）お金もない")];
+        let used = |line: usize, from: usize, to: usize, headword: &str| SavedUse { line, from, to, headword: headword.into(), reading: String::new(), rank: None };
+        let uses = vec![used(0, 0, 3, "腹"), used(0, 6, 15, "減る"), used(1, 3, 9, "ナツ"), used(1, 12, 18, "お金"), used(1, 21, 27, "ない")];
+        let known_words: HashSet<String> = ["腹", "お金", "ナツ"].iter().map(|w| w.to_string()).collect();
+        // ナツ names who's speaking, in brackets: it isn't said, so it isn't counted either way.
+        assert_eq!(share_of(&lines, uses, &HashSet::new(), &known_words), Share { uses: 4, known: 2 });
     }
 
     #[test]

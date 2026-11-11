@@ -87,6 +87,16 @@ CREATE TABLE answers (
 -- The rip's audio track that play_path plays, as a position among its audio
 -- tracks. NULL: the Japanese one, as it was picked when the episode was got ready.
 ALTER TABLE episodes ADD COLUMN audio_track INTEGER;
+", "
+-- How much of an episode's words you know (premine.rs): the uses of words in
+-- it, and how many are of known words. Kept so the Library and a show's page
+-- have it at once, and with Anki closed.
+CREATE TABLE word_scores (
+  episode_id  INTEGER PRIMARY KEY REFERENCES episodes (id) ON DELETE CASCADE,
+  uses        INTEGER NOT NULL,
+  known       INTEGER NOT NULL,
+  stamp       TEXT NOT NULL            -- the state of your known words it was worked out from (known.rs)
+);
 "];
 
 /// Something Claude said, kept so it's there instantly next time.
@@ -720,6 +730,25 @@ impl Db {
     }
 
     /// Every card mined from a show, for the Finished line on its card.
+    /// Each scored episode's uses of words, how many are of known words, and the stamp it was scored at.
+    pub fn word_scores(&self) -> Result<std::collections::HashMap<i64, (i64, i64, String)>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare("SELECT episode_id, uses, known, stamp FROM word_scores")?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, (r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?))))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows.into_iter().collect())
+    }
+
+    pub fn set_word_score(&self, episode_id: i64, uses: i64, known: i64, stamp: &str) -> Result<()> {
+        self.conn()?.execute(
+            "INSERT INTO word_scores (episode_id, uses, known, stamp) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(episode_id) DO UPDATE SET uses = excluded.uses, known = excluded.known, stamp = excluded.stamp",
+            params![episode_id, uses, known, stamp],
+        )?;
+        Ok(())
+    }
+
     pub fn cards_per_show(&self) -> Result<std::collections::HashMap<i64, i64>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(

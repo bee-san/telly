@@ -515,6 +515,23 @@ pub fn read_audio_filtered(
     Ok(out.stdout.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect())
 }
 
+/// Writes `length` seconds of one audio track from `start` as FLAC, mono at 16 kHz (what speech models hear).
+pub fn write_flac(ffmpeg: &Path, path: &Path, audio: usize, start: f64, length: f64, output: &Path) -> Result<()> {
+    let out = command(ffmpeg)
+        .args(["-nostdin", "-hide_banner", "-v", "error", "-y", "-ss", &format!("{start:.3}"), "-i"])
+        .arg(path)
+        .args(["-t", &format!("{length:.3}"), "-map", &format!("0:a:{audio}"), "-vn", "-sn", "-ac", "1", "-ar", "16000", "-c:a", "flac"])
+        .arg(output)
+        .stdin(Stdio::null())
+        .output()
+        .context("starting ffmpeg")?;
+    if !out.status.success() {
+        let text = String::from_utf8_lossy(&out.stderr);
+        return Err(anyhow!("ffmpeg couldn’t read the audio: {}", text.lines().last().unwrap_or("")));
+    }
+    Ok(())
+}
+
 /// A subtitle track inside the rip, as text (for rips that carry Japanese subtitles).
 /// Subtitle codecs that are pictures: no text, but each shows at an exact time.
 pub fn picture_codec(codec: &str) -> bool {

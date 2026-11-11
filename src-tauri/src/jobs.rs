@@ -17,7 +17,7 @@ use crate::media::{self, Plan};
 use crate::subs::{self, Line};
 use crate::sync;
 use crate::jimaku;
-use crate::{anilist, matching, scan};
+use crate::{anilist, matching, openrouter, scan};
 use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -436,10 +436,11 @@ fn subs_worker(backend: &Backend) {
                 let _ = backend.db.set_subs_state(episode.id, "failed", &format!("{e:#}"));
             }
         }
-        // Then episodes you asked Whisper to make subtitles for, one at a time.
-        if let (Some(whisper), Some(model)) = (tools.whisper.clone(), tools.whisper_model.clone()) {
+        // Then episodes you asked to have subtitles made for, one at a time.
+        if let Some(listener) = listener(backend, &tools) {
             if let Some((show, episode, _)) = pick(backend, "whisper") {
-                if backend.db.claim_whisper(episode.id).unwrap_or(false) {
+                let name = listener.name();
+                if backend.db.claim_whisper(episode.id, &format!("{name} is listening")).unwrap_or(false) {
                     set_task(
                         &backend.jobs.subs,
                         Some(Task {
@@ -447,20 +448,84 @@ fn subs_worker(backend: &Backend) {
                             episode_id: episode.id,
                             number: episode.number,
                             title: show.title.clone(),
-                            label: format!("Whisper is listening to {} {}", show.title, episode.number),
+                            label: format!("{name} is listening to {} {}", show.title, episode.number),
                             progress: 0.0,
                         }),
                     );
-                    let result = whisper_subtitles(backend, &ffmpeg, &ffprobe, &whisper, &model, &episode);
+                    let result = match &listener {
+                        Listener::OpenRouter { key, model } => openrouter_subtitles(backend, &ffmpeg, &ffprobe, key, model, &episode),
+                        Listener::Local { whisper, model } => whisper_subtitles(backend, &ffmpeg, &ffprobe, whisper, model, &episode),
+                    };
                     set_task(&backend.jobs.subs, None);
                     if let Err(e) = result {
-                        let _ = backend.db.set_subs_state(episode.id, "failed", &format!("Whisper: {e:#}"));
+                        let _ = backend.db.set_subs_state(episode.id, "failed", &format!("{name}: {e:#}"));
                     }
                     backend.jobs.poke();
                 }
             }
         }
     }
+}
+
+/// What makes subtitles for episodes Jimaku has nothing for.
+pub enum Listener {
+    /// A model on OpenRouter, with the key for it.
+    OpenRouter { key: String, model: String },
+    /// whisper.cpp on this computer, with its model.
+    Local { whisper: PathBuf, model: PathBuf },
+}
+
+impl Listener {
+    /// Who its subtitles are marked as made by.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Listener::OpenRouter { model, .. } => openrouter::maker(model),
+            Listener::Local { .. } => "Whisper",
+        }
+    }
+}
+
+/// OpenRouter once Settings has a key for it, else whisper.cpp when it and a model are here.
+pub fn listener(backend: &Backend, tools: &crate::tools::Tools) -> Option<Listener> {
+    if let Some((key, model)) = openrouter::chosen(backend) {
+        return Some(Listener::OpenRouter { key, model });
+    }
+    let (whisper, model) = tools.whisper.clone().zip(tools.whisper_model.clone())?;
+    Some(Listener::Local { whisper, model })
+}
+
+/// Makes subtitles from the episode's Japanese audio with a model on
+/// OpenRouter, marked as machine-made and timed by the model. The audio goes
+/// in pieces (see openrouter.rs), each a file in the subtitles folder for a moment.
+fn openrouter_subtitles(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, key: &str, model: &str, episode: &Episode) -> Result<()> {
+    /// Enough to find where the audio is quiet.
+    const RATE: u32 = 8000;
+    let source = Path::new(&episode.path);
+    let track = media::japanese_audio(&media::probe(ffprobe, source)?);
+    let cuts = openrouter::cuts(&media::read_audio(ffmpeg, source, track, RATE, None, None)?, RATE as usize);
+    std::fs::create_dir_all(backend.dirs.subs())?;
+    let piece = backend.dirs.subs().join(format!("{}.piece.flac", episode.id));
+    let api = openrouter::api_address();
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, cut) in cuts.windows(2).enumerate() {
+        media::write_flac(ffmpeg, source, track, cut[0], cut[1] - cut[0], &piece)?;
+        let flac = std::fs::read(&piece);
+        let _ = std::fs::remove_file(&piece);
+        let heard = openrouter::transcribe(&api, key, model, &flac.context("reading a piece of the audio")?)?;
+        lines.extend(heard.into_iter().map(|mut line| {
+            line.start += cut[0];
+            line.end += cut[0];
+            line
+        }));
+        update_task(&backend.jobs.subs, None, (i + 1) as f64 / (cuts.len() - 1) as f64);
+    }
+    let maker = openrouter::maker(model);
+    // Repeating itself over music is Whisper's habit.
+    let lines = if maker == "Whisper" { without_repeats(lines) } else { lines };
+    write_lines(backend, episode.id, &lines)?;
+    backend.db.set_subs(episode.id, "synced", &format!("Made by {maker} (machine-made)"), maker, None, None)?;
+    crate::premine::prepare(backend, episode.id);
+    Ok(())
 }
 
 /// Where Whisper's models come from: whisper.cpp's own on Hugging Face.

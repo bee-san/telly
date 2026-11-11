@@ -50,10 +50,11 @@ function gettingSub(s: ShowCard): string {
   return `Getting Episode ${n.number} ready`;
 }
 
-export function subsLabel(state: string, score: number | null): { text: string; tone: "ok" | "warn" | "wait" | "bad" | "" } {
+/** `file` is who made machine-made subtitles; `maker` is who would make them now. */
+export function subsLabel(state: string, score: number | null, file: string, maker: string): { text: string; tone: "ok" | "warn" | "wait" | "bad" | "" } {
   switch (state) {
     case "synced":
-      return score === null ? { text: "Made by Whisper", tone: "ok" } : { text: `Synced · ${Math.round(score * 100)}%`, tone: "ok" };
+      return score === null ? { text: `Made by ${file}`, tone: "ok" } : { text: `Synced · ${Math.round(score * 100)}%`, tone: "ok" };
     case "check":
       return { text: `Timing unsure · ${Math.round((score ?? 0) * 100)}%`, tone: "warn" };
     case "working":
@@ -65,7 +66,7 @@ export function subsLabel(state: string, score: number | null): { text: string; 
     case "nokey":
       return { text: "Needs a Jimaku key", tone: "bad" };
     case "whisper":
-      return { text: "Waiting for Whisper", tone: "wait" };
+      return { text: `Waiting for ${maker}`, tone: "wait" };
     case "failed":
       return { text: "Failed", tone: "bad" };
     default:
@@ -87,7 +88,7 @@ export function mediaLabel(state: string, plan: string, progress: number): { tex
 }
 
 /** What a subtitle state means, for its tooltip. */
-export function subsHelp(state: string, detail: string, file: string): string {
+export function subsHelp(state: string, detail: string, file: string, maker: string): string {
   const what = [file, detail].filter(Boolean).join(" · ");
   switch (state) {
     case "synced":
@@ -95,7 +96,7 @@ export function subsHelp(state: string, detail: string, file: string): string {
     case "check":
       return `Telly found subtitles but isn’t sure they’re in time with this video. Watch a little, and use Sync ▾ in the player if they’re off. ${what}`;
     case "none":
-      return `${detail || "No subtitles found for this episode."} Make subtitles with Whisper can make some.`;
+      return `${detail || "No subtitles found for this episode."} Make subtitles with ${maker} can make some.`;
     default:
       return what;
   }

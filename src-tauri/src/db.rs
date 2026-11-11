@@ -571,11 +571,12 @@ impl Db {
         Ok(n == 1)
     }
 
-    /// Starts Whisper on an episode queued for it ("whisper"); false if it isn't.
-    pub fn claim_whisper(&self, id: i64) -> Result<bool> {
+    /// Starts making subtitles for an episode queued for it ("whisper"), with
+    /// `detail` saying who is listening; false if it isn't queued.
+    pub fn claim_whisper(&self, id: i64, detail: &str) -> Result<bool> {
         let n = self.conn()?.execute(
-            "UPDATE episodes SET subs_state = 'working', subs_detail = 'Whisper is listening' WHERE id = ?1 AND subs_state = 'whisper'",
-            params![id],
+            "UPDATE episodes SET subs_state = 'working', subs_detail = ?2 WHERE id = ?1 AND subs_state = 'whisper'",
+            params![id, detail],
         )?;
         Ok(n == 1)
     }

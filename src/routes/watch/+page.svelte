@@ -1161,7 +1161,8 @@
   const syncNote = $derived.by(() => {
     const e = view?.episode;
     if (!e) return "";
-    if (e.subsState === "synced" && e.subsFile === "Whisper") return "Subtitles made by Whisper";
+    // Machine-made subtitles have no sync score, and their file is who made them.
+    if (e.subsState === "synced" && e.subsScore === null) return `Subtitles made by ${e.subsFile}`;
     if (e.subsState === "synced") return `Subtitles synced · ${Math.round((e.subsScore ?? 0) * 100)}%`;
     if (e.subsState === "check") return `Subtitle timing unsure · ${Math.round((e.subsScore ?? 0) * 100)}%`;
     if (e.subsState === "pending" || e.subsState === "working") return "Finding subtitles…";

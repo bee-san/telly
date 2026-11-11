@@ -18,6 +18,7 @@ pub mod matching;
 pub mod media;
 pub mod mining;
 pub mod names;
+pub mod openrouter;
 pub mod own_hachidori;
 pub mod premine;
 pub mod relay;

@@ -115,9 +115,12 @@
 
   const missing = $derived((view?.episodes ?? []).filter((e) => ["none", "nokey", "failed"].includes(e.subsState)).length);
 
+  /** Who makes subtitles Jimaku doesn't have: "ElevenLabs" or "Whisper". */
+  const maker = $derived(view?.whisper.maker ?? "Whisper");
+
   async function whisperAll() {
     const r = await call<{ queued: number }>("whisperSubs", { show: id });
-    toast({ key: "whisper", state: "info", title: `Whisper will make subtitles for ${plural(r.queued, "episode")}`, text: "One at a time, a few minutes each. They’re marked as machine-made." });
+    toast({ key: "whisper", state: "info", title: `${maker} will make subtitles for ${plural(r.queued, "episode")}`, text: "One at a time, a few minutes each. They’re marked as machine-made." });
     load();
   }
 
@@ -180,12 +183,10 @@
           <span class="grow"></span>
           <button type="button" class="btn quiet" onclick={() => goto(`/premine?show=${id}`)} title="Make cards for the words that take you to the share of the show you choose">Premine…</button>
           <button type="button" class="btn quiet" onclick={() => { matching = true; query = card?.titleRomaji || card?.title || ""; found = []; search(); }}>Change match…</button>
-          {#if missing > 0 && view?.whisper.cli}
-            {#if view.whisper.model}
-              <button type="button" class="btn quiet" onclick={whisperAll} title="For the {missing} episodes without subtitles; marked as machine-made">Make subtitles with Whisper</button>
-            {:else}
-              <button type="button" class="btn quiet" onclick={getModel} title="So Whisper can make subtitles Jimaku doesn’t have">Get Whisper’s model</button>
-            {/if}
+          {#if missing > 0 && view?.whisper.ready}
+            <button type="button" class="btn quiet" onclick={whisperAll} title="For the {missing} episodes without subtitles; marked as machine-made">Make subtitles with {maker}</button>
+          {:else if missing > 0 && view?.whisper.needsModel}
+            <button type="button" class="btn quiet" onclick={getModel} title="So Whisper can make subtitles Jimaku doesn’t have">Get Whisper’s model</button>
           {/if}
           <button type="button" class="btn quiet" onclick={lookAgain}>Look for new episodes</button>
           <button type="button" class="btn quiet" onclick={() => act(() => call("retrySubs", { show: id }))}>Find subtitles again</button>
@@ -199,14 +200,14 @@
       <div class="ep-row head"><span>#</span><span>Video</span><span>Subtitles</span><span>Sync</span><span class="right" title={view?.wordsError || "The share of each episode’s words that are on cards studied in Anki"}>Words known</span><span class="right">Watched</span></div>
       {#each episodes as ep (ep.id)}
         {@const m = mediaLabel(ep.mediaState, ep.mediaPlan, ep.mediaProgress)}
-        {@const s = subsLabel(ep.subsState, ep.subsScore)}
+        {@const s = subsLabel(ep.subsState, ep.subsScore, ep.subsFile, maker)}
         <button type="button" class="ep-row" class:next={ep.isNext} onclick={() => play(ep)} oncontextmenu={(e) => rowMenu(e, ep)} title={ep.path}>
           <span class="ep-n">{ep.number}</span>
           <span class="cell {tone(m.tone)}" title={ep.mediaError || m.text}>
             {#if m.tone === "ok"}<Icon name="check" />{:else if ep.mediaState === "working"}<span class="spin"></span>{/if}
             <span>{m.text}{ep.duration > 0 ? ` · ${clock(ep.duration)}` : ""}</span>
           </span>
-          <span class="cell {tone(s.tone)}" title={subsHelp(ep.subsState, ep.subsDetail, ep.subsFile)}>
+          <span class="cell {tone(s.tone)}" title={subsHelp(ep.subsState, ep.subsDetail, ep.subsFile, maker)}>
             {#if s.tone === "ok"}<Icon name="check" />{:else if ep.subsState === "working"}<span class="spin"></span>{/if}
             <span>{s.text}</span>
           </span>
@@ -229,8 +230,8 @@
     <button type="button" role="menuitem" onclick={() => act(() => call("markWatched", { id: ep.id, watched: !ep.watched }))}>{ep.watched ? "Mark as unwatched" : "Mark as watched"}</button>
     <button type="button" role="menuitem" onclick={() => chooseSubtitle(ep)}>Use a subtitle file…</button>
     <button type="button" role="menuitem" onclick={() => act(() => call("retrySubs", { id: ep.id }))}>Find subtitles again</button>
-    {#if view?.whisper.cli && view.whisper.model}
-      <button type="button" role="menuitem" onclick={() => act(() => call("whisperSubs", { id: ep.id }))}>Make subtitles with Whisper</button>
+    {#if view?.whisper.ready}
+      <button type="button" role="menuitem" onclick={() => act(() => call("whisperSubs", { id: ep.id }))}>Make subtitles with {maker}</button>
     {/if}
     {#if ep.mediaState === "failed" || ep.mediaState === "ready"}
       <button type="button" role="menuitem" onclick={() => act(() => call("retryMedia", { id: ep.id }))}>{ep.mediaState === "failed" ? "Try converting again" : "Convert again"}</button>

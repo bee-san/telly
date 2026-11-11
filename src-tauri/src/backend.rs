@@ -492,7 +492,12 @@ impl Backend {
             .collect();
         let card = self.card(show, &cards_by_show)?;
         let tools = self.tools();
-        let whisper = json!({ "cli": tools.whisper.is_some(), "model": tools.whisper_model.is_some() });
+        let listener = jobs::listener(self, &tools);
+        let whisper = json!({
+            "ready": listener.is_some(),
+            "needsModel": listener.is_none() && tools.whisper.is_some(),
+            "maker": listener.map_or("Whisper", |l| l.name()),
+        });
         Ok(json!({ "card": card, "episodes": rows, "activity": self.activity(), "whisper": whisper, "wordsError": words_error }))
     }
 

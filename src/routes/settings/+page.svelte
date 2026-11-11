@@ -234,11 +234,19 @@
     status = await call<Status>("status");
   }
 
-  async function openJimaku() {
+  /** OpenRouter's models for making subtitles, and who each one's are marked as made by. The first is used until one is picked. */
+  const ROUTER_MODELS = [
+    ["elevenlabs/scribe-v2", "ElevenLabs Scribe v2", "ElevenLabs"],
+    ["openai/whisper-large-v3", "Whisper large v3", "Whisper"],
+  ];
+  let showRouterKey = $state(false);
+  const routerMaker = $derived((ROUTER_MODELS.find(([id]) => id === str("openrouter.model")) ?? ROUTER_MODELS[0])[2]);
+
+  async function openLink(link: string) {
     if (inTauri) {
       const { openUrl } = await import("@tauri-apps/plugin-opener");
-      await openUrl("https://jimaku.cc/account");
-    } else window.open("https://jimaku.cc/account");
+      await openUrl(link);
+    } else window.open(link);
   }
 </script>
 
@@ -255,7 +263,7 @@
         <span class="inline">
           <input class="input mono grow" type={showKey ? "text" : "password"} bind:value={key} onchange={() => set("jimaku.key", key.trim())} />
           <button type="button" class="btn quiet" onclick={() => (showKey = !showKey)}>{showKey ? "Hide" : "Show"}</button>
-          <button type="button" class="btn quiet" onclick={openJimaku}>Get a key</button>
+          <button type="button" class="btn quiet" onclick={() => openLink("https://jimaku.cc/account")}>Get a key</button>
         </span>
         <small>{saved["jimaku.key"] ? "Saved. Telly is looking for subtitles again." : "A free Jimaku account comes with a key. Telly uses it to find each episode’s subtitles and sync them to the rips."}</small>
       </label>
@@ -387,15 +395,33 @@
   </section>
 
   <section>
-    <h2>Whisper</h2>
-    {#if !status?.tools.whisper}
+    <h2>Machine-made subtitles</h2>
+    {#if str("openrouter.key")}
+      <p class="lede">Ready. On a show’s page, <b>Make subtitles with {routerMaker}</b> covers the episodes Jimaku has nothing for. They’re marked as machine-made.</p>
+    {:else if !status?.tools.whisper}
       <p class="lede">Whisper can make subtitles for episodes Jimaku has nothing for. Telly uses the whisper.cpp Tidepool downloads for voice input, and Tidepool hasn’t downloaded it on this computer yet.</p>
+    {:else if status.tools.whisperModel}
+      <p class="lede">Ready. On a show’s page, <b>Make subtitles with Whisper</b> covers the episodes Jimaku has nothing for. They’re marked as machine-made.</p>
     {:else}
-      {#if status.tools.whisperModel}
-        <p class="lede">Ready. On a show’s page, <b>Make subtitles with Whisper</b> covers the episodes Jimaku has nothing for. They’re marked as machine-made.</p>
-      {:else}
-        <p class="lede">Whisper can make subtitles for episodes Jimaku has nothing for, marked as machine-made. It needs a model that knows Japanese, from whisper.cpp’s own models.</p>
-      {/if}
+      <p class="lede">Whisper can make subtitles for episodes Jimaku has nothing for, marked as machine-made. It needs a model that knows Japanese, from whisper.cpp’s own models.</p>
+    {/if}
+    <label class="field">
+      <span>OpenRouter API key</span>
+      <span class="inline">
+        <input class="input mono grow" type={showRouterKey ? "text" : "password"} value={str("openrouter.key")} onchange={(e) => set("openrouter.key", e.currentTarget.value.trim())} />
+        <button type="button" class="btn quiet" onclick={() => (showRouterKey = !showRouterKey)}>{showRouterKey ? "Hide" : "Show"}</button>
+        <button type="button" class="btn quiet" onclick={() => openLink("https://openrouter.ai/settings/keys")}>Get a key</button>
+      </span>
+      <small>With a key, a model on OpenRouter makes the subtitles, and each episode’s audio is sent to it. Without one, Whisper on this computer does.</small>
+    </label>
+    {#if str("openrouter.key")}
+      <label class="field narrow"><span>Model</span>
+        <select class="input" value={str("openrouter.model", ROUTER_MODELS[0][0])} onchange={(e) => set("openrouter.model", e.currentTarget.value)}>
+          {#each ROUTER_MODELS as [id, label]}<option value={id}>{label}</option>{/each}
+        </select>
+        <small>An episode costs about $0.09 with ElevenLabs, and $0.01 to $0.04 with Whisper.</small>
+      </label>
+    {:else if status?.tools.whisper}
       <label class="field narrow"><span>Model</span>
         <select class="input" value={str("whisper.model", WHISPER_MODELS[0][0])} onchange={(e) => chooseWhisperModel(e.currentTarget.value)}>
           {#each WHISPER_MODELS as [file, label]}<option value={file}>{label}</option>{/each}

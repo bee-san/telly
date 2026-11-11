@@ -261,6 +261,25 @@
   let showRouterKey = $state(false);
   const routerMaker = $derived((ROUTER_MODELS.find(([id]) => id === str("openrouter.model")) ?? ROUTER_MODELS[0])[2]);
 
+  /** Telly's app on AniList, whose page shows an access token to paste here. */
+  const ANILIST_CLIENT_ID = "56672";
+  let anilistToken = $state("");
+
+  async function anilistSignIn() {
+    try {
+      await call("anilistSignIn", { token: anilistToken.trim() });
+      anilistToken = "";
+      settings = await call<Settings>("settings");
+    } catch (e) {
+      toast({ key: "anilist", state: "failed", title: "Not signed in", text: errorText(e) });
+    }
+  }
+
+  async function anilistSignOut() {
+    await call("anilistSignOut");
+    settings = await call<Settings>("settings");
+  }
+
   async function openLink(link: string) {
     if (inTauri) {
       const { openUrl } = await import("@tauri-apps/plugin-opener");
@@ -519,6 +538,25 @@
     </div>
     <p class="muted">The library and subtitles stay in:</p>
     <p class="muted mono path">{status?.dataDir}</p>
+  </section>
+
+  <section>
+    <h2>AniList</h2>
+    {#if str("anilist.user")}
+      <p class="lede">Signed in as {str("anilist.user")}. Episodes watched from now on go on your AniList list.</p>
+      {#if str("anilist.error")}<p class="err">Your list wasn’t updated: {str("anilist.error")}. Telly tries again every 10 minutes.</p>{/if}
+      <div class="actions"><button type="button" class="btn quiet" onclick={anilistSignOut}>Sign out</button></div>
+    {:else}
+      <label class="field">
+        <span>Access token</span>
+        <span class="inline">
+          <input class="input mono grow" type="password" bind:value={anilistToken} />
+          <button type="button" class="btn quiet" onclick={() => openLink(`https://anilist.co/api/v2/oauth/authorize?client_id=${ANILIST_CLIENT_ID}&response_type=token`)}>Get a token</button>
+          <button type="button" class="btn" onclick={anilistSignIn} disabled={!anilistToken.trim()}>Sign in</button>
+        </span>
+        <small>Signed in, each episode watched in Telly goes on your AniList list.</small>
+      </label>
+    {/if}
   </section>
 
   <section>

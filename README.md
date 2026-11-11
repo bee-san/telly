@@ -15,7 +15,7 @@ An anime player for learning Japanese, for Windows. Point it at a folder of rips
 - premines: before you watch, it lists the words in the next episodes that you don't know yet and makes them into cards in your Hachidori card format
 - makes a dictionary of the characters in what you're watching, the way [characterdictionary.tokyo](https://characterdictionary.tokyo) does, adds it to Hachidori and colours their names in the subtitles
 - recommends anime to watch next, from what AniList's users recommend to people who liked the shows in your library
-- logs what you watch for [Tidepool](https://github.com/bee-san/tidepool)
+- logs what you watch for [Tidepool](https://github.com/bee-san/tidepool), and on your AniList list once you've signed in
 
 The design, plans and build order are in the [design artifact](https://claude.ai/artifact/VbgPYuAenU9pXpGiVTWGjn).
 
@@ -94,6 +94,15 @@ A show's page also shows, for each episode with subtitles, the share of its word
 - **A pick** opens with its synopsis, the shows it's recommended from with their votes, and **Open on AniList**. **Hide** leaves it out from now on, for one you've seen elsewhere.
 
 AniList's answers are kept for a week. A show is asked about again after that, and a show you add is asked about the next time the page opens.
+
+## Your AniList list
+
+In **Settings → AniList**, **Get a token** opens AniList, which shows an access token once you approve Telly. Paste it and press **Sign in**. From then on, each episode you watch raises that anime's progress on your list, and its last episode marks it completed.
+
+- Only episodes watched after signing in count. Progress only goes up: rewatching an earlier episode, or marking one unwatched, changes nothing.
+- A show added as one folder holding several seasons: the first season folder goes to the show's own entry, and a later one to the entry AniList finds for its folder's name, numbered from 1 within that folder. When AniList isn't fairly sure which entry a folder is, or a number is past the entry's last episode, nothing is logged.
+- Shows AniList doesn't know aren't logged.
+- If AniList can't be reached, Telly tries again every 10 minutes, and Settings says why it failed.
 
 ## How subtitles are matched
 

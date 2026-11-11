@@ -3,6 +3,7 @@
 //! through `call`, into backend.rs, which the development server shares.
 
 pub mod anilist;
+pub mod anilist_list;
 pub mod anki;
 pub mod ask;
 pub mod backend;

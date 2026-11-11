@@ -157,7 +157,8 @@ impl Jobs {
         self.signal.notify_all();
     }
 
-    fn wait(&self, seen: &mut u64, timeout: Duration) {
+    /// Waits for a poke, or `timeout`; `seen` is the last poke the caller saw.
+    pub fn wait(&self, seen: &mut u64, timeout: Duration) {
         let Ok(guard) = self.wake.lock() else { return };
         let current = *guard;
         if current != *seen {

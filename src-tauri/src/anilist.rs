@@ -1,6 +1,7 @@
 //! AniList (https://anilist.co), to know which show a folder is: its titles,
 //! episode count and cover. Free, and no key is needed. Jimaku finds
-//! subtitles by AniList's ID, and Tidepool logs it.
+//! subtitles by AniList's ID, and Tidepool logs it. Signed in, Telly also
+//! puts what you watch on your AniList list (anilist_list.rs).
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -83,13 +84,17 @@ impl Anime {
 }
 
 fn query(q: &str, variables: Value) -> Result<Value> {
+    query_as(q, variables, None)
+}
+
+/// `query`, as the user whose access token `token` is.
+fn query_as(q: &str, variables: Value, token: Option<&str>) -> Result<Value> {
     let body = json!({ "query": q, "variables": variables });
-    let mut response = agent()
-        .post(API)
-        .header("User-Agent", USER_AGENT)
-        .header("Accept", "application/json")
-        .send_json(&body)
-        .map_err(|e| anyhow!("AniList isn’t reachable ({e})"))?;
+    let mut request = agent().post(API).header("User-Agent", USER_AGENT).header("Accept", "application/json");
+    if let Some(token) = token {
+        request = request.header("Authorization", format!("Bearer {token}"));
+    }
+    let mut response = request.send_json(&body).map_err(|e| anyhow!("AniList isn’t reachable ({e})"))?;
     let status = response.status().as_u16();
     if status == 429 {
         return Err(anyhow!("AniList asked Telly to slow down. Try again in a minute."));
@@ -141,6 +146,40 @@ pub fn by_id(id: i64) -> Result<Anime> {
     let q = format!("query ($id: Int) {{ Media(id: $id, type: ANIME) {{ {FIELDS} }} }}");
     let answer = query(&q, json!({ "id": id }))?;
     answer.pointer("/data/Media").and_then(Anime::from_api).ok_or_else(|| anyhow!("AniList has no anime {id}"))
+}
+
+/// The name of the user whose access token `token` is.
+pub fn viewer(token: &str) -> Result<String> {
+    let answer = query_as("query { Viewer { name } }", json!({}), Some(token))?;
+    answer.pointer("/data/Viewer/name").and_then(Value::as_str).map(str::to_string).ok_or_else(|| anyhow!("AniList didn’t say who this token is for"))
+}
+
+/// An anime on the user's list: its episode count (if AniList knows it),
+/// and the entry's status and progress (None when it isn't on the list).
+pub struct ListEntry {
+    pub episodes: Option<i64>,
+    pub status: Option<String>,
+    pub progress: i64,
+}
+
+pub fn list_entry(token: &str, id: i64) -> Result<ListEntry> {
+    let q = "query ($id: Int) { Media(id: $id, type: ANIME) { episodes mediaListEntry { status progress } } }";
+    let answer = query_as(q, json!({ "id": id }), Some(token))?;
+    let media = answer.pointer("/data/Media").ok_or_else(|| anyhow!("AniList has no anime {id}"))?;
+    Ok(ListEntry {
+        episodes: media.get("episodes").and_then(Value::as_i64),
+        status: media.pointer("/mediaListEntry/status").and_then(Value::as_str).map(str::to_string),
+        progress: media.pointer("/mediaListEntry/progress").and_then(Value::as_i64).unwrap_or(0),
+    })
+}
+
+/// Sets how many episodes of anime `id` the user has watched, and its status
+/// (CURRENT, COMPLETED, REPEATING…).
+pub fn save_progress(token: &str, id: i64, progress: i64, status: &str) -> Result<()> {
+    let q = "mutation ($id: Int, $progress: Int, $status: MediaListStatus) {
+      SaveMediaListEntry(mediaId: $id, progress: $progress, status: $status) { id } }";
+    query_as(q, json!({ "id": id, "progress": progress, "status": status }), Some(token))?;
+    Ok(())
 }
 
 fn words(text: &str) -> Vec<String> {

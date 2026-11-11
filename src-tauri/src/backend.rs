@@ -3,6 +3,7 @@
 //! run the same code.
 
 use crate::anilist::{self, Anime};
+use crate::anilist_list;
 use crate::ask::{self, Asks};
 use crate::cards::{self, Event};
 use crate::covers;
@@ -329,6 +330,7 @@ impl Backend {
             recommend::gather(&backend);
             premine::start_shares(&backend, None);
             names::start(backend.clone());
+            anilist_list::start(backend.clone());
         });
     }
 
@@ -1206,6 +1208,11 @@ impl Backend {
             "ownHachidori" => to_value(own_hachidori::report(self)),
             "premineCards" => to_value(premine::start_cards(self, arg(&args, "words")?)?),
             "recommendations" => recommend::view(self),
+            "anilistSignIn" => Ok(json!({ "user": anilist_list::sign_in(self, &arg::<String>(&args, "token")?)? })),
+            "anilistSignOut" => {
+                anilist_list::sign_out(self)?;
+                Ok(json!({}))
+            }
             "hideRecommendation" => {
                 recommend::hide(self, arg(&args, "id")?)?;
                 Ok(json!({}))

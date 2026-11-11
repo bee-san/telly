@@ -111,6 +111,9 @@ pub struct Jobs {
     caught_up: Mutex<HashSet<i64>>,
     /// The episodes `keep_own_files` has looked beside since Telly started.
     looked_beside: Mutex<HashSet<i64>>,
+    /// Episodes given a file from beside their rip, whose words are still to
+    /// work out (`words_worker`), first in first.
+    words: Mutex<std::collections::VecDeque<i64>>,
     /// A download (Whisper's model).
     pub download: Mutex<Option<Task>>,
     /// Stops the running conversion (the show was removed, or Telly is closing).
@@ -135,6 +138,7 @@ impl Default for Jobs {
             catching_up: Mutex::new(None),
             caught_up: Mutex::new(HashSet::new()),
             looked_beside: Mutex::new(HashSet::new()),
+            words: Mutex::new(std::collections::VecDeque::new()),
             download: Mutex::new(None),
             cancel_media: AtomicBool::new(false),
             jimaku_files: Mutex::new(HashMap::new()),
@@ -328,6 +332,7 @@ pub fn start(backend: Arc<Backend>) {
     start("telly-media".into(), |backend, _| media_worker(backend), 0);
     start("telly-probe".into(), |backend, _| probe_worker(backend), 0);
     start("telly-catch-up".into(), |backend, _| catch_up_worker(backend), 0);
+    start("telly-words".into(), |backend, _| words_worker(backend), 0);
     for n in 0..SUBS_WORKERS {
         start(format!("telly-subs-{n}"), subs_worker, n);
     }
@@ -1199,8 +1204,25 @@ fn keep_beside(backend: &Backend, episode: &Episode, own: &[jimaku::Local]) -> R
     let tried: Vec<Tried> = own.iter().map(|f| Tried { name: f.name.clone(), path: f.path.to_string_lossy().into_owned(), score: 0.0, offset_ms: 0, error: String::new() }).collect();
     std::fs::write(tried_path(backend, episode.id), serde_json::to_vec(&tried)?)?;
     backend.db.set_subs(episode.id, "synced", &format!("beside the rip · {AS_IT_IS}"), &file.name, None, Some(0))?;
-    crate::premine::prepare(backend, episode.id);
+    backend.jobs.words.lock().unwrap_or_else(|e| e.into_inner()).push_back(episode.id);
+    backend.jobs.poke();
     Ok(())
+}
+
+/// Works out the words of episodes given a file from beside their rip
+/// (`premine::prepare`). Hachidori takes about a minute over an episode's
+/// words, measured in the library, and thousands of episodes get their file
+/// in one pass: so the pass doesn't wait for it, and this does it after.
+fn words_worker(backend: &Backend) {
+    let mut seen = 0;
+    loop {
+        backend.jobs.wait(&mut seen, Duration::from_secs(5));
+        loop {
+            let next = backend.jobs.words.lock().unwrap_or_else(|e| e.into_inner()).pop_front();
+            let Some(episode_id) = next else { break };
+            crate::premine::prepare(backend, episode_id);
+        }
+    }
 }
 
 /// Gives every episode with a Japanese subtitle file beside its rip that file,

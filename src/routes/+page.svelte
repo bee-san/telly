@@ -98,6 +98,7 @@
       <input type="search" bind:value={q} placeholder="Search" aria-label="Search shows" />
     </label>
     <span class="grow"></span>
+    <a class="btn quiet" href="/recommended">Recommended</a>
     <a class="btn quiet" href="/settings"><Icon name="gear" /><span>Settings</span></a>
     <button type="button" class="btn" onclick={add}><Icon name="plus" /><span>Add media…</span></button>
   </div>

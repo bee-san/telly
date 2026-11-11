@@ -21,6 +21,7 @@ pub mod names;
 pub mod openrouter;
 pub mod own_hachidori;
 pub mod premine;
+pub mod recommend;
 pub mod relay;
 pub mod scan;
 pub mod subs;

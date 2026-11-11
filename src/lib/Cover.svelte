@@ -10,6 +10,8 @@
   }: { cover?: string; color?: string; native?: string; title?: string } = $props();
 
   let failed = $state(false);
+  // Telly's own copy of the cover, or one still on AniList (a recommendation's).
+  const src = $derived(cover.startsWith("https://") ? cover : mediaUrl(cover));
   // A stand-in colour from the title when AniList gave none.
   const fallback = $derived.by(() => {
     let h = 0;
@@ -22,7 +24,7 @@
 
 <span class="cv" class:type={!cover || failed} style:--cv-bg={bg} style:--cv-ink={inkFor(bg)}>
   {#if cover && !failed}
-    <img src={mediaUrl(cover)} alt="" loading="lazy" onerror={() => (failed = true)} />
+    <img {src} alt="" loading="lazy" onerror={() => (failed = true)} />
   {:else}
     {#if native}<span class="cv-jp" lang="ja">{native}</span>{/if}
     <span class="cv-en">{title}</span>

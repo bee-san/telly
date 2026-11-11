@@ -13,6 +13,7 @@ use crate::mining::{self, Mining};
 use crate::names::{self, Names};
 use crate::own_hachidori::{self, Own};
 use crate::premine::{self, Premining};
+use crate::recommend;
 use crate::scan;
 use crate::subs::Line;
 use crate::sync;
@@ -1095,6 +1096,11 @@ impl Backend {
             "premineStatus" => to_value(premine::status(self)),
             "ownHachidori" => to_value(own_hachidori::report(self)),
             "premineCards" => to_value(premine::start_cards(self, arg(&args, "words")?)?),
+            "recommendations" => recommend::view(self),
+            "hideRecommendation" => {
+                recommend::hide(self, arg(&args, "id")?)?;
+                Ok(json!({}))
+            }
             "ankiFields" => {
                 let url = cards::anki_url(self);
                 let model: String = arg(&args, "model")?;

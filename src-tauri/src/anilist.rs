@@ -3,7 +3,7 @@
 //! subtitles by AniList's ID, and Tidepool logs it.
 
 use anyhow::{anyhow, Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::OnceLock;
@@ -12,7 +12,7 @@ use std::time::Duration;
 const API: &str = "https://graphql.anilist.co";
 const USER_AGENT: &str = concat!("Telly/", env!("CARGO_PKG_VERSION"), " (personal anime player)");
 
-const FIELDS: &str = "id format episodes seasonYear status synonyms
+pub(crate) const FIELDS: &str = "id format episodes seasonYear status synonyms
   title { romaji english native }
   coverImage { extraLarge large color }";
 
@@ -27,7 +27,7 @@ fn agent() -> &'static ureq::Agent {
     })
 }
 
-#[derive(Serialize, Clone, Debug, Default, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Anime {
     pub id: i64,
@@ -45,7 +45,7 @@ pub struct Anime {
 }
 
 impl Anime {
-    fn from_api(v: &Value) -> Option<Anime> {
+    pub(crate) fn from_api(v: &Value) -> Option<Anime> {
         let text = |p: &str| v.pointer(p).and_then(Value::as_str).unwrap_or("").to_string();
         Some(Anime {
             id: v.get("id")?.as_i64()?,

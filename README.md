@@ -12,6 +12,7 @@ An anime player for learning Japanese, for Windows. Point it at a folder of rips
 - explains the line on screen when you press **E**, and when you come back to a show, opens on **Previously on**: the story so far in its arcs, the episode you left, and key moments to watch again, each with a caption (both by Claude, through the Claude Code on your computer)
 - premines: before you watch, it lists the words in the next episodes that you don't know yet and makes them into cards in your Hachidori card format
 - makes a dictionary of the characters in what you're watching, the way [characterdictionary.tokyo](https://characterdictionary.tokyo) does, adds it to Hachidori and colours their names in the subtitles
+- recommends anime to watch next, from what AniList's users recommend to people who liked the shows in your library
 - logs what you watch for [Tidepool](https://github.com/bee-san/tidepool)
 
 The design, plans and build order are in the [design artifact](https://claude.ai/artifact/VbgPYuAenU9pXpGiVTWGjn).
@@ -82,6 +83,16 @@ A show's page has **Premine…**: the words in the next episode (or the next 3 o
 
 A show's page also shows, for each episode with subtitles, the share of its words that are on cards you've studied in Anki, counted the same way. It's worked out when the page opens, with Anki open.
 
+## Recommended
+
+**Recommended**, in the library's toolbar, lists anime to watch next. It goes on the shows in your library and needs no AniList sign-in. On AniList, people pair shows ("liked this, try that") and vote each pair up or down; Telly asks for the 25 most voted pairs of every show AniList knows, 50 shows to a request.
+
+- **Adding up:** each show has a say on a pick, counted by the size of its votes (log2(1 + votes)): 6,000 votes count about twice as much as 80. So a pick liked from many of your shows beats one that a single well-known show carries. A show watched to the end counts double one not started.
+- **Series:** a show's seasons, films and side stories (AniList's relations) have one say between them, the most votes any of them gives. The rest of a series you have isn't offered as a pick.
+- **A pick** opens with its synopsis, the shows it's recommended from with their votes, and **Open on AniList**. **Hide** leaves it out from now on, for one you've seen elsewhere.
+
+AniList's answers are kept for a week. A show is asked about again after that, and a show you add is asked about the next time the page opens.
+
 ## How subtitles are matched
 
 Telly tries every file Jimaku has that could be the episode's, syncs each to the episode, and keeps the one that fits best.
@@ -112,6 +123,7 @@ With an OpenRouter API key in Settings, a model on [OpenRouter](https://openrout
 | `%LOCALAPPDATA%\Telly\media` | Telly's copies of episodes WebView2 can't play as they are. Settings → Disk space can move them to another folder, on an external drive, say |
 | `%LOCALAPPDATA%\Telly\subtitles` | synced subtitles, one file per episode |
 | `%LOCALAPPDATA%\Telly\names` | casts from AniList, their portraits, and the character dictionary |
+| `%LOCALAPPDATA%\Telly\recommended.json` | what AniList's users recommend for each of your shows, kept for a week |
 | `%APPDATA%\Telly\telly-log.sqlite` | what you watched, for Tidepool (counts only, never the text) |
 
 Your rips are never moved or changed.

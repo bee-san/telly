@@ -50,6 +50,16 @@ Claude Code takes 3 to 15 seconds to start, longer than Haiku takes to answer. S
 - **Explain** (E, or Explain on a transcript line) pauses and explains the line: a translation, then the words and grammar a learner might trip on. The answer shows as it's written and is saved, so asking again is instant.
 - **Previously on** (P, or Recap) tells the story so far: the story cut into its arcs, each with what happens in it and the episodes it spans, then **Last time** for the episode you left, then up to 6 moments to play back as clips, each with a caption saying what's happening in it. Each recap carries on from the one kept for the episode before, so only the episode you just left is read (up to six when there's no recap to carry on from). When you come back to a show after 8 hours (Settings → Claude), the moments play first and the episode starts after them; Read recap shows the text instead. Back within 3 days, it's only Last time and that episode's moments, with the rest behind Show story so far. Picking up in the middle of an episode, the recap runs up to where you stopped. It's written when you leave the player, so it's ready next time (Haiku takes about 15 seconds for one episode); if it isn't, the episode starts and Telly says when the recap is ready.
 
+## Filters
+
+**Filters** in the player (V) opens a panel of tiles, each showing the frame through one filter. The filter is drawn over the picture only, so the subtitles stay sharp, and it's remembered for each show.
+
+- **Deband** smooths the bands in skies and dark gradients, and **Sharpen** crisps lines.
+- **Anime4K** S, M and L are [Anime4K](https://github.com/bloc97/Anime4K)'s 2× upscalers, for a rip smaller than the screen. L looks best and needs the most from the graphics card.
+- **Trinitron**, **PVM-20M2** and **Dorm TV** are three of [michadame](https://github.com/Morgawr/michadame)'s televisions: its Halo shaders and presets, unchanged. They're made for a 4K screen: on a smaller one the scanlines fade and the picture comes out brighter.
+
+The shaders and where they come from are in `src/lib/filters/shaders`.
+
 ## Character names
 
 Telly fetches the casts of the 6 shows you watched last from AniList, with their portraits, and builds a Yomitan dictionary with [characterdictionary.tokyo](https://github.com/bee-san/Japanese_Character_Name_Dictionary)'s own builder (copied into `src-tauri/src/names`): each character's full name, its parts, kana spellings and honorifics (ナツさん, ルーシィ様…), with a card showing who they are. Names written with ・ (ナツ・ドラグニル) get each part. To keep a cast of hundreds a sensible size, main characters get every honorific, supporting characters the common ones, and background characters none.

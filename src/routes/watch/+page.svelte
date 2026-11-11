@@ -4,6 +4,7 @@
   import { onDestroy, onMount, tick as nextTick } from "svelte";
   import Icon from "$lib/Icon.svelte";
   import { call, errorText, mediaUrl, setFullscreen, setWindowTitle, type AskProgress, type CardEvent, type CastName, type ClaudeStatus, type Line, type PlayerView, type Recap } from "$lib/api";
+  import { createRenderer, drawTiles, filters } from "$lib/filters";
   import { clock } from "$lib/format";
   import { app } from "$lib/state.svelte";
   import { toast } from "$lib/toast-store.svelte";
@@ -31,6 +32,12 @@
   let subMenu = $state(false);
   let videoError = $state("");
   let settings = $state<Record<string, unknown>>({});
+  // Filters (V): the picture drawn through one, on a canvas over the video. Kept for each show.
+  let filter = $state("none");
+  let filterPanel = $state(false);
+  let filtered = $state<HTMLCanvasElement | null>(null);
+  const tiles: Record<string, HTMLCanvasElement> = {};
+  let repaint: (() => void) | null = null;
 
   // Explain this line (E): Claude’s answer, shown as it’s written.
   let explaining = $state<{ index: number; text: string; done: boolean; error: string; ask: number } | null>(null);
@@ -194,6 +201,7 @@
       nudge = v.episode.subsNudgeMs;
       subsOn = settings["player.subtitles"] !== false;
       blur = settings["player.blur"] === true;
+      filter = filters.find((f) => f.id === settings[`player.filter.${v.show.id}`])?.id ?? "none";
       await setWindowTitle(`${v.show.title} · Episode ${v.episode.number} — Telly`);
       if (v.episode.mediaState !== "ready") {
         error = v.episode.mediaState === "failed" ? `This episode couldn’t be converted: ${v.episode.mediaError}` : "This episode isn’t ready to play yet.";
@@ -433,6 +441,56 @@
     app.fullscreen = !app.fullscreen;
     await setFullscreen(app.fullscreen).catch(() => {});
   }
+
+  // ---- filters (V) ------------------------------------------------------------------
+
+  function pickFilter(id: string) {
+    filter = id;
+    if (view) call("setSetting", { key: `player.filter.${view.show.id}`, value: id === "none" ? null : id }).catch(() => {});
+  }
+
+  // The filtered picture: drawn again for each frame of the video, and when the window's size changes.
+  $effect(() => {
+    const v = video;
+    const canvas = filtered;
+    if (!v || !canvas) return;
+    const renderer = createRenderer(canvas);
+    const box = canvas.parentElement as HTMLElement;
+    const paint = () => {
+      if (!v.videoWidth) return;
+      const scale = Math.min(box.clientWidth / v.videoWidth, box.clientHeight / v.videoHeight) * devicePixelRatio;
+      const w = Math.round(v.videoWidth * scale);
+      const h = Math.round(v.videoHeight * scale);
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+      }
+      renderer.draw(v, v.videoWidth, v.videoHeight, filter);
+    };
+    let handle = v.requestVideoFrameCallback(function next() {
+      paint();
+      handle = v.requestVideoFrameCallback(next);
+    });
+    const resized = new ResizeObserver(paint);
+    resized.observe(box);
+    repaint = paint;
+    return () => {
+      repaint = null;
+      v.cancelVideoFrameCallback(handle);
+      resized.disconnect();
+      renderer.dispose();
+    };
+  });
+
+  // Another filter shows at once, paused or not.
+  $effect(() => {
+    if (filter !== "none") repaint?.();
+  });
+
+  // The panel's tiles show each filter on the frame that was playing when it opened.
+  $effect(() => {
+    if (filterPanel && !explaining && video) return drawTiles(video, tiles);
+  });
 
   // ---- explain this line (E) ---------------------------------------------------------
 
@@ -734,6 +792,10 @@
       case "T":
         transcript = !transcript;
         break;
+      case "v":
+      case "V":
+        filterPanel = !filterPanel;
+        break;
       case "[":
         setRate(rate - 0.1);
         break;
@@ -769,6 +831,7 @@
         if (explaining) closeExplain();
         else if (countdown !== null) stopCountdown();
         else if (subMenu) subMenu = false;
+        else if (filterPanel) filterPanel = false;
         else if (app.fullscreen) toggleFull();
         break;
     }
@@ -854,6 +917,8 @@
       <!-- svelte-ignore a11y_media_has_caption -->
       <video
         bind:this={video}
+        class:filtered={filter !== "none"}
+        crossorigin="anonymous"
         src={mediaUrl(view.src)}
         preload="auto"
         onloadedmetadata={onLoaded}
@@ -864,6 +929,7 @@
         ondurationchange={() => video && (duration = video.duration)}
         onerror={() => (videoError = video?.error?.message || "The video couldn’t play.")}
       ></video>
+      {#if filter !== "none"}<canvas class="filtered-pic" bind:this={filtered}></canvas>{/if}
     {/if}
   </div>
 
@@ -924,6 +990,7 @@
       {#if canRecap}
         <button type="button" class="pbtn txt" title="Previously on (P)" onclick={() => openRecap()}>Recap</button>
       {/if}
+      <button type="button" class="pbtn txt" class:on={filterPanel} aria-expanded={filterPanel} title="Filters (V)" onclick={() => (filterPanel = !filterPanel)}>Filters</button>
       <span class="menuwrap">
         <button type="button" class="pbtn txt" class:on={subMenu} aria-haspopup="menu" aria-expanded={subMenu} title="Fix the subtitle timing" onclick={() => (subMenu = !subMenu)}>Sync ▾</button>
         {#if subMenu && view}
@@ -954,7 +1021,22 @@
     </div>
   </div>
 
-  {#if transcript && !explaining}
+  {#if filterPanel && !explaining}
+    <aside class="tx" aria-label="Filters">
+      <div class="tx-head"><b>Filters</b><button type="button" class="ex-close" title="Close (V)" onclick={() => (filterPanel = false)}>Close</button></div>
+      <div class="fx-grid scroll">
+        {#each filters as f (f.id)}
+          <button type="button" class="fx" aria-pressed={filter === f.id} onclick={() => pickFilter(f.id)}>
+            <canvas bind:this={tiles[f.id]} width="160" height="160"></canvas>
+            <b>{f.name}</b>
+            {#if f.note}<span>{f.note}</span>{/if}
+          </button>
+        {/each}
+      </div>
+    </aside>
+  {/if}
+
+  {#if transcript && !explaining && !filterPanel}
     <aside class="tx">
       <div class="tx-head"><b>Transcript</b><span>{dialogue.length} lines</span></div>
       <ol class="tx-list scroll" bind:this={txList}>
@@ -1094,6 +1176,8 @@
   .player.idle { cursor: none; }
   .pic { position: absolute; inset: 0; display: grid; place-items: center; cursor: pointer; }
   .pic video { width: 100%; height: 100%; object-fit: contain; display: block; background: var(--vid); }
+  .pic video.filtered { opacity: 0; }
+  .filtered-pic { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
   .subs { position: absolute; left: 0; right: 0; bottom: 96px; display: flex; flex-direction: column; align-items: center; gap: 2px; pointer-events: none; z-index: 5; }
   .sub-line { pointer-events: auto; max-width: 86%; margin: 0; padding: 2px 14px 4px; border-radius: 6px; font: 700 var(--sub-size, 36px)/1.42 var(--font-jp); color: var(--sub-ink); text-align: center; letter-spacing: .03em; user-select: text; -webkit-user-select: text; cursor: text; text-shadow: 1px 1px 0 var(--sub-edge), -1px 1px 0 var(--sub-edge), 1px -1px 0 var(--sub-edge), -1px -1px 0 var(--sub-edge), 0 2px 0 var(--sub-edge), 0 -2px 0 var(--sub-edge), 2px 0 0 var(--sub-edge), -2px 0 0 var(--sub-edge), 0 3px 10px rgba(0, 0, 0, .55); transition: filter .2s; }
   .sub-line :global(rt) { font-size: .42em; font-weight: 500; letter-spacing: 0; }
@@ -1186,6 +1270,13 @@
   .ex-wait { margin: 0; font: 500 13.5px/1.5 var(--font-ui); color: var(--vid-ink-2); }
   .ex-err { margin: 0; font: 500 13.5px/1.5 var(--font-ui); color: #ffb4a8; }
   .ex-foot { padding: 9px 14px; border-top: 1px solid var(--vid-edge); font-size: 11.5px; color: var(--vid-ink-2); }
+  .fx-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-content: start; gap: 16px 10px; padding: 14px 12px; overflow: auto; flex: 1; }
+  .fx { all: unset; cursor: pointer; display: grid; align-content: start; gap: 2px; border-radius: 6px; }
+  .fx canvas { display: block; width: 100%; aspect-ratio: 1; margin-bottom: 5px; border-radius: 6px; background: var(--vid); }
+  .fx[aria-pressed="true"] canvas { outline: 2px solid var(--vid-ink); outline-offset: 2px; }
+  .fx:focus-visible { outline: 2px solid var(--vid-ink); outline-offset: 5px; }
+  .fx b { font: 600 12.5px/1.25 var(--font-ui); }
+  .fx span { font-size: 11.5px; line-height: 1.25; color: var(--vid-ink-2); }
   .recapov { z-index: 8; background: rgba(0, 0, 0, .72); }
   .recap-card h3 { padding-right: 0; }
   .recap-text { margin: 0; font: 400 16px/1.6 var(--font-ui); white-space: pre-line; }

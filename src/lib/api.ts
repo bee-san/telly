@@ -18,6 +18,25 @@ export async function call<T>(cmd: string, args: Record<string, unknown> = {}): 
   return answer.ok as T;
 }
 
+const answers = new Map<string, { text: string; answer: unknown }>();
+
+/** `call`, keeping the answer for `kept`. The same answer as last time is the
+ *  same object, so a page that asks again and again has nothing to draw again. */
+export async function callKept<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
+  const answer = await call<T>(cmd, args);
+  const key = cmd + JSON.stringify(args);
+  const text = JSON.stringify(answer);
+  const last = answers.get(key);
+  if (last?.text === text) return last.answer as T;
+  answers.set(key, { text, answer });
+  return answer;
+}
+
+/** The last answer `callKept` got to this: a page shows it at once when it opens, and asks again. */
+export function kept<T>(cmd: string, args: Record<string, unknown> = {}): T | null {
+  return (answers.get(cmd + JSON.stringify(args))?.answer as T | undefined) ?? null;
+}
+
 /** A URL for something Telly serves: "/ep/12", "/cover/3". */
 export function mediaUrl(path: string): string {
   if (!path) return "";

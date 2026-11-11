@@ -51,6 +51,8 @@
   let filter = $state("none");
   let filterPanel = $state(false);
   let filtered = $state<HTMLCanvasElement | null>(null);
+  /** Whether the filter has drawn the frame showing: until its shaders are compiled, the plain picture shows. */
+  let filterShown = $state(false);
   const tiles: Record<string, HTMLCanvasElement> = {};
   let repaint: (() => void) | null = null;
 
@@ -623,8 +625,16 @@
         canvas.width = w;
         canvas.height = h;
       }
-      renderer.draw(v, v.videoWidth, v.videoHeight, filter);
+      filterShown = renderer.draw(v, v.videoWidth, v.videoHeight, filter);
+      // Paused, no new frame comes to try again on.
+      if (!filterShown && !retry) {
+        retry = requestAnimationFrame(() => {
+          retry = 0;
+          paint();
+        });
+      }
     };
+    let retry = 0;
     let handle = v.requestVideoFrameCallback(function next() {
       paint();
       handle = v.requestVideoFrameCallback(next);
@@ -634,6 +644,8 @@
     repaint = paint;
     return () => {
       repaint = null;
+      filterShown = false;
+      cancelAnimationFrame(retry);
       v.cancelVideoFrameCallback(handle);
       resized.disconnect();
       renderer.dispose();
@@ -1169,7 +1181,7 @@
       <!-- svelte-ignore a11y_media_has_caption -->
       <video
         bind:this={video}
-        class:filtered={filter !== "none"}
+        class:filtered={filter !== "none" && filterShown}
         crossorigin="anonymous"
         src={mediaUrl(view.src)}
         preload="auto"
@@ -1183,7 +1195,7 @@
         ondurationchange={() => video && (duration = video.duration)}
         onerror={() => (videoError = video?.error?.message || "The video couldn’t play.")}
       ></video>
-      {#if filter !== "none"}<canvas class="filtered-pic" bind:this={filtered}></canvas>{/if}
+      {#if filter !== "none"}<canvas class="filtered-pic" class:waiting={!filterShown} bind:this={filtered}></canvas>{/if}
     {/if}
   </div>
 
@@ -1504,6 +1516,7 @@
   .pic video { width: 100%; height: 100%; object-fit: contain; display: block; background: var(--vid); }
   .pic video.filtered { opacity: 0; }
   .filtered-pic { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+  .filtered-pic.waiting { visibility: hidden; }
   .subs { position: absolute; left: 0; right: 0; bottom: 96px; display: flex; flex-direction: column; align-items: center; gap: 2px; pointer-events: none; z-index: 5; }
   .sub-line { pointer-events: auto; max-width: 86%; margin: 0; padding: 2px 14px 4px; border-radius: 6px; font: 700 var(--sub-size, 36px)/1.42 var(--font-jp); color: var(--sub-ink); text-align: center; letter-spacing: .03em; user-select: text; -webkit-user-select: text; cursor: text; text-shadow: 1px 1px 0 var(--sub-edge), -1px 1px 0 var(--sub-edge), 1px -1px 0 var(--sub-edge), -1px -1px 0 var(--sub-edge), 0 2px 0 var(--sub-edge), 0 -2px 0 var(--sub-edge), 2px 0 0 var(--sub-edge), -2px 0 0 var(--sub-edge), 0 3px 10px rgba(0, 0, 0, .55); transition: filter .2s; }
   .sub-line :global(rt) { font-size: .42em; font-weight: 500; letter-spacing: 0; }

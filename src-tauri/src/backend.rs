@@ -272,7 +272,8 @@ impl Backend {
             let _ = db.set_setting("hachidori.link", &json!(false));
             let _ = db.set_setting("hachidori.own", &json!(OWN_HACHIDORI));
         }
-        let found = tools::find(&dirs.tools(), &dirs.models(), &db.setting_str("tools.ffmpeg"), &db.setting_str("whisper.model"));
+        // What ffmpeg can do is asked once Telly is open (start): that takes a few seconds.
+        let found = tools::find_files(&dirs.tools(), &dirs.models(), &db.setting_str("tools.ffmpeg"), &db.setting_str("whisper.model"));
         Ok(Backend {
             db,
             log,
@@ -293,11 +294,16 @@ impl Backend {
 
     /// Starts the background work: getting shows ready and finishing cards.
     pub fn start(self: &Arc<Self>) {
-        jobs::start(self.clone());
         let backend = self.clone();
-        std::thread::Builder::new().name("telly-cards".into()).spawn(move || cards::worker(&backend)).ok();
-        self.watch_folders();
-        names::start(self.clone());
+        // The work starts once ffmpeg has said what it can do, so none of it sees half an answer.
+        std::thread::spawn(move || {
+            backend.refind_tools();
+            jobs::start(backend.clone());
+            let for_cards = backend.clone();
+            std::thread::Builder::new().name("telly-cards".into()).spawn(move || cards::worker(&for_cards)).ok();
+            backend.watch_folders();
+            names::start(backend.clone());
+        });
     }
 
     /// Listens for Anki Beacon and polls AnkiConnect while the player is open.

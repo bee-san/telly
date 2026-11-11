@@ -4,13 +4,13 @@
   import { onMount } from "svelte";
   import Cover from "$lib/Cover.svelte";
   import Icon from "$lib/Icon.svelte";
-  import { call, errorText, pickFile, setWindowTitle, type Anime, type EpisodeRow, type ShowView } from "$lib/api";
+  import { call, callKept, errorText, kept, pickFile, setWindowTitle, type Anime, type EpisodeRow, type ShowView } from "$lib/api";
   import { bytes, clock, mediaLabel, plural, statusOf, subsHelp, subsLabel } from "$lib/format";
   import { app } from "$lib/state.svelte";
   import { toast } from "$lib/toast-store.svelte";
 
   const id = $derived(Number(page.url.searchParams.get("id")));
-  let view = $state<ShowView | null>(null);
+  let view = $state.raw<ShowView | null>(kept<ShowView>("show", { id: Number(page.url.searchParams.get("id")) }));
   let error = $state("");
   let menu = $state<{ ep: EpisodeRow; x: number; y: number } | null>(null);
   let matching = $state(false);
@@ -20,7 +20,7 @@
 
   async function load() {
     try {
-      view = await call<ShowView>("show", { id });
+      view = await callKept<ShowView>("show", { id });
       error = "";
     } catch (e) {
       error = errorText(e);
@@ -45,6 +45,17 @@
       clearTimeout(timer);
       window.removeEventListener("click", close);
     };
+  });
+
+  // A long show opens as fast as a short one: its first screen of episodes is
+  // drawn at once, and the rest once that's on screen.
+  const FIRST_ROWS = 40;
+  let allRows = $state(false);
+  const episodes = $derived(allRows ? (view?.episodes ?? []) : (view?.episodes ?? []).slice(0, FIRST_ROWS));
+  $effect(() => {
+    if (!view || allRows) return;
+    const frame = requestAnimationFrame(() => setTimeout(() => (allRows = true)));
+    return () => cancelAnimationFrame(frame);
   });
 
   const card = $derived(view?.card ?? null);
@@ -186,7 +197,7 @@
 
     <div class="eps">
       <div class="ep-row head"><span>#</span><span>Video</span><span>Subtitles</span><span>Sync</span><span class="right" title={view?.wordsError || "The share of each episode’s words that are on cards studied in Anki"}>Words known</span><span class="right">Watched</span></div>
-      {#each view?.episodes ?? [] as ep (ep.id)}
+      {#each episodes as ep (ep.id)}
         {@const m = mediaLabel(ep.mediaState, ep.mediaPlan, ep.mediaProgress)}
         {@const s = subsLabel(ep.subsState, ep.subsScore)}
         <button type="button" class="ep-row" class:next={ep.isNext} onclick={() => play(ep)} oncontextmenu={(e) => rowMenu(e, ep)} title={ep.path}>
@@ -266,6 +277,8 @@
   .ep-row.head { font: 600 12px/1 var(--font-ui); color: var(--ink-3); padding: 10px 6px; }
   button.ep-row { all: unset; box-sizing: border-box; display: grid; grid-template-columns: 44px minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1.2fr) 96px 120px; gap: 12px; align-items: center; padding: 9px 6px; border-bottom: 1px solid var(--rule); font-size: 13px; color: var(--ink-2); width: 100%; cursor: pointer; }
   button.ep-row:hover { background: var(--surface); }
+  /* Rows off screen aren't laid out or painted until they're scrolled to. */
+  button.ep-row { content-visibility: auto; contain-intrinsic-size: auto 43px; }
   button.ep-row.next { background: var(--surface); }
   button.ep-row:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
   .ep-n { font: 500 13px/1 var(--font-mono); color: var(--ink); font-variant-numeric: tabular-nums; }

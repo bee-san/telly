@@ -4,6 +4,8 @@
   import Icon from "$lib/Icon.svelte";
   import {
     call,
+    callKept,
+    kept,
     errorText,
     hachidoriInfo,
     hachidoriStart,
@@ -25,28 +27,33 @@
   import { app } from "$lib/state.svelte";
   import { toast } from "$lib/toast-store.svelte";
 
-  let settings = $state<Settings>({});
-  let status = $state<Status | null>(null);
+  let settings = $state<Settings>(kept<Settings>("settings") ?? {});
+  let status = $state<Status | null>(kept<Status>("status"));
   let hd = $state<HachidoriInfo | null>(null);
   let relay = $state("Off");
-  let key = $state("");
+  let key = $state(String(kept<Settings>("settings")?.["jimaku.key"] ?? ""));
   let showKey = $state(false);
   let error = $state("");
   let saved = $state<Record<string, boolean>>({});
-  let claude = $state<ClaudeStatus | null>(null);
-  let names = $state<NamesStatus | null>(null);
-  let own = $state<OwnHachidori | null>(null);
+  let claude = $state<ClaudeStatus | null>(kept<ClaudeStatus>("claudeStatus"));
+  let names = $state<NamesStatus | null>(kept<NamesStatus>("namesStatus"));
+  let own = $state<OwnHachidori | null>(kept<OwnHachidori>("ownHachidori"));
 
+  /** Every part is asked for at once, and shows as it comes. */
   async function load() {
     try {
-      settings = await call<Settings>("settings");
-      key = String(settings["jimaku.key"] ?? "");
-      status = await call<Status>("status");
-      hd = await hachidoriInfo();
-      relay = await relayStatus();
-      names = await call<NamesStatus>("namesStatus");
-      own = await call<OwnHachidori>("ownHachidori");
-      claude = await call<ClaudeStatus>("claudeStatus");
+      await Promise.all([
+        callKept<Settings>("settings").then((s) => {
+          settings = s;
+          key = String(s["jimaku.key"] ?? "");
+        }),
+        callKept<Status>("status").then((s) => (status = s)),
+        hachidoriInfo().then((h) => (hd = h)),
+        relayStatus().then((r) => (relay = r)),
+        callKept<NamesStatus>("namesStatus").then((n) => (names = n)),
+        callKept<OwnHachidori>("ownHachidori").then((o) => (own = o)),
+        callKept<ClaudeStatus>("claudeStatus").then((c) => (claude = c)),
+      ]);
     } catch (e) {
       error = errorText(e);
     }

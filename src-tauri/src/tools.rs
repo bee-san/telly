@@ -111,6 +111,14 @@ fn encoders(ffmpeg: &Path) -> String {
 }
 
 pub fn find(tools_dir: &Path, models_dir: &Path, custom_ffmpeg: &str, whisper_model_file: &str) -> Tools {
+    let mut tools = find_files(tools_dir, models_dir, custom_ffmpeg, whisper_model_file);
+    ask_ffmpeg(&mut tools);
+    tools
+}
+
+/// Where the tools are, without asking ffmpeg what it can do (that runs it
+/// several times, a few seconds in all): enough for Telly to open with.
+pub fn find_files(tools_dir: &Path, models_dir: &Path, custom_ffmpeg: &str, whisper_model_file: &str) -> Tools {
     let mut tools = Tools::default();
     for candidate in ffmpeg_candidates(tools_dir, custom_ffmpeg) {
         let probe = candidate.with_file_name(exe("ffprobe"));
@@ -120,6 +128,13 @@ pub fn find(tools_dir: &Path, models_dir: &Path, custom_ffmpeg: &str, whisper_mo
             break;
         }
     }
+    tools.whisper = whisper_candidates(tools_dir).into_iter().find(|p| p.is_file());
+    tools.whisper_model = whisper_model(models_dir, whisper_model_file);
+    tools
+}
+
+/// ffmpeg's version, and what it can encode.
+fn ask_ffmpeg(tools: &mut Tools) {
     if let Some(ffmpeg) = &tools.ffmpeg {
         tools.version = command(ffmpeg)
             .arg("-version")
@@ -134,7 +149,4 @@ pub fn find(tools_dir: &Path, models_dir: &Path, custom_ffmpeg: &str, whisper_mo
             .unwrap_or("libx264")
             .to_string();
     }
-    tools.whisper = whisper_candidates(tools_dir).into_iter().find(|p| p.is_file());
-    tools.whisper_model = whisper_model(models_dir, whisper_model_file);
-    tools
 }

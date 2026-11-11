@@ -3,13 +3,13 @@
   import { page } from "$app/state";
   import { onMount } from "svelte";
   import Icon from "$lib/Icon.svelte";
-  import { call, errorText, setWindowTitle, type PremineStatus, type PremineWord, type ShowView } from "$lib/api";
+  import { call, callKept, errorText, kept, setWindowTitle, type PremineStatus, type PremineWord, type ShowView } from "$lib/api";
   import { clock, plural } from "$lib/format";
   import { app } from "$lib/state.svelte";
   import { toast } from "$lib/toast-store.svelte";
 
   const id = $derived(Number(page.url.searchParams.get("show")));
-  let view = $state<ShowView | null>(null);
+  let view = $state.raw<ShowView | null>(kept<ShowView>("show", { id: Number(page.url.searchParams.get("show")) }));
   let status = $state<PremineStatus | null>(null);
   let error = $state("");
   /** The share of the show's words to know, in per cent. */
@@ -43,7 +43,7 @@
     app.dark = false;
     (async () => {
       try {
-        view = await call<ShowView>("show", { id });
+        view = await callKept<ShowView>("show", { id });
         setWindowTitle(`Premine ${view.card.title} — Telly`);
         await start();
       } catch (e) {

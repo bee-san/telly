@@ -5,11 +5,11 @@
   import AddSheet from "$lib/AddSheet.svelte";
   import Cover from "$lib/Cover.svelte";
   import Icon from "$lib/Icon.svelte";
-  import { call, errorText, pickFolder, setWindowTitle, type Library, type ShowCard } from "$lib/api";
+  import { call, callKept, errorText, kept, pickFolder, setWindowTitle, type Library, type ShowCard } from "$lib/api";
   import { statusOf } from "$lib/format";
   import { app } from "$lib/state.svelte";
 
-  let lib = $state<Library | null>(null);
+  let lib = $state.raw<Library | null>(kept<Library>("library"));
   let error = $state("");
   let q = $state("");
   let adding = $state<string | null>(null);
@@ -17,7 +17,7 @@
 
   async function load() {
     try {
-      lib = await call<Library>("library");
+      lib = await callKept<Library>("library");
       error = "";
     } catch (e) {
       error = errorText(e);
@@ -61,6 +61,11 @@
   async function add() {
     const folder = await pickFolder();
     if (folder) adding = folder;
+  }
+
+  /** The pointer is on a show: its page is fetched now, to be there on the click. */
+  function ahead(s: ShowCard) {
+    callKept("show", { id: s.id }).catch(() => {});
   }
 
   function open(s: ShowCard) {
@@ -117,7 +122,7 @@
       <div class="watching">
         {#each watching as s (s.id)}
           {@const st = statusOf(s)}
-          <div class="wcard card" role="presentation" oncontextmenu={(e) => context(e, s)}>
+          <div class="wcard card" role="presentation" onpointerenter={() => ahead(s)} oncontextmenu={(e) => context(e, s)}>
             <button type="button" class="hit" onclick={() => open(s)} aria-label="{s.title}. {st.text}. {st.sub}"></button>
             <span class="wcv">
               <Cover cover={s.cover} color={s.coverColor} native={s.titleNative} title={s.title} />
@@ -142,7 +147,7 @@
       <div class="libgrid">
         {#each rest as s (s.id)}
           {@const st = statusOf(s)}
-          <div class="lcard card" role="presentation" oncontextmenu={(e) => context(e, s)}>
+          <div class="lcard card" role="presentation" onpointerenter={() => ahead(s)} oncontextmenu={(e) => context(e, s)}>
             <button type="button" class="hit" onclick={() => open(s)} aria-label="{s.title}. {st.text}. {st.sub}"></button>
             <Cover cover={s.cover} color={s.coverColor} native={s.titleNative} title={s.title} />
             <a class="l-title title" href="/show?id={s.id}">{s.title}</a>

@@ -4,6 +4,8 @@
 //!
 //!   npm run devserver -- <data dir> [port]
 //!
+//! With TELLY_IDLE set, the background work isn't started.
+//!
 //!   POST /call   {"cmd": "...", "args": {...}}  →  {"ok": value} or {"error": "..."}
 //!   GET  /media/ep/<id>, /media/cover/<id>      →  what media:// serves in the app
 
@@ -26,7 +28,10 @@ fn main() {
     let dir = std::path::absolute(&dir).unwrap_or(dir);
     let port: u16 = args.next().and_then(|p| p.parse().ok()).unwrap_or(1430);
     let backend = Arc::new(Backend::open(Dirs { local: dir.clone(), roaming: dir.clone() }).expect("opening the data folder"));
-    backend.start();
+    // TELLY_IDLE: no background work, to look at a copy of a library without converting its episodes.
+    if std::env::var_os("TELLY_IDLE").is_none() {
+        backend.start();
+    }
     if std::env::var_os("TELLY_MINING").is_some() {
         backend.start_mining();
     }

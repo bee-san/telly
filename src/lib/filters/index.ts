@@ -136,8 +136,10 @@ void main() {
 };
 
 export interface Renderer {
-  /** Draws a frame through a filter, to fill the canvas. `preview` is for the panel's small tiles. */
-  draw(frame: TexImageSource, width: number, height: number, filter: string, preview?: boolean): void;
+  /** Draws a frame through a filter, to fill the canvas. `preview` is for the panel's small tiles.
+   *  False, with nothing drawn, while the filter's shaders are still being compiled: that takes
+   *  up to a second the first time, and goes on in the background. */
+  draw(frame: TexImageSource, width: number, height: number, filter: string, preview?: boolean): boolean;
   dispose(): void;
 }
 
@@ -145,6 +147,8 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
   const gl = canvas.getContext("webgl2", { alpha: false, antialias: false, depth: false })!;
   // The passes between keep half-float textures: Anime4K's hold negative numbers.
   gl.getExtension("EXT_color_buffer_float");
+  // Lets shaders compile off the page's thread, so the player doesn't stop while they do.
+  const parallel = gl.getExtension("KHR_parallel_shader_compile");
 
   gl.bindVertexArray(gl.createVertexArray());
   gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
@@ -163,34 +167,42 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
   }
   const frameTex = texture();
 
+  // Asking whether a shader compiled waits for it, so that's left to the link.
   function compile(type: number, source: string): WebGLShader {
     const shader = gl.createShader(type)!;
     gl.shaderSource(shader, source);
     gl.compileShader(shader);
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader) ?? "A filter’s shader didn’t compile");
     return shader;
   }
   const vertex = compile(gl.VERTEX_SHADER, VERTEX);
 
   interface Program {
     program: WebGLProgram;
-    uniforms: { name: string; type: number; at: WebGLUniformLocation }[];
+    fragment: WebGLShader;
+    /** Null until it has linked. */
+    uniforms: { name: string; type: number; at: WebGLUniformLocation }[] | null;
   }
   const programs = new Map<string, Program>();
-  function program(source: string): Program {
+  /** A shader's program, started on first asking; null while it's still being compiled. */
+  function program(source: string): Program | null {
     let p = programs.get(source);
-    if (p) return p;
-    const made = gl.createProgram();
-    gl.attachShader(made, vertex);
-    gl.attachShader(made, compile(gl.FRAGMENT_SHADER, source));
-    gl.linkProgram(made);
-    if (!gl.getProgramParameter(made, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(made) ?? "A filter’s shader didn’t link");
-    p = { program: made, uniforms: [] };
-    for (let i = 0; i < gl.getProgramParameter(made, gl.ACTIVE_UNIFORMS); i++) {
-      const u = gl.getActiveUniform(made, i)!;
-      p.uniforms.push({ name: u.name, type: u.type, at: gl.getUniformLocation(made, u.name)! });
+    if (!p) {
+      p = { program: gl.createProgram(), fragment: compile(gl.FRAGMENT_SHADER, source), uniforms: null };
+      gl.attachShader(p.program, vertex);
+      gl.attachShader(p.program, p.fragment);
+      gl.linkProgram(p.program);
+      programs.set(source, p);
     }
-    programs.set(source, p);
+    if (!p.uniforms) {
+      if (parallel && !gl.getProgramParameter(p.program, parallel.COMPLETION_STATUS_KHR)) return null;
+      if (!gl.getProgramParameter(p.program, gl.LINK_STATUS))
+        throw new Error(gl.getShaderInfoLog(p.fragment) || gl.getProgramInfoLog(p.program) || "A filter’s shader didn’t compile");
+      p.uniforms = [];
+      for (let i = 0; i < gl.getProgramParameter(p.program, gl.ACTIVE_UNIFORMS); i++) {
+        const u = gl.getActiveUniform(p.program, i)!;
+        p.uniforms.push({ name: u.name, type: u.type, at: gl.getUniformLocation(p.program, u.name)! });
+      }
+    }
     return p;
   }
 
@@ -228,6 +240,9 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
         if (passes[passes.length - 1].save !== null) passes.push(present);
         built.set(filter, passes);
       }
+      // Every pass is asked for, so they all compile at once.
+      const ready = passes.map((pass) => program(pass.shader));
+      if (ready.includes(null)) return false;
       const sizes: Sizes = {
         source: [width, height],
         main: [width, height],
@@ -242,11 +257,11 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
         const [w, h] = pass.size(sizes);
         // A pass that reads MAIN and draws it gets a texture of its own to draw to.
         const to = pass.save === null ? null : target(`${i}:${pass.save}`, w, h);
-        const p = program(pass.shader);
+        const p = ready[i]!;
         gl.useProgram(p.program);
         const values = pass.uniforms?.(sizes) ?? {};
         let unit = 0;
-        for (const u of p.uniforms) {
+        for (const u of p.uniforms!) {
           const v = values[u.name];
           if (u.type === gl.SAMPLER_2D) {
             gl.activeTexture(gl.TEXTURE0 + unit);
@@ -267,6 +282,7 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
           if (pass.save === "MAIN") sizes.main = [w, h];
         }
       });
+      return true;
     },
     dispose() {
       gl.getExtension("WEBGL_lose_context")?.loseContext();
@@ -287,7 +303,7 @@ export function drawTiles(video: HTMLVideoElement, tiles: Record<string, HTMLCan
   let next = 0;
   let frame = 0;
   const step = () => {
-    const filter = filters[next++];
+    const filter = filters[next];
     if (!filter) return renderer.dispose();
     // Small enough that a filter's work shows at a tile's size: a television's scanlines need fewer lines still.
     const lines = filter.id.startsWith("crt-") ? 54 : 80;
@@ -297,10 +313,10 @@ export function drawTiles(video: HTMLVideoElement, tiles: Record<string, HTMLCan
     small.drawImage(video, (video.videoWidth - side) / 2, (video.videoHeight - side) / 2, side, side, 0, 0, lines, lines);
     const tile = tiles[filter.id].getContext("2d")!;
     if (filter.id === "none") tile.drawImage(middle, 0, 0, TILE, TILE);
-    else {
-      renderer.draw(middle, lines, lines, filter.id, true);
-      tile.drawImage(filtered, 0, 0);
-    }
+    else if (renderer.draw(middle, lines, lines, filter.id, true)) tile.drawImage(filtered, 0, 0);
+    // A filter still compiling is tried again next frame.
+    else next--;
+    next++;
     frame = requestAnimationFrame(step);
   };
   step();

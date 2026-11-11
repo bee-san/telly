@@ -111,6 +111,24 @@ fn spans_of(list: &[(f64, f64)]) -> Vec<TimeSpan> {
         .collect()
 }
 
+/// `spans` in order, with those that overlap joined: when anyone speaks.
+/// A rip's own subtitles can show several lines at once (a song's karaoke,
+/// eight deep in Bocchi the Rock!'s English track), and counted line by line
+/// such a stretch would outweigh the dialogue, so a file fits best piled onto
+/// the song. Joined, each second counts once.
+fn joined(spans: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut sorted: Vec<(f64, f64)> = spans.iter().copied().filter(|(s, e)| e > s).collect();
+    sorted.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut out: Vec<(f64, f64)> = Vec::with_capacity(sorted.len());
+    for (s, e) in sorted {
+        match out.last_mut() {
+            Some(last) if s < last.1 => last.1 = last.1.max(e),
+            _ => out.push((s, e)),
+        }
+    }
+    out
+}
+
 /// Total overlap between `lines` and `speech`, as a share of the lines' time.
 pub fn coverage(lines: &[(f64, f64)], speech: &[(f64, f64)]) -> f64 {
     let total: f64 = lines.iter().map(|(s, e)| (e - s).max(0.0)).sum();
@@ -142,6 +160,7 @@ pub fn quick_fit(lines: &[(f64, f64)], reference: &[(f64, f64)]) -> f64 {
     let mut sorted: Vec<(f64, f64)> = lines.iter().copied().filter(|(s, e)| e > s).collect();
     sorted.sort_by(|a, b| a.0.total_cmp(&b.0));
     let total: f64 = sorted.iter().map(|(s, e)| e - s).sum();
+    let reference = &joined(reference);
     if total <= 0.0 || reference.is_empty() {
         return 0.0;
     }
@@ -524,6 +543,7 @@ pub struct Standing {
 }
 
 pub fn standing(lines: &[(f64, f64)], speech: &[(f64, f64)], length: f64) -> Standing {
+    let speech = &joined(speech);
     let mut sorted: Vec<(f64, f64)> = lines.to_vec();
     sorted.sort_by(|a, b| a.0.total_cmp(&b.0));
     let total: f64 = sorted.iter().map(|(s, e)| (e - s).max(0.0)).sum();
@@ -600,6 +620,7 @@ pub fn sync(lines: &[Line], speech: &[(f64, f64)], length: f64) -> Synced {
 pub fn sync_with(lines: &[Line], speech: &[(f64, f64)], length: f64, cal: &Calibration) -> Synced {
     let dialogue: Vec<usize> = (0..lines.len()).filter(|&i| !lines[i].sign).collect();
     let spans: Vec<(f64, f64)> = dialogue.iter().map(|&i| (lines[i].start, lines[i].end)).collect();
+    let speech = &joined(speech);
     if spans.is_empty() || speech.is_empty() {
         return Synced { lines: lines.to_vec(), score: 0.0, offset_ms: 0, ratio: 1.0, shifts: 0, cut: false, standing: Standing::default() };
     }
@@ -777,6 +798,20 @@ mod tests {
         assert!((synced.offset_ms + 2500).abs() <= 60, "offset {}", synced.offset_ms);
         assert!(synced.score > 0.6, "score {}", synced.score);
         assert!((synced.lines[10].start - (sp[10].0 - 0.1)).abs() < 0.08);
+    }
+
+    #[test]
+    fn a_song_s_stacked_lines_count_once() {
+        // The rip's own subtitles as the timing: its dialogue, then an ending
+        // whose karaoke shows eight lines at once (Bocchi the Rock!'s English track).
+        let dialogue = speech();
+        let mut timing = dialogue.clone();
+        timing.extend(std::iter::repeat_n((1310.0, 1400.0), 8));
+        // A file timed to the episode stays where it is, not piled onto the song.
+        let lines: Vec<Line> = dialogue.iter().map(|&(s, e)| line(s - 0.1, e + 0.2)).collect();
+        let synced = sync_with(&lines, &timing, 1420.0, &Calibration::CLEAN);
+        assert!(synced.offset_ms.abs() <= 300, "offset {}", synced.offset_ms);
+        assert!(synced.score >= 0.75, "score {}", synced.score);
     }
 
     #[test]

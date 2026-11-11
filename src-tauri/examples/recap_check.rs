@@ -3,7 +3,8 @@
 //!   cargo run --profile measure --example recap_check -- <subtitles dir> <episode number> <id>:<number> …
 //!
 //! Each `<id>:<number>` is an episode before it (Telly's id, for its subtitles
-//! file <id>.json, and its number), oldest first.
+//! file <id>.json, and its number), oldest first. EARLIER=<file> is the recap
+//! this printed for the episodes before them, to carry on from.
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -20,7 +21,8 @@ fn main() -> anyhow::Result<()> {
         window.push((n.parse()?, lines));
     }
     let refs: Vec<(i64, &[Line])> = window.iter().map(|(n, l)| (*n, l.as_slice())).collect();
-    let prompt = ask::recap_prompt("『FAIRY TAIL』 (Fairy Tail)", number, &refs, "", "", "English");
+    let earlier: Option<ask::Recap> = std::env::var("EARLIER").ok().map(|file| anyhow::Ok(serde_json::from_slice(&std::fs::read(file)?)?)).transpose()?;
+    let prompt = ask::recap_prompt("『FAIRY TAIL』 (Fairy Tail)", number, &refs, earlier.as_ref(), false, "", "English");
     eprintln!("prompt: {} characters", prompt.chars().count());
     let started = std::time::Instant::now();
     let model = std::env::var("MODEL").unwrap_or_else(|_| claude::DEFAULT_MODEL.into());

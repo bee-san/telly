@@ -692,7 +692,11 @@ impl Backend {
         }
         let mut view = self.episode_view(id)?;
         view["awayMs"] = json!(away);
-        view["recap"] = ask::recap_state(self, &episode);
+        view["recap"] = ask::recap_state(self, &episode, None);
+        // Picking up part-way through: a recap that runs up to there.
+        if ask::resuming(&episode, episode.position) {
+            view["resume"] = ask::recap_state(self, &episode, Some(episode.position));
+        }
         Ok(view)
     }
 
@@ -720,12 +724,11 @@ impl Backend {
         }
         self.jobs.poke();
         // Leaving after most of an episode: write the recap for the next one now,
-        // so it's ready when you come back.
+        // so it's ready when you come back. Leaving part-way: the recap up to here.
         if let Ok(e) = self.episode_or_err(id) {
             let seen = position.unwrap_or(e.position);
-            if e.watched_at.is_some() || (e.duration > 0.0 && seen >= e.duration * 0.8) {
-                ask::prepare_next_recap(self, id);
-            }
+            let finished = e.watched_at.is_some() || (e.duration > 0.0 && seen >= e.duration * 0.8);
+            ask::prepare_recaps(self, id, finished, ask::resuming(&e, seen).then_some(seen));
         }
         Ok(json!({}))
     }
@@ -946,8 +949,8 @@ impl Backend {
                 self.asks.stop(arg(&args, "ask")?);
                 Ok(json!({}))
             }
-            "recap" => ask::recap(self, arg(&args, "id")?, arg::<Option<bool>>(&args, "start")?.unwrap_or(false)),
-            "recapAnswer" => ask::recap_answer(self, arg(&args, "id")?, arg(&args, "ask")?),
+            "recap" => ask::recap(self, arg(&args, "id")?, arg::<Option<bool>>(&args, "start")?.unwrap_or(false), arg(&args, "at")?),
+            "recapAnswer" => ask::recap_answer(self, arg(&args, "id")?, arg(&args, "ask")?, arg(&args, "at")?),
             "namesStatus" => Ok(names::status(self)),
             "rebuildNames" => {
                 // Fetches every cast again.

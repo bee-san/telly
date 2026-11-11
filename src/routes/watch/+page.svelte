@@ -36,9 +36,13 @@
   let explaining = $state<{ index: number; text: string; done: boolean; error: string; ask: number } | null>(null);
   let explainResume = false;
   let explainPoll: ReturnType<typeof setTimeout> | null = null;
-  // Previously on (P): the recap card, then the moments of the episode before.
-  let recap = $state<{ state: "writing" | "ready" | "error"; text: string; error: string; data: Recap | null } | null>(null);
-  let recapPoll: ReturnType<typeof setTimeout> | null = null;
+  // Previously on (P): the moments of the story so far, and the recap card.
+  // `full` is the whole story; without it, only the episode just left.
+  let recap = $state<{ state: "writing" | "ready" | "error"; error: string; data: Recap | null; full: boolean } | null>(null);
+  /** Picking up part-way through: where the episode was left, which the recap runs up to. */
+  let recapAt = $state<number | null>(null);
+  /** Goes up with each episode, so a wait for the last one's recap stops. */
+  let recapRun = 0;
   let montage = $state<{ i: number; t: number } | null>(null);
   let montageVideo = $state<HTMLVideoElement | null>(null);
   /** The recap card is up: the episode waits for it. */
@@ -158,10 +162,10 @@
     return n;
   }
 
-  function flash(text: string) {
+  function flash(text: string, ms = 1600) {
     note = text;
     if (noteTimer) clearTimeout(noteTimer);
-    noteTimer = setTimeout(() => (note = ""), 1600);
+    noteTimer = setTimeout(() => (note = ""), ms);
   }
 
   async function load(id: number) {
@@ -179,7 +183,11 @@
     try {
       settings = await call<Record<string, unknown>>("settings");
       const v = await call<PlayerView>("openPlayer", { id });
-      if (await wantRecap(v, autoplayed)) holdPlay = true;
+      recapRun++;
+      recapAt = v.resume?.possible ? v.episode.position : null;
+      const back = wantRecap(v, autoplayed);
+      const written = (recapAt === null ? v.recap : v.resume)?.ready === true;
+      if (back && written) holdPlay = true;
       view = v;
       castNames = [];
       call<CastName[]>("showNames", { id: v.show.id }).then((n) => (castNames = n)).catch(() => {});
@@ -190,24 +198,32 @@
       if (v.episode.mediaState !== "ready") {
         error = v.episode.mediaState === "failed" ? `This episode couldn’t be converted: ${v.episode.mediaError}` : "This episode isn’t ready to play yet.";
       } else if (holdPlay) {
-        openRecap();
+        openRecap(true);
+      } else if (back) {
+        writeRecap();
       }
     } catch (e) {
       error = errorText(e);
     }
   }
 
-  /** Whether to open on "Previously on": back after a while, at the start of an episode with one before it. */
-  async function wantRecap(v: PlayerView, autoplayed: boolean): Promise<boolean> {
-    if (autoplayed || settings["recap.enabled"] === false || !v.recap?.possible) return false;
+  /** Whether this is coming back to a show after a while, to something there's a recap for. */
+  function wantRecap(v: PlayerView, autoplayed: boolean): boolean {
+    if (autoplayed || settings["recap.enabled"] === false) return false;
+    if (!v.recap?.possible && !v.resume?.possible) return false;
     const hours = Number(settings["recap.afterHours"] ?? 8) || 8;
-    if (v.awayMs == null || v.awayMs < hours * 3_600_000) return false;
-    const e = v.episode;
-    const resuming = e.watchedAt === null && e.position > 30 && (e.duration <= 0 || e.position < e.duration * 0.95);
-    if (resuming) return false;
-    if (v.recap.ready) return true;
+    return v.awayMs != null && v.awayMs >= hours * 3_600_000;
+  }
+
+  /** Back after less than this, the recap is only of the episode just left. */
+  const LONG_AWAY_MS = 3 * 24 * 3_600_000;
+
+  /** The recap isn’t written yet: the episode starts, and says when it is. */
+  async function writeRecap() {
     const claude = await call<ClaudeStatus>("claudeStatus").catch(() => null);
-    return !!claude?.available;
+    if (!claude?.available) return;
+    const r = await getRecap().catch(() => null);
+    if (r?.recap && !recap) flash("Recap ready (P)", 6000);
   }
 
   function startAt(): number {
@@ -494,42 +510,44 @@
 
   // ---- previously on (P) --------------------------------------------------------------
 
-  async function openRecap() {
+  /** This episode’s recap, once it’s written (a kept one comes straight back). Null when the episode has changed. */
+  async function getRecap(): Promise<Recap | null> {
+    if (!view) return null;
+    const run = recapRun;
+    const id = view.episode.id;
+    let r = await call<Recap>("recap", { id, start: true, at: recapAt });
+    const ask = r.ask;
+    while (ask && !r.done) {
+      await new Promise((f) => setTimeout(f, 1000));
+      if (run !== recapRun) return null;
+      r = await call<Recap>("recapAnswer", { id, ask, at: recapAt });
+    }
+    return run === recapRun ? r : null;
+  }
+
+  /** Opens the recap. `back` is for coming back to the show: its moments play first,
+   *  and after a short while away it’s only of the episode just left. */
+  async function openRecap(back = false) {
     if (!view || recap) return;
     holdPlay = true;
     video?.pause();
-    recap = { state: "writing", text: "", error: "", data: null };
+    recap = { state: "writing", error: "", data: null, full: !back || (view.awayMs ?? 0) >= LONG_AWAY_MS };
     try {
-      settleRecap(await call<Recap>("recap", { id: view.episode.id, start: true }));
-    } catch (e) {
-      recap = { state: "error", text: "", error: errorText(e), data: null };
-    }
-  }
-
-  function settleRecap(r: Recap) {
-    if (!recap) return;
-    if (r.recap) recap = { state: "ready", text: r.recap, error: "", data: r };
-    else if (r.error) recap = { state: "error", text: "", error: r.error, data: null };
-    else if (r.ask) followRecap(r.ask);
-  }
-
-  function followRecap(ask: number) {
-    recapPoll = setTimeout(async () => {
-      if (!recap || !view) return;
-      try {
-        const r = await call<Recap>("recapAnswer", { id: view.episode.id, ask });
-        if (r.done) settleRecap(r);
-        else followRecap(ask);
-      } catch (e) {
-        if (recap) recap = { state: "error", text: "", error: errorText(e), data: null };
+      const r = await getRecap();
+      if (!r || !recap) return;
+      if (r.recap) {
+        recap = { ...recap, state: "ready", data: r };
+        if (back) startMontage();
+      } else {
+        recap = { ...recap, state: "error", error: r.error ?? "" };
       }
-    }, 1000);
+    } catch (e) {
+      if (recap) recap = { ...recap, state: "error", error: errorText(e) };
+    }
   }
 
   /** Off the recap and into the episode. A recap still being written is kept for next time. */
   function closeRecap(play = true) {
-    if (recapPoll) clearTimeout(recapPoll);
-    recapPoll = null;
     const wasOpen = recap !== null;
     recap = null;
     montage = null;
@@ -537,8 +555,9 @@
     if (play && wasOpen && video) video.play().catch(() => {});
   }
 
-  /** The moments to play: only those whose episode can play here. */
-  const moments = $derived((recap?.data?.moments ?? []).filter((m) => m.playable));
+  /** The moments to play: those whose episode can play here, of the episode just left unless it’s the whole story. */
+  const moments = $derived((recap?.data?.moments ?? []).filter((m) => m.playable && (recap?.full || m.number === recap?.data?.lastNumber)));
+  const canRecap = $derived(!!(view?.recap?.possible || view?.resume?.possible));
   const canMontage = $derived(recap?.state === "ready" && moments.length > 0);
   /** The episode the moment playing comes from: switching to another loads it. */
   const montageSrc = $derived(montage ? mediaUrl(moments[montage.i]?.src ?? "") : "");
@@ -563,20 +582,12 @@
     montageVideo.play().catch(() => {});
   }
 
+  const startLabel = $derived(`${recapAt === null ? "Start" : "Resume"} Episode ${view?.episode.number ?? ""}`);
+
   /** "Episode 7", or "Episodes 2–7". */
   function spanLabel(from: number | undefined, to: number | undefined): string {
     if (!to) return "the episodes before";
     return !from || from === to ? `Episode ${to}` : `Episodes ${from}–${to}`;
-  }
-
-  /** "Episode 3", "Episodes 3–5", "Episodes 3, 5 and 6". */
-  function episodesLabel(list: number[]): string {
-    const sorted = [...list].sort((a, b) => a - b);
-    if (!sorted.length) return "";
-    if (sorted.length === 1) return `Episode ${sorted[0]}`;
-    const run = sorted.every((n, i) => i === 0 || n === sorted[i - 1] + 1);
-    if (run) return `Episodes ${sorted[0]}–${sorted[sorted.length - 1]}`;
-    return `Episodes ${sorted.slice(0, -1).join(", ")} and ${sorted[sorted.length - 1]}`;
   }
 
   /** Follows the moment playing, and moves on at its end. Called every frame, and on the video's
@@ -589,6 +600,7 @@
     else if (montageVideo.currentTime >= m.end) playMoment(montage.i + 1);
   }
 
+  /** Off the moments: into the episode, or to the recap card. */
   function endMontage(startEpisode: boolean) {
     montage = null;
     if (startEpisode) closeRecap(true);
@@ -681,8 +693,9 @@
         e.preventDefault();
         if (montage) endMontage(true);
         else closeRecap(true);
-      } else if ((e.key === "p" || e.key === "P") && !montage) {
-        if (canMontage) startMontage();
+      } else if (e.key === "p" || e.key === "P") {
+        if (montage) endMontage(false);
+        else if (canMontage) startMontage();
         else closeRecap(true);
       }
       return;
@@ -749,7 +762,7 @@
         break;
       case "p":
       case "P":
-        if (view?.recap?.possible) openRecap();
+        if (canRecap) openRecap();
         else flash("No episode before this one to recap");
         break;
       case "Escape":
@@ -802,7 +815,7 @@
 
   onDestroy(() => {
     closeExplain(false);
-    if (recapPoll) clearTimeout(recapPoll);
+    recapRun++;
     cancelAnimationFrame(frame);
     if (tickTimer) clearInterval(tickTimer);
     stopCountdown();
@@ -908,8 +921,8 @@
       <button type="button" class="pbtn" class:on={blur} aria-label="Blur until hovered" title="Blur until hovered (B)" onclick={() => (blur = !blur)}><Icon name="blur" /></button>
       <button type="button" class="pbtn" class:on={transcript} aria-label="Transcript" title="Transcript (T)" onclick={() => (transcript = !transcript)}><Icon name="transcript" /></button>
       <button type="button" class="pbtn txt" class:on={!!explaining} title="Explain the line with Claude (E)" onclick={() => explainLine()}>Explain</button>
-      {#if view?.recap?.possible}
-        <button type="button" class="pbtn txt" title="Previously on: a recap of {spanLabel(view.recap.fromNumber, view.recap.beforeNumber)} (P)" onclick={openRecap}>Recap</button>
+      {#if canRecap}
+        <button type="button" class="pbtn txt" title="Previously on (P)" onclick={() => openRecap()}>Recap</button>
       {/if}
       <span class="menuwrap">
         <button type="button" class="pbtn txt" class:on={subMenu} aria-haspopup="menu" aria-expanded={subMenu} title="Fix the subtitle timing" onclick={() => (subMenu = !subMenu)}>Sync ▾</button>
@@ -990,32 +1003,35 @@
         <span class="small">Previously on</span>
         <h3>{view.show.title}</h3>
         {#if recap.state === "writing"}
-          <p class="recap-text wait">Claude is writing a recap of {spanLabel(view.recap?.fromNumber, view.recap?.beforeNumber)} from their subtitles…</p>
+          <p class="recap-text wait">Claude is writing the recap…</p>
         {:else if recap.state === "error"}
           <p class="recap-text wait">{recap.error}</p>
-        {:else if recap.data?.arcs || recap.data?.last}
+        {:else if recap.data}
           <div class="recap-body scroll">
-            {#each recap.data.arcs ?? [] as arc, k (k)}
-              <section class="arc">
-                <div class="arc-head"><b>{arc.title}</b><span>{episodesLabel(arc.episodes)}</span></div>
-                <p class="recap-text">{arc.summary}</p>
-              </section>
-            {/each}
+            {#if recap.full}
+              {#each recap.data.arcs ?? [] as arc, k (k)}
+                <section class="arc">
+                  <div class="arc-head"><b>{arc.title}</b><span>{spanLabel(arc.from, arc.to)}</span></div>
+                  <p class="recap-text">{arc.summary}</p>
+                </section>
+              {/each}
+            {/if}
             {#if recap.data.last}
               <section class="arc">
-                <div class="arc-head"><b>Last time</b>{#if recap.data.lastNumber}<span>Episode {recap.data.lastNumber}</span>{/if}</div>
+                <div class="arc-head"><b>{recapAt === null ? "Last time" : "So far"}</b>{#if recap.data.lastNumber}<span>Episode {recap.data.lastNumber}</span>{/if}</div>
                 <p class="recap-text">{recap.data.last}</p>
               </section>
             {/if}
           </div>
-        {:else}
-          <p class="recap-text">{recap.text}</p>
         {/if}
         <div class="end-actions">
+          {#if recap.state === "ready" && !recap.full && recap.data?.arcs?.length}
+            <button type="button" class="btn quiet" onclick={() => recap && (recap.full = true)}>Show story so far</button>
+          {/if}
           {#if canMontage}
             <button type="button" class="btn quiet" title="Watch the moments (P)" onclick={startMontage}>Watch the moments</button>
           {/if}
-          <button type="button" class="btn" title="Start the episode (Enter)" onclick={() => closeRecap(true)}><Icon name="play" /><span>Start Episode {view.episode.number}</span></button>
+          <button type="button" class="btn" title="{startLabel} (Enter)" onclick={() => closeRecap(true)}><Icon name="play" /><span>{startLabel}</span></button>
         </div>
       </div>
     </div>
@@ -1025,13 +1041,19 @@
     <div class="montage">
       <!-- svelte-ignore a11y_media_has_caption -->
       <video bind:this={montageVideo} src={montageSrc} preload="auto" onloadedmetadata={startMoment} ontimeupdate={montageTick} onerror={() => endMontage(false)}></video>
-      <span class="montage-label">Previously on {view.show.title} · Episode {moments[montage.i].number} · {montage.i + 1} of {moments.length}</span>
+      <div class="montage-top">
+        <span class="montage-label">Previously on {view.show.title} · Episode {moments[montage.i].number} · {montage.i + 1} of {moments.length}</span>
+        {#if moments[montage.i].caption}<p class="montage-caption" aria-live="polite">{moments[montage.i].caption}</p>{/if}
+      </div>
       <div class="subs montage-subs" style:--sub-size="{subSize}px">
         {#each montageLines as l (l.start + l.text)}
           <p class="sub-line" lang="ja">{@html lineHtml(l)}</p>
         {/each}
       </div>
-      <button type="button" class="pbtn txt montage-skip" title="Start the episode (Enter)" onclick={() => endMontage(true)}>Start Episode {view.episode.number}</button>
+      <div class="montage-actions">
+        <button type="button" class="pbtn txt" title="Read the recap (P)" onclick={() => endMontage(false)}>Read recap</button>
+        <button type="button" class="pbtn txt" title="{startLabel} (Enter)" onclick={() => endMontage(true)}>{startLabel}</button>
+      </div>
     </div>
   {/if}
 
@@ -1176,8 +1198,11 @@
   .arc-head span { font-size: 12.5px; color: var(--vid-ink-2); white-space: nowrap; }
   .montage { position: absolute; inset: 0; z-index: 9; background: var(--vid); }
   .montage video { width: 100%; height: 100%; object-fit: contain; display: block; }
-  .montage-label { position: absolute; top: 18px; left: 20px; font: 600 13px/1 var(--font-ui); letter-spacing: .02em; color: var(--vid-ink); text-shadow: 0 1px 3px rgba(0, 0, 0, .9); }
+  .montage-top { position: absolute; top: 18px; left: 20px; right: 20px; display: grid; gap: 10px; justify-items: start; }
+  .montage-label { font: 600 13px/1 var(--font-ui); letter-spacing: .02em; color: var(--vid-ink); text-shadow: 0 1px 3px rgba(0, 0, 0, .9); }
+  .montage-caption { margin: 0; max-width: 60ch; padding: 8px 12px; font: 400 18px/1.4 var(--font-ui); color: var(--vid-ink); background: var(--vid-panel); border: 1px solid var(--vid-edge); border-radius: 8px; }
   .montage-subs { bottom: 72px; }
   .montage-subs .sub-line { pointer-events: none; }
-  .montage-skip { position: absolute; right: 18px; bottom: 18px; background: var(--vid-panel); border: 1px solid var(--vid-edge); }
+  .montage-actions { position: absolute; right: 18px; bottom: 18px; display: flex; gap: 10px; }
+  .montage-actions .pbtn { background: var(--vid-panel); border: 1px solid var(--vid-edge); }
 </style>

@@ -301,7 +301,7 @@
     <h2>Claude</h2>
     <p class="lede">
       {#if claude?.available}
-        <b>Explain</b> (E) explains the line on screen, and <b>Previously on</b> (P) recaps the episode before, with its key moments to watch again. Both use the Claude Code on this computer, with its own sign-in ({claude.version}). Answers are saved, so asking again is instant.
+        <b>Explain</b> (E) explains the line on screen, and <b>Previously on</b> (P) recaps the story so far, with its key moments to watch again. Both use the Claude Code on this computer, with its own sign-in ({claude.version}). Answers are saved, so asking again is instant.
       {:else if claude}
         <b>Explain</b> and <b>Previously on</b> use Claude Code, and Telly can’t find it: {claude.detail} Install Claude Code, sign in, and come back here.
       {:else}
@@ -326,7 +326,7 @@
     </div>
     <p class="muted">Telly keeps one Claude Code started while the player is open, so Explain answers in a second or two with Haiku. Bigger models think longer before answering.</p>
     <div class="rows">
-      <label class="check"><input type="checkbox" checked={bool("recap.enabled", true)} onchange={(e) => set("recap.enabled", e.currentTarget.checked)} /><span>Show “Previously on” after time away from a show<small>It’s written once most of an episode has played, so it’s ready next time.</small></span></label>
+      <label class="check"><input type="checkbox" checked={bool("recap.enabled", true)} onchange={(e) => set("recap.enabled", e.currentTarget.checked)} /><span>Show “Previously on” after time away from a show<small>It’s written when the player closes, so it’s ready next time.</small></span></label>
       <label class="field narrow"><span>Time away</span>
         <select class="input" value={String(settings["recap.afterHours"] ?? 8)} onchange={(e) => set("recap.afterHours", Number(e.currentTarget.value))} disabled={!bool("recap.enabled", true)}>
           {#each [[1, "1 hour"], [4, "4 hours"], [8, "8 hours"], [24, "1 day"], [72, "3 days"]] as [h, label]}<option value={String(h)}>{label} or more</option>{/each}

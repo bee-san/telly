@@ -105,10 +105,6 @@ code, .mono { font-family: var(--font-mono); font-size: .9em; }
 /* The focus ring goes inside the button: .seg clips what's outside it. */
 .seg button:focus-visible { outline-offset: -3px; }
 .seg button[aria-pressed="true"]:focus-visible { outline-color: var(--btn-ink); }
-/* High contrast drops backgrounds, so the choice made is shown in the system's selection colours. */
-@media (forced-colors: active) {
-  .seg button[aria-pressed="true"] { forced-color-adjust: none; background: Highlight; color: HighlightText; }
-}
 
 /* progress */
 .bar { display: block; height: 3px; border-radius: 2px; background: var(--sunk); overflow: hidden; }

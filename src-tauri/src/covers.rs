@@ -2,6 +2,8 @@
 //! the poster from Wikipedia's article of that very name, else a frame from
 //! the video. Wikipedia needs no key, and its posters are small (about 260
 //! pixels across), which is the size a cover shows at.
+//!
+//! And the Library's small copy of every cover, made when the cover is got.
 
 use crate::util::command;
 use anyhow::{anyhow, Context, Result};
@@ -74,9 +76,50 @@ pub fn frame(ffmpeg: &Path, video: &Path, duration: f64, output: &Path) -> Resul
     std::fs::rename(&partial, output).context("saving the cover")
 }
 
+/// How wide the Library's copy of a cover is, in pixels: the widest a cover
+/// is drawn there (about 160), at twice a screen's scale.
+pub const SMALL_WIDTH: u32 = 320;
+
+/// Makes the Library's copy of the cover at `cover`, at `small`: no wider than
+/// SMALL_WIDTH, and a JPEG of ordinary quality. A cover as AniList sends it is
+/// 460 across and up to 750 KB, which is slow to draw a hundred of.
+pub fn make_small(cover: &Path, small: &Path) -> Result<()> {
+    // A cover's name says .jpg whatever was sent: what it is, is in its first bytes.
+    let image = image::ImageReader::open(cover)?.with_guessed_format()?.decode().context("reading the cover")?;
+    let image = if image.width() > SMALL_WIDTH {
+        let height = (image.height() as u64 * SMALL_WIDTH as u64 / image.width() as u64).max(1) as u32;
+        image.resize_exact(SMALL_WIDTH, height, image::imageops::FilterType::Lanczos3)
+    } else {
+        image
+    };
+    let partial = small.with_extension("jpg.part");
+    let file = std::io::BufWriter::new(std::fs::File::create(&partial)?);
+    // A JPEG has no see-through parts.
+    image.to_rgb8().write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(file, 85)).context("saving the small cover")?;
+    std::fs::rename(&partial, small).context("saving the small cover")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_small_cover_is_no_wider_than_the_library_draws_it() {
+        let dir = std::env::temp_dir().join(format!("telly-covers-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // As AniList sends one: 460 across. And a PNG under a .jpg name, as a download is saved.
+        let (cover, small) = (dir.join("1.jpg"), dir.join("1.small.jpg"));
+        image::RgbaImage::from_pixel(460, 650, image::Rgba([200, 40, 40, 255])).save_with_format(&cover, image::ImageFormat::Png).unwrap();
+        make_small(&cover, &small).unwrap();
+        assert_eq!(image::image_dimensions(&small).unwrap(), (320, 452));
+        assert_eq!(image::ImageReader::open(&small).unwrap().with_guessed_format().unwrap().format(), Some(image::ImageFormat::Jpeg));
+        // A poster narrower than that stays its size.
+        let (cover, small) = (dir.join("2.jpg"), dir.join("2.small.jpg"));
+        image::RgbImage::from_pixel(230, 325, image::Rgb([40, 40, 200])).save_with_format(&cover, image::ImageFormat::Jpeg).unwrap();
+        make_small(&cover, &small).unwrap();
+        assert_eq!(image::image_dimensions(&small).unwrap(), (230, 325));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn takes_only_the_article_of_that_very_name() {

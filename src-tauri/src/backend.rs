@@ -410,8 +410,19 @@ impl Backend {
         self.last_play.lock().ok().and_then(|t| t.map(|t| t.elapsed()))
     }
 
+    /// A show's cover, as it was fetched.
     fn cover_path(&self, show_id: i64) -> PathBuf {
         self.dirs.covers().join(format!("{show_id}.jpg"))
+    }
+
+    /// The copy of it the app draws (covers::make_small), made when the cover is got.
+    fn small_cover_path(&self, show_id: i64) -> PathBuf {
+        self.dirs.covers().join(format!("{show_id}.small.jpg"))
+    }
+
+    fn remove_cover(&self, show_id: i64) {
+        let _ = std::fs::remove_file(self.cover_path(show_id));
+        let _ = std::fs::remove_file(self.small_cover_path(show_id));
     }
 
     fn fetch_cover(self: &Arc<Self>, show_id: i64, url: String) {
@@ -425,8 +436,10 @@ impl Backend {
     fn get_cover(&self, show_id: i64, url: &str) {
         let path = self.cover_path(show_id);
         // A frame has the show's title drawn over it, as a poster has; a real poster has its own.
+        // Either way the small copy the app draws is made now, not when the Library opens.
         let framed = |is: bool| {
             let _ = self.db.set_setting(&frame_setting(show_id), &if is { Value::Bool(true) } else { Value::Null });
+            let _ = covers::make_small(&path, &self.small_cover_path(show_id));
         };
         if !url.is_empty() {
             if anilist::download_cover(url, &path).is_ok() {
@@ -449,7 +462,8 @@ impl Backend {
         }
     }
 
-    /// Shows without a cover (added before Telly made its own, or offline) get one.
+    /// Shows without a cover (added before Telly made its own, or offline) get
+    /// one, and covers without a small copy (got before Telly made those) get theirs.
     fn fill_covers(self: &Arc<Self>) {
         let backend = self.clone();
         std::thread::Builder::new()
@@ -458,6 +472,8 @@ impl Backend {
                 for show in backend.db.shows().unwrap_or_default() {
                     if !backend.cover_path(show.id).is_file() {
                         backend.get_cover(show.id, &show.cover_url);
+                    } else if !backend.small_cover_path(show.id).is_file() {
+                        let _ = covers::make_small(&backend.cover_path(show.id), &backend.small_cover_path(show.id));
                     }
                 }
             })
@@ -487,7 +503,13 @@ impl Backend {
             _ if started => "watching",
             _ => "new",
         };
-        let cover = if self.cover_path(show.id).is_file() { format!("/cover/{}?v={}", show.id, show.anilist_id.unwrap_or(0)) } else { String::new() };
+        // The small copy once it's made (another address, so the big one isn't kept in its place).
+        let small = self.small_cover_path(show.id).is_file();
+        let cover = if small || self.cover_path(show.id).is_file() {
+            format!("/cover/{}?v={}{}", show.id, show.anilist_id.unwrap_or(0), if small { "s" } else { "" })
+        } else {
+            String::new()
+        };
         let lengths: Vec<f64> = episodes.iter().map(|e| e.duration).collect();
         let (words_uses, words_known) = episodes.iter().filter_map(|e| scores.get(&e.id)).fold((0, 0), |(uses, known), s| (uses + s.0, known + s.1));
         Ok(ShowCard {
@@ -690,7 +712,7 @@ impl Backend {
         let anime = anilist::by_id(anilist_id)?;
         let new = Self::new_show_from(Some(&anime), NewShow { folder: show.folder.clone(), ..Default::default() });
         self.db.set_show_anilist(id, &new)?;
-        let _ = std::fs::remove_file(self.cover_path(id));
+        self.remove_cover(id);
         self.fetch_cover(id, new.cover_url.clone());
         // Subtitles were found under the old show's name.
         self.db.requeue_subs(Some(id), &["none", "failed", "check", "synced", "nokey"])?;
@@ -710,7 +732,7 @@ impl Backend {
             let _ = std::fs::remove_file(jobs::translation_path(self, e.id));
             let _ = std::fs::remove_file(premine::words_path(self, e.id));
         }
-        let _ = std::fs::remove_file(self.cover_path(id));
+        self.remove_cover(id);
         Ok(json!({}))
     }
 
@@ -1232,7 +1254,11 @@ impl Backend {
                 if e.media_state == "ready" && !e.play_path.is_empty() { PathBuf::from(e.play_path) } else { PathBuf::from(e.path) }
             }
             ["sheet", id] => self.sheet_path(&self.episode_or_err(id.parse().map_err(|_| anyhow!("bad episode"))?)?),
-            ["cover", id] => self.cover_path(id.parse().map_err(|_| anyhow!("bad show"))?),
+            ["cover", id] => {
+                let id = id.parse().map_err(|_| anyhow!("bad show"))?;
+                // The cover as fetched, for the moments before its small copy is made.
+                Some(self.small_cover_path(id)).filter(|small| small.is_file()).unwrap_or_else(|| self.cover_path(id))
+            }
             ["clip", name] if !name.contains("..") => self.dirs.clips().join(name),
             ["names", "telly-characters.zip"] => names::zip_path(self),
             ["hd", "dictionaries", "file", name] => own_hachidori::dictionary_file(self, name)?,

@@ -12,7 +12,8 @@
 
   let failed = $state(false);
   // Telly's own copy of the cover, or one still on AniList (a recommendation's).
-  const src = $derived(cover.startsWith("https://") ? cover : mediaUrl(cover));
+  const remote = $derived(cover.startsWith("https://"));
+  const src = $derived(remote ? cover : mediaUrl(cover));
   // A stand-in colour from the title when AniList gave none.
   const fallback = $derived.by(() => {
     let h = 0;
@@ -25,7 +26,8 @@
 
 <span class="cv" class:type={!cover || failed} class:shot={caption && !!cover && !failed} style:--cv-bg={bg} style:--cv-ink={inkFor(bg)}>
   {#if cover && !failed}
-    <img {src} alt="" loading="lazy" onerror={() => (failed = true)} />
+    <!-- Telly's own covers are small and on disk: all are loaded at once, so none is blank when scrolled to. -->
+    <img {src} alt="" loading={remote ? "lazy" : "eager"} onerror={() => (failed = true)} />
     {#if caption}<span class="cv-en">{title}</span>{/if}
   {:else}
     {#if native}<span class="cv-jp" lang="ja">{native}</span>{/if}

@@ -195,6 +195,14 @@ export interface PlayerView {
   resume?: { possible: boolean; ready?: boolean };
 }
 
+/** The seek bar's pictures of an episode: one every `every` seconds, tiled in one image. */
+export interface SeekSheet {
+  src: string;
+  every: number;
+  columns: number;
+  rows: number;
+}
+
 /** An answer from Claude being written (ask), or written (text, done). */
 export interface AskProgress {
   ask?: number;

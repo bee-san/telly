@@ -440,6 +440,45 @@ pub fn run_ffmpeg(
     Ok(())
 }
 
+/// The seek bar's pictures: one every this many seconds, this wide, tiled
+/// this many across in one JPEG.
+pub const SHEET_EVERY: f64 = 5.0;
+pub const SHEET_COLUMNS: usize = 10;
+const SHEET_WIDTH: u32 = 160;
+
+/// How many rows of pictures a video `duration` seconds long has.
+pub fn sheet_rows(duration: f64) -> usize {
+    let pictures = (duration / SHEET_EVERY).ceil().max(1.0) as usize;
+    pictures.div_ceil(SHEET_COLUMNS)
+}
+
+/// ffmpeg's arguments for making the seek bar's pictures of `video`. Only
+/// keyframes are decoded, so it takes seconds; a picture is the keyframe
+/// nearest its moment.
+pub fn sheet_args(video: &Path, duration: f64, output: &Path) -> Vec<String> {
+    // The last picture repeats to the sheet's end: after the last keyframe there would be black.
+    let filter = format!("fps=1/{SHEET_EVERY},scale={SHEET_WIDTH}:-2,tpad=stop=-1:stop_mode=clone,tile={SHEET_COLUMNS}x{}", sheet_rows(duration));
+    [
+        "-nostdin", "-hide_banner", "-v", "error", "-y", "-skip_frame", "nokey", "-i", &video.to_string_lossy(),
+        "-map", "0:v:0", "-an", "-sn", "-vf", &filter, "-frames:v", "1", "-q:v", "5", "-f", "mjpeg", &output.to_string_lossy(),
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+/// Makes the seek bar's pictures of `video` at `output`.
+pub fn make_sheet(ffmpeg: &Path, video: &Path, duration: f64, output: &Path) -> Result<()> {
+    let partial = output.with_extension("jpg.part");
+    let out = command(ffmpeg).args(sheet_args(video, duration, &partial)).stdin(Stdio::null()).output().context("starting ffmpeg")?;
+    if !out.status.success() {
+        let _ = std::fs::remove_file(&partial);
+        let text = String::from_utf8_lossy(&out.stderr);
+        return Err(anyhow!("ffmpeg couldn’t make the seek bar’s pictures: {}", text.lines().last().unwrap_or("")));
+    }
+    std::fs::rename(&partial, output).context("saving the seek bar’s pictures")
+}
+
 /// Reads one audio track as mono 16-bit samples at `rate` Hz (for syncing and Whisper).
 pub fn read_audio(ffmpeg: &Path, path: &Path, audio: usize, rate: u32, start: Option<f64>, length: Option<f64>) -> Result<Vec<i16>> {
     read_audio_filtered(ffmpeg, path, audio, rate, start, length, None)
@@ -638,6 +677,16 @@ mod tests {
         let args = convert_args(&p, Plan::Video, "h264_amf", Path::new("in.mkv"), Path::new("out.mp4"), 1);
         let joined = args.join(" ");
         assert!(joined.contains("-map 0:a:1") && joined.contains("-c:a aac") && joined.contains("h264_amf"), "{joined}");
+    }
+
+    #[test]
+    fn tiles_a_picture_every_five_seconds() {
+        // 24 minutes: 288 pictures, 29 rows of 10.
+        assert_eq!(sheet_rows(1437.0), 29);
+        assert_eq!(sheet_rows(50.0), 1);
+        assert_eq!(sheet_rows(50.1), 2);
+        let args = sheet_args(Path::new("ep.mp4"), 1437.0, Path::new("ep.jpg")).join(" ");
+        assert!(args.contains("-skip_frame nokey -i ep.mp4") && args.contains("fps=1/5,scale=160:-2,tpad=stop=-1:stop_mode=clone,tile=10x29"), "{args}");
     }
 
     #[test]

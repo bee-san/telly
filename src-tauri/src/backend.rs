@@ -649,6 +649,7 @@ impl Backend {
                 }
                 freed += std::fs::metadata(&copy).map(|m| m.len()).unwrap_or(0);
                 if std::fs::remove_file(&copy).is_ok() {
+                    let _ = std::fs::remove_file(self.sheet_path(&e));
                     count += 1;
                     self.db.media_reset(e.id)?;
                 }
@@ -709,6 +710,28 @@ impl Backend {
             "next": episodes.get(i + 1).map(lite),
             "count": episodes.len(),
             "tried": jobs::read_tried(self, id),
+        }))
+    }
+
+    /// The seek bar's pictures of an episode, beside where Telly's copy goes.
+    fn sheet_path(&self, episode: &Episode) -> PathBuf {
+        jobs::copy_path(self, episode.show_id, episode.id).with_extension("jpg")
+    }
+
+    /// The seek bar's pictures of an episode, made the first time it's asked for.
+    fn seek_sheet(&self, id: i64) -> Result<Value> {
+        let episode = self.episode_or_err(id)?;
+        let sheet = self.sheet_path(&episode);
+        if !sheet.is_file() {
+            let ffmpeg = self.tools().ffmpeg.ok_or_else(|| anyhow!("Telly needs ffmpeg for this. Choose it in Settings."))?;
+            std::fs::create_dir_all(sheet.parent().expect("a folder"))?;
+            media::make_sheet(&ffmpeg, Path::new(&episode.play_path), episode.duration, &sheet)?;
+        }
+        Ok(json!({
+            "src": format!("/sheet/{id}"),
+            "every": media::SHEET_EVERY,
+            "columns": media::SHEET_COLUMNS,
+            "rows": media::sheet_rows(episode.duration),
         }))
     }
 
@@ -1008,6 +1031,7 @@ impl Backend {
                 Ok(json!({}))
             }
             "setAudio" => self.set_audio(arg(&args, "id")?, arg(&args, "track")?),
+            "seekSheet" => self.seek_sheet(arg(&args, "id")?),
             "translation" => to_value(jobs::translation(self, &self.episode_or_err(arg(&args, "id")?)?)?),
             "mineLine" => {
                 let job = cards::add_line_to_last_card(self, arg(&args, "id")?, arg(&args, "start")?, arg(&args, "end")?, &arg::<String>(&args, "text")?)?;
@@ -1110,6 +1134,7 @@ impl Backend {
                 let e = self.episode_or_err(id.parse().map_err(|_| anyhow!("bad episode"))?)?;
                 if e.media_state == "ready" && !e.play_path.is_empty() { PathBuf::from(e.play_path) } else { PathBuf::from(e.path) }
             }
+            ["sheet", id] => self.sheet_path(&self.episode_or_err(id.parse().map_err(|_| anyhow!("bad episode"))?)?),
             ["cover", id] => self.cover_path(id.parse().map_err(|_| anyhow!("bad show"))?),
             ["clip", name] if !name.contains("..") => self.dirs.clips().join(name),
             ["names", "telly-characters.zip"] => names::zip_path(self),

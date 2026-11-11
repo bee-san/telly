@@ -3,7 +3,7 @@
   import { page } from "$app/state";
   import { onDestroy, onMount, tick as nextTick } from "svelte";
   import Icon from "$lib/Icon.svelte";
-  import { call, errorText, mediaUrl, setFullscreen, setWindowTitle, type AskProgress, type CardEvent, type CastName, type ClaudeStatus, type Line, type PlayerView, type Recap } from "$lib/api";
+  import { call, errorText, mediaUrl, setFullscreen, setWindowTitle, type AskProgress, type CardEvent, type CastName, type ClaudeStatus, type Line, type PlayerView, type Recap, type SeekSheet } from "$lib/api";
   import { createRenderer, drawTiles, filters } from "$lib/filters";
   import { clock } from "$lib/format";
   import { app } from "$lib/state.svelte";
@@ -36,6 +36,10 @@
   let muted = $state(false);
   /** Where the pointer is over the seek bar, in seconds. */
   let hoverAt = $state<number | null>(null);
+  /** The seek bar's pictures, once they're loaded; `ratio` is one picture's width over its height. */
+  let sheet = $state<(SeekSheet & { ratio: number }) | null>(null);
+  /** Which of the sheet's pictures is nearest the pointer. */
+  const hoverPic = $derived(sheet && hoverAt !== null ? Math.min(Math.round(hoverAt / sheet.every), sheet.columns * sheet.rows - 1) : 0);
   /** The rip's own English subtitles (null until they're read), shown while Tab is held. */
   let translation = $state<Line[] | null>(null);
   let showTranslation = $state(false);
@@ -233,6 +237,21 @@
         .then((lines) => {
           if (view?.episode.id === id) translation = lines;
         });
+      if (sheet) URL.revokeObjectURL(sheet.src);
+      sheet = null;
+      if (v.episode.mediaState === "ready") {
+        // Held in memory, so a picture is there the moment the pointer is.
+        call<SeekSheet>("seekSheet", { id })
+          .then(async (s) => {
+            const src = URL.createObjectURL(await (await fetch(mediaUrl(s.src))).blob());
+            const img = new Image();
+            img.onload = () => {
+              if (view?.episode.id === id) sheet = { ...s, src, ratio: (img.naturalWidth / s.columns) / (img.naturalHeight / s.rows) };
+            };
+            img.src = src;
+          })
+          .catch(() => {});
+      }
       filter = filters.find((f) => f.id === settings[`player.filter.${v.show.id}`])?.id ?? "none";
       await setWindowTitle(`${v.show.title} · Episode ${v.episode.number} — Telly`);
       if (v.episode.mediaState !== "ready") {
@@ -1223,7 +1242,18 @@
       <span class="track"><i style:width="{duration ? (100 * now) / duration : 0}%"></i></span>
       {#each chapterMarks as c (c.start)}<span class="chapter" style:left="{(100 * c.start) / duration}%"></span>{/each}
       <span class="knob" style:left="{duration ? (100 * now) / duration : 0}%"></span>
-      {#if hoverAt !== null && duration > 0}<span class="seek-time" style:left="{(100 * hoverAt) / duration}%">{clock(hoverAt)}</span>{/if}
+      <!-- Always there, so the pictures stay decoded and the first one shows at once. -->
+      {#if duration > 0}
+        <span class="seek-time" class:pictured={!!sheet} class:away={hoverAt === null} style:--at="{(100 * (hoverAt ?? 0)) / duration}%">
+          {#if sheet}
+            <span class="seek-pic" style:aspect-ratio={sheet.ratio}>
+              <img src={sheet.src} alt="" style:width="{sheet.columns * 100}%"
+                style:transform="translate(-{(100 * (hoverPic % sheet.columns)) / sheet.columns}%, -{(100 * Math.floor(hoverPic / sheet.columns)) / sheet.rows}%)" />
+            </span>
+          {/if}
+          {clock(hoverAt ?? 0)}
+        </span>
+      {/if}
     </div>
     <div class="prow">
       <button type="button" class="pbtn big" aria-label={paused ? "Play" : "Pause"} onclick={togglePlay}><Icon name={paused ? "play" : "pause"} /></button>
@@ -1498,7 +1528,12 @@
   .seek .knob { position: absolute; top: 6px; width: 11px; height: 11px; margin-left: -5.5px; border-radius: 50%; background: var(--vid-ink); }
   .seek .marks { position: absolute; left: 0; right: 0; top: 3px; width: 100%; height: 3px; fill: rgba(255, 255, 255, .42); pointer-events: none; }
   .seek .chapter { position: absolute; top: 8px; width: 2px; height: 7px; margin-left: -1px; background: var(--vid); pointer-events: none; }
-  .seek-time { position: absolute; bottom: 24px; transform: translateX(-50%); padding: 5px 8px; border-radius: 6px; font: 500 12.5px/1 var(--font-mono); font-variant-numeric: tabular-nums; background: var(--vid-panel); border: 1px solid var(--vid-edge); pointer-events: none; white-space: nowrap; }
+  .seek-time { position: absolute; left: var(--at); bottom: 24px; transform: translateX(-50%); padding: 5px 8px; border-radius: 6px; font: 500 12.5px/1 var(--font-mono); font-variant-numeric: tabular-nums; background: var(--vid-panel); border: 1px solid var(--vid-edge); pointer-events: none; white-space: nowrap; text-align: center; }
+  .seek-time.away { visibility: hidden; }
+  /* With a picture the label is 178px wide; it stops at the bar's ends. */
+  .seek-time.pictured { left: clamp(89px, var(--at), calc(100% - 89px)); }
+  .seek-pic { display: block; width: 160px; margin-bottom: 6px; border-radius: 3px; overflow: hidden; }
+  .seek-pic img { display: block; max-width: none; transform-origin: 0 0; }
   .vol { width: 84px; height: 22px; margin: 0 6px 0 2px; accent-color: var(--vid-ink); cursor: pointer; flex: none; }
   .skip { position: absolute; right: 20px; bottom: 236px; z-index: 6; height: 40px; padding: 0 18px; font: 600 14px/1 var(--font-ui); color: var(--vid-ink); background: var(--vid-panel); border: 1px solid rgba(255, 255, 255, .5); border-radius: 6px; cursor: pointer; }
   .skip:hover { background: #2a2a2e; }

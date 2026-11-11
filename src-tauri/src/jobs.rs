@@ -1,8 +1,12 @@
-//! Getting shows ready in the background: two workers, one converting video
-//! (heavy, one at a time) and one finding and syncing subtitles.
+//! Getting shows ready in the background, several episodes at once:
+//!
+//!   - one worker converts video (heavy, one at a time)
+//!   - one reads what's in rips nobody has looked at yet, so a rip that plays
+//!     as it is doesn't wait behind a conversion
+//!   - a few find and sync subtitles (`SUBS_WORKERS`)
 //!
 //! Work isn't queued as such. Each worker looks at the library and takes the
-//! most useful episode still waiting:
+//! most useful episode still waiting, which no other worker then gets:
 //!
 //!   1. each show's next episode (the one you'd play), most recently watched show first
 //!   2. the next 10 after it ("convert ahead" in Settings)
@@ -38,6 +42,12 @@ const GREAT_SYNC: f64 = 0.75;
 const MAX_TRIES: usize = 12;
 /// Nothing played for this long counts as idle.
 const IDLE_AFTER: Duration = Duration::from_secs(120);
+/// How many episodes have their subtitles found at once. Measured on 24
+/// episodes on an SSD: 81 and 103 s with one worker, 54 and 59 s with two,
+/// 34 s with three, 27 and 47 s with four, 26 and 39 s with six. On a hard
+/// drive the drive is the limit, read by one episode at a time (see
+/// `Jobs::drive`): the others get on with the rest of their work meanwhile.
+const SUBS_WORKERS: usize = 3;
 
 #[derive(Serialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -51,17 +61,58 @@ pub struct Task {
     pub progress: f64,
 }
 
+/// Turns at something only one worker may use at a time, taken in the order
+/// they were asked for. A plain lock goes to any of those waiting, so the
+/// episode that matters most could wait longest.
+#[derive(Default)]
+struct Turns {
+    /// How many turns have been asked for, and how many have ended.
+    counts: Mutex<(u64, u64)>,
+    ended: Condvar,
+}
+
+/// A turn, which ends when this is dropped.
+struct Turn<'a>(&'a Turns);
+
+impl Turns {
+    /// Waits for a turn.
+    fn take(&self) -> Turn<'_> {
+        let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
+        let mine = counts.0;
+        counts.0 += 1;
+        while counts.1 != mine {
+            counts = self.ended.wait(counts).unwrap_or_else(|e| e.into_inner());
+        }
+        Turn(self)
+    }
+}
+
+impl Drop for Turn<'_> {
+    fn drop(&mut self) {
+        self.0.counts.lock().unwrap_or_else(|e| e.into_inner()).1 += 1;
+        self.0.ended.notify_all();
+    }
+}
+
 pub struct Jobs {
     wake: Mutex<u64>,
     signal: Condvar,
-    pub media: Mutex<Option<Task>>,
-    pub subs: Mutex<Option<Task>>,
+    /// What each worker is doing, for the title bar: the one converting,
+    /// the one reading rips for the first time, and each one finding subtitles.
+    media: Mutex<Option<Task>>,
+    probing: Mutex<Option<Task>>,
+    subs: [Mutex<Option<Task>>; SUBS_WORKERS],
     /// A download (Whisper's model).
     pub download: Mutex<Option<Task>>,
     /// Stops the running conversion (the show was removed, or Telly is closing).
     cancel_media: AtomicBool,
     /// Jimaku's files per entry, so each episode doesn't ask again.
     jimaku_files: Mutex<HashMap<i64, (Instant, Vec<jimaku::Local>)>>,
+    /// Held while Jimaku is asked, so it's asked by one worker at a time: it
+    /// answers 429 when asked too fast, and what one worker fetched the next finds kept.
+    jimaku: Mutex<()>,
+    /// Turns at each drive rips are on (see `drive`).
+    drives: Mutex<HashMap<PathBuf, Arc<Turns>>>,
 }
 
 impl Default for Jobs {
@@ -70,10 +121,13 @@ impl Default for Jobs {
             wake: Mutex::new(0),
             signal: Condvar::new(),
             media: Mutex::new(None),
-            subs: Mutex::new(None),
+            probing: Mutex::new(None),
+            subs: std::array::from_fn(|_| Mutex::new(None)),
             download: Mutex::new(None),
             cancel_media: AtomicBool::new(false),
             jimaku_files: Mutex::new(HashMap::new()),
+            jimaku: Mutex::new(()),
+            drives: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -110,6 +164,21 @@ impl Jobs {
         if let Ok(mut cache) = self.jimaku_files.lock() {
             cache.clear();
         }
+    }
+
+    /// What the workers are doing now, for the title bar.
+    pub fn tasks(&self) -> Vec<Task> {
+        [&self.media, &self.probing].into_iter().chain(&self.subs).chain([&self.download]).filter_map(|slot| slot.lock().ok()?.clone()).collect()
+    }
+
+    /// Turns at the drive `rip` is on. A worker takes one to read a rip from
+    /// end to end: two rips read at once from one hard drive take longer than
+    /// one after the other, as the drive spends its time moving between them.
+    /// Measured on a USB hard drive, with 8 episodes of four shows: 38 and
+    /// 48 MB/s one at a time, 23 MB/s two at a time, 21 and 23 MB/s four at a time.
+    fn drive(&self, rip: &Path) -> Arc<Turns> {
+        let root = rip.ancestors().last().unwrap_or(rip).to_path_buf();
+        self.drives.lock().map(|mut drives| drives.entry(root).or_default().clone()).unwrap_or_default()
     }
 }
 
@@ -158,6 +227,8 @@ fn pick(backend: &Backend, kind: &str) -> Option<(Show, Episode, usize)> {
         for e in episodes {
             let waiting = match kind {
                 "media" => e.media_state == "pending",
+                // A rip nobody has looked at yet has no plan.
+                "probe" => e.media_state == "pending" && e.media_plan.is_empty(),
                 "whisper" => e.subs_state == "whisper",
                 _ => e.subs_state == "pending",
             };
@@ -173,7 +244,7 @@ fn pick(backend: &Backend, kind: &str) -> Option<(Show, Episode, usize)> {
             } else {
                 3
             };
-            if kind == "media" && (bucket == 3 || (bucket == 2 && !(idle && convert_rest))) {
+            if matches!(kind, "media" | "probe") && (bucket == 3 || (bucket == 2 && !(idle && convert_rest))) {
                 continue;
             }
             let key = (bucket, rank, e.number);
@@ -202,12 +273,40 @@ fn update_task(slot: &Mutex<Option<Task>>, label: Option<&str>, progress: f64) {
     }
 }
 
-pub fn start(backend: Arc<Backend>) {
-    {
-        let backend = backend.clone();
-        std::thread::Builder::new().name("telly-media".into()).spawn(move || media_worker(&backend)).ok();
+/// Takes the most useful episode waiting for `kind` work ("media", "probe" or
+/// "subs") for one worker. The claim is what keeps two workers off one episode:
+/// only the first to make it gets the episode, and the other looks again.
+fn take(backend: &Backend, kind: &str) -> Option<(Show, Episode, usize)> {
+    loop {
+        let (show, episode, count) = pick(backend, kind)?;
+        let claimed = if kind == "subs" { backend.db.claim_subs(episode.id) } else { backend.db.claim_media(episode.id) };
+        if claimed.unwrap_or(false) {
+            return Some((show, episode, count));
+        }
     }
-    std::thread::Builder::new().name("telly-subs".into()).spawn(move || subs_worker(&backend)).ok();
+}
+
+fn task(show: &Show, episode: &Episode, doing: &str) -> Task {
+    Task {
+        show_id: show.id,
+        episode_id: episode.id,
+        number: episode.number,
+        title: show.title.clone(),
+        label: format!("{doing} {} {}", show.title, episode.number),
+        progress: 0.0,
+    }
+}
+
+pub fn start(backend: Arc<Backend>) {
+    let start = |name: String, work: fn(&Backend, usize), n: usize| {
+        let backend = backend.clone();
+        std::thread::Builder::new().name(name).spawn(move || work(&backend, n)).ok();
+    };
+    start("telly-media".into(), |backend, _| media_worker(backend), 0);
+    start("telly-probe".into(), |backend, _| probe_worker(backend), 0);
+    for n in 0..SUBS_WORKERS {
+        start(format!("telly-subs-{n}"), subs_worker, n);
+    }
 }
 
 // ---- video ---------------------------------------------------------------------
@@ -218,28 +317,44 @@ fn media_worker(backend: &Backend) {
         backend.jobs.wait(&mut seen, Duration::from_secs(5));
         let tools = backend.tools();
         let (Some(ffmpeg), Some(ffprobe)) = (tools.ffmpeg.clone(), tools.ffprobe.clone()) else { continue };
-        while let Some((show, episode, _)) = pick(backend, "media") {
-            if !backend.db.claim_media(episode.id).unwrap_or(false) {
-                continue;
-            }
+        while let Some((show, episode, _)) = take(backend, "media") {
             backend.jobs.cancel_media.store(false, Ordering::SeqCst);
-            set_task(
-                &backend.jobs.media,
-                Some(Task {
-                    show_id: show.id,
-                    episode_id: episode.id,
-                    number: episode.number,
-                    title: show.title.clone(),
-                    label: format!("Reading {} {}", show.title, episode.number),
-                    progress: 0.0,
-                }),
-            );
-            let result = prepare_video(backend, &ffmpeg, &ffprobe, &tools.encoder, &show, &episode);
+            set_task(&backend.jobs.media, Some(task(&show, &episode, "Reading")));
+            let result = plan_video(backend, &ffprobe, &show, &episode).and_then(|planned| match planned {
+                Some((probe, plan, audio)) => convert_video(backend, &ffmpeg, &tools.encoder, &show, &episode, &probe, plan, audio),
+                None => Ok(()),
+            });
             set_task(&backend.jobs.media, None);
             match result {
                 Ok(()) => {}
                 Err(e) if e.to_string() == "cancelled" => {
                     let _ = backend.db.media_reset(episode.id);
+                }
+                Err(e) => {
+                    let _ = backend.db.media_failed(episode.id, &format!("{e:#}"));
+                }
+            }
+        }
+    }
+}
+
+/// Reads what's in rips nobody has looked at yet, while `media_worker`
+/// converts. A rip that plays as it is is ready there and then; one that
+/// needs converting goes back, its plan known, for `media_worker`.
+fn probe_worker(backend: &Backend) {
+    let mut seen = 0;
+    loop {
+        backend.jobs.wait(&mut seen, Duration::from_secs(5));
+        let Some(ffprobe) = backend.tools().ffprobe else { continue };
+        while let Some((show, episode, _)) = take(backend, "probe") {
+            set_task(&backend.jobs.probing, Some(task(&show, &episode, "Reading")));
+            let result = plan_video(backend, &ffprobe, &show, &episode);
+            set_task(&backend.jobs.probing, None);
+            match result {
+                Ok(None) => {}
+                Ok(Some(_)) => {
+                    let _ = backend.db.media_reset(episode.id);
+                    backend.jobs.poke();
                 }
                 Err(e) => {
                     let _ = backend.db.media_failed(episode.id, &format!("{e:#}"));
@@ -357,7 +472,10 @@ pub fn move_copies(backend: Arc<Backend>) {
     });
 }
 
-fn prepare_video(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, encoder: &str, show: &Show, episode: &Episode) -> Result<()> {
+/// Reads what's in an episode's rip and plans how to get it playing. A rip
+/// that plays as it is is ready there and then: None. Otherwise, what
+/// `convert_video` needs: what ffprobe found, the plan and the audio track.
+fn plan_video(backend: &Backend, ffprobe: &Path, show: &Show, episode: &Episode) -> Result<Option<(media::Probe, Plan, usize)>> {
     let source = PathBuf::from(&episode.path);
     if !source.is_file() {
         return Err(anyhow!("The file isn’t there any more: {}", episode.path));
@@ -368,17 +486,24 @@ fn prepare_video(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, encoder: &str
     let plan = if forced { Plan::Video } else { media::plan(&probe, &source, audio) };
     let probe_json = serde_json::to_string(&probe).unwrap_or_default();
     backend.db.set_probe(episode.id, &probe_json, probe.duration, media::ending_at(&probe), plan.name())?;
-    let output = copy_path(backend, show.id, episode.id);
     if plan == Plan::Direct {
         // A copy made for another audio track isn't needed any more.
-        let _ = std::fs::remove_file(&output);
+        let _ = std::fs::remove_file(copy_path(backend, show.id, episode.id));
         backend.db.media_ready(episode.id, &episode.path, audio as i64, audio as i64)?;
-        return Ok(());
+        return Ok(None);
     }
+    Ok(Some((probe, plan, audio)))
+}
+
+/// Makes Telly's copy of an episode whose rip doesn't play as it is (see `plan_video`).
+#[allow(clippy::too_many_arguments)]
+fn convert_video(backend: &Backend, ffmpeg: &Path, encoder: &str, show: &Show, episode: &Episode, probe: &media::Probe, plan: Plan, audio: usize) -> Result<()> {
+    let source = PathBuf::from(&episode.path);
+    let output = copy_path(backend, show.id, episode.id);
     if output.is_file() && std::fs::metadata(&output).map(|m| m.len() > 0).unwrap_or(false) {
-        if playing_track(episode, &probe) != audio {
+        if playing_track(episode, probe) != audio {
             update_task(&backend.jobs.media, Some(&format!("Changing the audio of {} {}", show.title, episode.number)), 0.0);
-            return change_audio(backend, ffmpeg, episode, &probe, audio);
+            return change_audio(backend, ffmpeg, episode, probe, audio);
         }
         backend.db.media_ready(episode.id, &output.to_string_lossy(), 0, audio as i64)?;
         return Ok(());
@@ -400,10 +525,10 @@ fn prepare_video(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, encoder: &str
             }
         }
     };
-    let mut result = media::run_ffmpeg(ffmpeg, &media::convert_args(&probe, plan, encoder, &source, &partial, audio), probe.duration, &backend.jobs.cancel_media, &report);
+    let mut result = media::run_ffmpeg(ffmpeg, &media::convert_args(probe, plan, encoder, &source, &partial, audio), probe.duration, &backend.jobs.cancel_media, &report);
     // A GPU encoder can fail on some inputs; the CPU one always works.
     if plan == Plan::Video && encoder != "libx264" && result.as_ref().is_err_and(|e| e.to_string() != "cancelled") {
-        result = media::run_ffmpeg(ffmpeg, &media::convert_args(&probe, plan, "libx264", &source, &partial, audio), probe.duration, &backend.jobs.cancel_media, &report);
+        result = media::run_ffmpeg(ffmpeg, &media::convert_args(probe, plan, "libx264", &source, &partial, audio), probe.duration, &backend.jobs.cancel_media, &report);
     }
     if let Err(e) = result {
         let _ = std::fs::remove_file(&partial);
@@ -416,54 +541,36 @@ fn prepare_video(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, encoder: &str
 
 // ---- subtitles -----------------------------------------------------------------
 
-fn subs_worker(backend: &Backend) {
+/// One of the workers finding subtitles: the `n`th, whose task shows in `jobs.subs[n]`.
+fn subs_worker(backend: &Backend, n: usize) {
+    let slot = &backend.jobs.subs[n];
     let mut seen = 0;
     loop {
         backend.jobs.wait(&mut seen, Duration::from_secs(5));
         let tools = backend.tools();
         let (Some(ffmpeg), Some(ffprobe)) = (tools.ffmpeg.clone(), tools.ffprobe.clone()) else { continue };
-        while let Some((show, episode, count)) = pick(backend, "subs") {
-            if !backend.db.claim_subs(episode.id).unwrap_or(false) {
-                continue;
-            }
-            set_task(
-                &backend.jobs.subs,
-                Some(Task {
-                    show_id: show.id,
-                    episode_id: episode.id,
-                    number: episode.number,
-                    title: show.title.clone(),
-                    label: format!("Finding subtitles for {} {}", show.title, episode.number),
-                    progress: 0.0,
-                }),
-            );
-            let result = find_subtitles(backend, &ffmpeg, &ffprobe, &show, &episode, count);
-            set_task(&backend.jobs.subs, None);
+        while let Some((show, episode, count)) = take(backend, "subs") {
+            set_task(slot, Some(task(&show, &episode, "Finding subtitles for")));
+            let result = find_subtitles(backend, slot, &ffmpeg, &ffprobe, &show, &episode, count);
+            set_task(slot, None);
             if let Err(e) = result {
                 let _ = backend.db.set_subs_state(episode.id, "failed", &format!("{e:#}"));
             }
         }
-        // Then episodes you asked to have subtitles made for, one at a time.
+        // Then episodes you asked to have subtitles made for, one at a time: the first worker makes them.
+        if n > 0 {
+            continue;
+        }
         if let Some(listener) = listener(backend, &tools) {
             if let Some((show, episode, _)) = pick(backend, "whisper") {
                 let name = listener.name();
                 if backend.db.claim_whisper(episode.id, &format!("{name} is listening")).unwrap_or(false) {
-                    set_task(
-                        &backend.jobs.subs,
-                        Some(Task {
-                            show_id: show.id,
-                            episode_id: episode.id,
-                            number: episode.number,
-                            title: show.title.clone(),
-                            label: format!("{name} is listening to {} {}", show.title, episode.number),
-                            progress: 0.0,
-                        }),
-                    );
+                    set_task(slot, Some(task(&show, &episode, &format!("{name} is listening to"))));
                     let result = match &listener {
-                        Listener::OpenRouter { key, model } => openrouter_subtitles(backend, &ffmpeg, &ffprobe, key, model, &episode),
+                        Listener::OpenRouter { key, model } => openrouter_subtitles(backend, slot, &ffmpeg, &ffprobe, key, model, &episode),
                         Listener::Local { whisper, model } => whisper_subtitles(backend, &ffmpeg, &ffprobe, whisper, model, &episode),
                     };
-                    set_task(&backend.jobs.subs, None);
+                    set_task(slot, None);
                     if let Err(e) = result {
                         let _ = backend.db.set_subs_state(episode.id, "failed", &format!("{name}: {e:#}"));
                     }
@@ -504,7 +611,8 @@ pub fn listener(backend: &Backend, tools: &crate::tools::Tools) -> Option<Listen
 /// Makes subtitles from the episode's Japanese audio with a model on
 /// OpenRouter, marked as machine-made and timed by the model. The audio goes
 /// in pieces (see openrouter.rs), each a file in the subtitles folder for a moment.
-fn openrouter_subtitles(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, key: &str, model: &str, episode: &Episode) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+fn openrouter_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &Path, ffprobe: &Path, key: &str, model: &str, episode: &Episode) -> Result<()> {
     /// Enough to find where the audio is quiet.
     const RATE: u32 = 8000;
     let source = Path::new(&episode.path);
@@ -524,7 +632,7 @@ fn openrouter_subtitles(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, key: &
             line.end += cut[0];
             line
         }));
-        update_task(&backend.jobs.subs, None, (i + 1) as f64 / (cuts.len() - 1) as f64);
+        update_task(slot, None, (i + 1) as f64 / (cuts.len() - 1) as f64);
     }
     let maker = openrouter::maker(model);
     // Repeating itself over music is Whisper's habit.
@@ -807,20 +915,30 @@ pub fn language_name(code: &str) -> &'static str {
 
 /// The rip's own dialogue subtitles when it has them: timed to this very
 /// video, they place a file far more surely than the speech does. Otherwise its speech.
-pub fn timing_of(ffmpeg: &Path, ffprobe: &Path, probe: &media::Probe, episode: &Episode) -> Result<Timing> {
-    let path = Path::new(&episode.path);
-    if let Ok(timings) = media::subtitle_timings(ffmpeg, ffprobe, path, probe) {
-        if let Some(track) = media::dialogue_track(&timings) {
-            let end = track.events.last().map(|e| e.1).unwrap_or(0.0);
-            return Ok(Timing {
-                spans: track.events.clone(),
-                length: probe.duration.max(end),
-                against: format!("the rip’s {}subtitles", language_name(&track.language)),
-                lead: 0.0,
-                calibration: sync::Calibration::CLEAN,
-            });
-        }
+pub fn timing_of(ffmpeg: &Path, probe: &media::Probe, episode: &Episode) -> Result<Timing> {
+    let tracks = media::subtitle_timings(ffmpeg, Path::new(&episode.path), probe).unwrap_or_default();
+    match subtitle_timing(probe, &tracks) {
+        Some(timing) => Ok(timing),
+        None => speech_timing(ffmpeg, probe, episode),
     }
+}
+
+/// The timing the rip's own dialogue subtitles give, from its subtitle tracks
+/// as `media::subtitle_timings` read them. None when it has no such track.
+fn subtitle_timing(probe: &media::Probe, tracks: &[media::TrackTiming]) -> Option<Timing> {
+    let track = media::dialogue_track(tracks)?;
+    let end = track.events.last().map(|e| e.1).unwrap_or(0.0);
+    Some(Timing {
+        spans: track.events.clone(),
+        length: probe.duration.max(end),
+        against: format!("the rip’s {}subtitles", language_name(&track.language)),
+        lead: 0.0,
+        calibration: sync::Calibration::CLEAN,
+    })
+}
+
+/// The timing the episode's speech gives, heard in its Japanese audio.
+fn speech_timing(ffmpeg: &Path, probe: &media::Probe, episode: &Episode) -> Result<Timing> {
     let (spans, length, clean) = speech_of(ffmpeg, probe, episode)?;
     let calibration = if clean { sync::Calibration::CLEAN } else { sync::Calibration::NOISY };
     Ok(Timing { spans, length, against: "the speech".into(), lead: 0.1, calibration })
@@ -904,20 +1022,18 @@ fn offset_setting(show: i64, group: &str) -> String {
     format!("subs.numbering.{show}.{group}")
 }
 
-/// Japanese text subtitles inside the rip itself, written out as files.
-fn embedded(backend: &Backend, ffmpeg: &Path, probe: &media::Probe, episode: &Episode) -> Vec<jimaku::Local> {
+/// Whether a subtitle track is Japanese text: subtitles of the rip's own to keep or sync.
+fn japanese_text(language: &str, codec: &str) -> bool {
+    matches!(language.to_lowercase().as_str(), "jpn" | "ja" | "jp") && media::text_codec(codec)
+}
+
+/// Japanese text subtitles inside the rip itself (among `tracks`, read from it), written out as files.
+fn embedded(backend: &Backend, tracks: &[media::TrackTiming], episode: &Episode) -> Vec<jimaku::Local> {
     let mut out = Vec::new();
-    for s in &probe.subtitles {
-        let japanese = matches!(s.language.to_lowercase().as_str(), "jpn" | "ja" | "jp");
-        let text_codec = matches!(s.codec.as_str(), "ass" | "ssa" | "subrip" | "srt" | "webvtt" | "mov_text");
-        if !japanese || !text_codec {
-            continue;
-        }
-        let format = if matches!(s.codec.as_str(), "ass" | "ssa") { "ass" } else { "srt" };
-        let Ok(text) = media::read_subtitle_track(ffmpeg, Path::new(&episode.path), s.index, format) else { continue };
-        let path = backend.dirs.subs().join(format!("{}.track{}.{format}", episode.id, s.index));
-        if std::fs::create_dir_all(backend.dirs.subs()).is_ok() && std::fs::write(&path, text).is_ok() {
-            out.push(jimaku::Local { name: format!("In the rip (track {})", s.index), path, episode: Some(episode.number) });
+    for track in tracks.iter().filter(|t| japanese_text(&t.language, &t.codec) && !t.text.is_empty()) {
+        let path = backend.dirs.subs().join(format!("{}.track{}.{}", episode.id, track.index, media::text_format(&track.codec)));
+        if std::fs::create_dir_all(backend.dirs.subs()).is_ok() && std::fs::write(&path, &track.text).is_ok() {
+            out.push(jimaku::Local { name: format!("In the rip (track {})", track.index), path, episode: Some(episode.number) });
         }
     }
     out
@@ -1122,15 +1238,34 @@ pub fn pick_subtitles(files: &[jimaku::Local], pool: &[jimaku::Local], timing: &
     (best, tried)
 }
 
-fn find_subtitles(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, show: &Show, episode: &Episode, count: usize) -> Result<()> {
+fn find_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &Path, ffprobe: &Path, show: &Show, episode: &Episode, count: usize) -> Result<()> {
     let key = backend.db.setting_str("jimaku.key");
-    let probe = media::probe(ffprobe, Path::new(&episode.path))?;
-    let mut files = embedded(backend, ffmpeg, &probe, episode);
+    let rip = Path::new(&episode.path);
+    let probe = media::probe(ffprobe, rip)?;
+    // One rip is read through at a time on each drive (see `Jobs::drive`).
+    let drive = backend.jobs.drive(rip);
+    let reading = || {
+        let turn = drive.take();
+        update_task(slot, Some(&format!("Reading the timing of {} {}", show.title, episode.number)), 0.0);
+        turn
+    };
+    // The rip's own subtitle tracks, read in one pass over it the first time they're wanted.
+    let tracks = std::cell::OnceCell::new();
+    let rip_tracks = || {
+        tracks.get_or_init(|| {
+            let _turn = reading();
+            media::subtitle_timings(ffmpeg, rip, &probe).unwrap_or_default()
+        })
+    };
+    let mut files = if probe.subtitles.iter().any(|s| japanese_text(&s.language, &s.codec)) { embedded(backend, rip_tracks(), episode) } else { Vec::new() };
     files.extend(beside(episode));
-    let video = Path::new(&episode.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let read_timing = || {
-        update_task(&backend.jobs.subs, Some(&format!("Reading the timing of {} {}", show.title, episode.number)), 0.0);
-        timing_of(ffmpeg, ffprobe, &probe, episode).context("reading the episode’s timing")
+    let video = rip.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let read_timing = || match subtitle_timing(&probe, rip_tracks()) {
+        Some(timing) => Ok(timing),
+        None => {
+            let _turn = reading();
+            speech_timing(ffmpeg, &probe, episode).context("reading the episode’s timing")
+        }
     };
     // The rip's own Japanese subtitles (a track inside it, a file beside it)
     // are kept as they are when they're in sync already, and Jimaku isn't asked.
@@ -1149,11 +1284,16 @@ fn find_subtitles(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, show: &Show,
     let local = local_number(&episode.path);
     let mut pool: Vec<jimaku::Local> = Vec::new();
     if !key.trim().is_empty() {
+        // One worker asks Jimaku at a time, about the show as it is now:
+        // another worker may just have found its entry there.
+        let asking = backend.jobs.jimaku.lock();
+        let show = &backend.db.show(show.id)?.unwrap_or_else(|| show.clone());
         let mut all = jimaku_files(backend, key.trim(), show)?;
         if groups.len() > 1 {
             let in_group = groups.iter().find(|(g, _)| *g == group).map(|(_, c)| *c).unwrap_or(0);
             all.extend(group_files(backend, key.trim(), show, &group, in_group).unwrap_or_default());
         }
+        drop(asking);
         let earlier: Vec<usize> = groups.iter().take_while(|(g, _)| *g != group).map(|(_, c)| *c).collect();
         let learned = backend.db.setting(&offset_setting(show.id, &group)).ok().flatten().and_then(|v| v.as_i64());
         let mut seen = std::collections::HashSet::new();
@@ -1182,7 +1322,7 @@ fn find_subtitles(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, show: &Show,
         None => read_timing()?,
     };
     let (best, tried) = pick_subtitles(&files, &pool, &timing, &video, |what, progress| {
-        update_task(&backend.jobs.subs, Some(&format!("{what} {} {}", show.title, episode.number)), progress);
+        update_task(slot, Some(&format!("{what} {} {}", show.title, episode.number)), progress);
     });
     std::fs::create_dir_all(backend.dirs.subs())?;
     std::fs::write(tried_path(backend, episode.id), serde_json::to_vec(&tried)?)?;
@@ -1228,7 +1368,7 @@ pub fn use_file(backend: &Backend, episode: &Episode, path: &Path, name: &str) -
         return Err(anyhow!("Telly needs ffmpeg for this. Choose it in Settings."));
     };
     let probe = media::probe(&ffprobe, Path::new(&episode.path))?;
-    let timing = timing_of(&ffmpeg, &ffprobe, &probe, episode)?;
+    let timing = timing_of(&ffmpeg, &probe, episode)?;
     let bytes = std::fs::read(path)?;
     let lines = subs::parse(name, &bytes)?;
     let mut synced = sync_to(&lines, &timing);
@@ -1275,6 +1415,58 @@ mod tests {
             subs_offset_ms: None,
             subs_nudge_ms: 0,
         }
+    }
+
+    #[test]
+    fn workers_never_take_the_same_episode() {
+        let dir = std::env::temp_dir().join(format!("telly-take-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let episodes = (1..=40).map(|number| crate::db::NewEpisode { number, path: format!("{number}.mkv"), size: 1, duration: 1400.0 }).collect();
+        backend.db.add_show(&crate::db::NewShow { folder: "D:\\Anime\\Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        // Four workers take subtitle work until none is left: each episode goes to one of them.
+        let mut taken: Vec<i64> = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..4).map(|_| scope.spawn(|| std::iter::from_fn(|| take(&backend, "subs")).map(|(_, e, _)| e.number).collect::<Vec<_>>())).collect();
+            workers.into_iter().flat_map(|w| w.join().unwrap()).collect()
+        });
+        taken.sort();
+        assert_eq!(taken, (1..=40).collect::<Vec<_>>());
+        // A rip nobody has looked at goes to either video worker. Once its
+        // plan says it needs converting, it's left for the one that converts.
+        let (_, first, _) = take(&backend, "probe").unwrap();
+        assert_eq!(first.number, 1);
+        backend.db.set_probe(first.id, "{}", 1400.0, None, "video").unwrap();
+        backend.db.media_reset(first.id).unwrap();
+        assert_eq!(take(&backend, "probe").map(|(_, e, _)| e.number), Some(2));
+        assert_eq!(take(&backend, "media").map(|(_, e, _)| e.number), Some(1));
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn rips_on_one_drive_are_read_one_at_a_time_in_the_order_asked() {
+        let jobs = Jobs::default();
+        let drive = jobs.drive(Path::new("D:\\Anime\\Show\\01.mkv"));
+        assert!(Arc::ptr_eq(&drive, &jobs.drive(Path::new("D:\\Films\\Film.mkv"))));
+        assert!(!Arc::ptr_eq(&drive, &jobs.drive(Path::new("C:\\Anime\\Show\\02.mkv"))));
+        // Three workers ask for the drive while it's being read, one after another.
+        let order = Mutex::new(Vec::new());
+        let reading = drive.take();
+        std::thread::scope(|scope| {
+            for n in 1..=3 {
+                let (drive, order) = (&drive, &order);
+                scope.spawn(move || {
+                    let _turn = drive.take();
+                    order.lock().unwrap().push(n);
+                });
+                while drive.counts.lock().unwrap().0 <= n {
+                    std::thread::yield_now();
+                }
+            }
+            assert!(order.lock().unwrap().is_empty());
+            drop(reading);
+        });
+        assert_eq!(*order.lock().unwrap(), [1, 2, 3]);
     }
 
     #[test]

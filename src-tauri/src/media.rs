@@ -24,7 +24,7 @@ use serde_json::Value;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -576,64 +576,123 @@ pub struct TrackTiming {
     pub title: String,
     pub language: String,
     pub codec: String,
+    /// A text track as a subtitle file (`text_format` says which kind); empty for a picture track.
+    pub text: String,
     /// When each subtitle shows, in seconds, in order.
     pub events: Vec<(f64, f64)>,
 }
 
-/// When the subtitles of each of the rip's subtitle tracks show, whatever
-/// their language, pictures included: the timing a release's own subtitles
-/// give its dialogue. Picture tracks are read from the container's packets
-/// (one ffprobe pass, nothing decoded): a packet with a picture starts a
-/// subtitle, which lasts its duration or until the next packet (the one that
-/// clears it). Text tracks are decoded, so their signs can be left out.
-pub fn subtitle_timings(ffmpeg: &Path, ffprobe: &Path, path: &Path, probe: &Probe) -> Result<Vec<TrackTiming>> {
-    let mut out: Vec<TrackTiming> = probe
-        .subtitles
-        .iter()
-        .map(|s| TrackTiming { index: s.index, title: s.title.clone(), language: s.language.clone(), codec: s.codec.clone(), events: Vec::new() })
-        .collect();
-    if out.iter().any(|t| picture_codec(&t.codec)) {
-        let answer = command(ffprobe)
-            .args(["-v", "error", "-select_streams", "s", "-show_entries", "packet=stream_index,pts_time,duration_time,size", "-of", "json"])
-            .arg(path)
-            .output()
-            .context("running ffprobe")?;
-        let json: Value = serde_json::from_slice(&answer.stdout).context("reading ffprobe’s packets")?;
-        let num = |v: &Value| v.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| v.as_f64());
-        let mut packets: Vec<(i64, f64, f64, f64)> = json["packets"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|p| Some((p["stream_index"].as_i64()?, num(&p["pts_time"])?, num(&p["duration_time"]).unwrap_or(0.0), num(&p["size"]).unwrap_or(0.0))))
-                    .collect()
-            })
-            .unwrap_or_default();
-        packets.sort_by(|a, b| a.1.total_cmp(&b.1));
-        for track in out.iter_mut().filter(|t| picture_codec(&t.codec)) {
-            let mut open: Option<f64> = None;
-            for &(_, pts, duration, size) in packets.iter().filter(|p| p.0 == track.index) {
-                if let Some(start) = open.take() {
-                    track.events.push((start, pts.min(start + 15.0)));
-                }
-                // A clearing packet is a few dozen bytes; a picture, thousands.
-                if size >= 100.0 {
-                    if duration >= 0.05 {
-                        track.events.push((pts, pts + duration.min(15.0)));
-                    } else {
-                        open = Some(pts);
-                    }
-                }
+/// The kind of subtitle file ffmpeg makes of a text track: ASS of ASS, else SRT.
+pub fn text_format(codec: &str) -> &'static str {
+    if matches!(codec, "ass" | "ssa") { "ass" } else { "srt" }
+}
+
+/// The packets ffmpeg's framecrc muxer listed for one track, as (when it
+/// shows, how long, its size in bytes), in seconds. A line is "stream, dts,
+/// pts, duration, size, checksum", in the units "#tb 0:" gives.
+fn listed_packets(listing: &str) -> Vec<(f64, f64, f64)> {
+    // How many of the units make a second.
+    let mut second = 1000.0;
+    let mut out = Vec::new();
+    for line in listing.lines() {
+        if let Some(base) = line.strip_prefix("#tb 0:") {
+            second = 1.0 / ratio(base.trim());
+            continue;
+        }
+        let fields: Vec<&str> = line.split(',').map(str::trim).collect();
+        let (Some(pts), Some(duration), Some(size)) = (fields.get(2), fields.get(3), fields.get(4)) else { continue };
+        // A packet without a time is listed at the smallest number there is.
+        let (Ok(pts), Ok(duration), Ok(size)) = (pts.parse::<i64>(), duration.parse::<i64>(), size.parse::<f64>()) else { continue };
+        if pts != i64::MIN {
+            out.push((pts as f64 / second, duration as f64 / second, size));
+        }
+    }
+    out
+}
+
+/// When a picture track's subtitles show, from its packets: a packet with a
+/// picture starts a subtitle, which lasts its duration or until the next
+/// packet (the one that clears it).
+fn picture_events(mut packets: Vec<(f64, f64, f64)>) -> Vec<(f64, f64)> {
+    packets.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut events = Vec::new();
+    let mut open: Option<f64> = None;
+    for (pts, duration, size) in packets {
+        if let Some(start) = open.take() {
+            events.push((start, pts.min(start + 15.0)));
+        }
+        // A clearing packet is a few dozen bytes; a picture, thousands.
+        if size >= 100.0 {
+            if duration >= 0.05 {
+                events.push((pts, pts + duration.min(15.0)));
+            } else {
+                open = Some(pts);
             }
         }
     }
-    for track in out.iter_mut().filter(|t| !picture_codec(&t.codec)) {
-        let format = if matches!(track.codec.as_str(), "ass" | "ssa") { "ass" } else { "srt" };
-        let Ok(text) = read_subtitle_track(ffmpeg, path, track.index, format) else { continue };
-        let Ok(lines) = crate::subs::parse(&format!("track.{format}"), text.as_bytes()) else { continue };
-        track.events = lines.iter().filter(|l| !l.sign).map(|l| (l.start, l.end)).collect();
+    events
+}
+
+/// ffmpeg's arguments for reading every subtitle track of `path` in one pass
+/// over it, each into its own file in `folder`, named by its place in
+/// `tracks`: a text track as a subtitle file, a picture track as a list of
+/// its packets (nothing decoded). None when there's no track it can read.
+fn subtitle_args(path: &Path, tracks: &[TrackTiming], folder: &Path) -> Option<Vec<String>> {
+    let mut args: Vec<String> = ["-nostdin", "-hide_banner", "-v", "error", "-y", "-i"].iter().map(|a| a.to_string()).collect();
+    args.push(path.to_string_lossy().into_owned());
+    let before = args.len();
+    for (i, track) in tracks.iter().enumerate() {
+        let format = if picture_codec(&track.codec) {
+            "framecrc"
+        } else if text_codec(&track.codec) {
+            text_format(&track.codec)
+        } else {
+            continue;
+        };
+        args.extend(["-map".into(), format!("0:{}", track.index)]);
+        if format == "framecrc" {
+            args.extend(["-c".into(), "copy".into()]);
+        }
+        args.extend(["-f".into(), format.into(), folder.join(i.to_string()).to_string_lossy().into_owned()]);
     }
-    for track in &mut out {
-        track.events.sort_by(|a, b| a.0.total_cmp(&b.0));
+    (args.len() > before).then_some(args)
+}
+
+/// When the subtitles of each of the rip's subtitle tracks show, whatever
+/// their language, pictures included: the timing a release's own subtitles
+/// give its dialogue. Every track is read in one ffmpeg pass over the rip: a
+/// film on a USB hard drive takes minutes to read through, and a rip can
+/// carry 40 tracks. Text tracks are decoded, so their signs can be left out,
+/// and their text is kept; picture tracks are timed by their packets.
+pub fn subtitle_timings(ffmpeg: &Path, path: &Path, probe: &Probe) -> Result<Vec<TrackTiming>> {
+    static RUNS: AtomicU64 = AtomicU64::new(0);
+    let mut out: Vec<TrackTiming> = probe
+        .subtitles
+        .iter()
+        .map(|s| TrackTiming { index: s.index, title: s.title.clone(), language: s.language.clone(), codec: s.codec.clone(), ..Default::default() })
+        .collect();
+    let folder = std::env::temp_dir().join(format!("telly-tracks-{}-{}", std::process::id(), RUNS.fetch_add(1, Ordering::SeqCst)));
+    let Some(args) = subtitle_args(path, &out, &folder) else { return Ok(out) };
+    std::fs::create_dir_all(&folder)?;
+    let ran = command(ffmpeg).args(args).stdin(Stdio::null()).output();
+    let written: Vec<Option<Vec<u8>>> = (0..out.len()).map(|i| std::fs::read(folder.join(i.to_string())).ok()).collect();
+    let _ = std::fs::remove_dir_all(&folder);
+    if !ran.context("starting ffmpeg")?.status.success() {
+        return Err(anyhow!("ffmpeg couldn’t read the subtitle tracks of {}", path.display()));
+    }
+    for (track, bytes) in out.iter_mut().zip(written) {
+        let Some(bytes) = bytes else { continue };
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        if picture_codec(&track.codec) {
+            track.events = picture_events(listed_packets(&text));
+            continue;
+        }
+        let format = text_format(&track.codec);
+        if let Ok(lines) = crate::subs::parse(&format!("track.{format}"), text.as_bytes()) {
+            track.events = lines.iter().filter(|l| !l.sign).map(|l| (l.start, l.end)).collect();
+            track.events.sort_by(|a, b| a.0.total_cmp(&b.0));
+        }
+        track.text = text;
     }
     Ok(out)
 }
@@ -771,6 +830,41 @@ mod tests {
         let p = parse_probe(&dvd());
         let joined = swap_audio_args(&p, Path::new("copy.mp4"), Path::new("in.mkv"), 0, Path::new("out.part")).join(" ");
         assert!(joined.contains("-i copy.mp4 -i in.mkv -map 0:v:0 -map 1:a:0") && joined.contains("-c:v copy -c:a aac"), "{joined}");
+    }
+
+    #[test]
+    fn reads_every_subtitle_track_in_one_pass_over_the_rip() {
+        let track = |index: i64, codec: &str| TrackTiming { index, codec: codec.into(), ..Default::default() };
+        let tracks = [track(2, "ass"), track(3, "subrip"), track(4, "hdmv_pgs_subtitle"), track(5, "eia_608")];
+        let args = subtitle_args(Path::new("rip.mkv"), &tracks, Path::new("out")).unwrap();
+        let file = |n: &str| Path::new("out").join(n).to_string_lossy().into_owned();
+        // The rip is opened once. Text comes out as a subtitle file, pictures as a list of their packets.
+        let wanted = ["-i", "rip.mkv", "-map", "0:2", "-f", "ass", &file("0"), "-map", "0:3", "-f", "srt", &file("1"), "-map", "0:4", "-c", "copy", "-f", "framecrc", &file("2")];
+        assert_eq!(args[args.len() - wanted.len()..], wanted);
+        assert_eq!(args.iter().filter(|a| *a == "-i").count(), 1);
+        // Captions ffmpeg can't write as text or list are left alone.
+        assert_eq!(subtitle_args(Path::new("rip.mkv"), &tracks[3..], Path::new("out")), None);
+    }
+
+    #[test]
+    fn times_picture_subtitles_by_their_packets() {
+        // Blu-ray pictures, as ffmpeg lists them: a picture, then the few bytes that clear it.
+        let listing = "#software: Lavf62.12.101
+#tb 0: 1/1000
+#media_type 0: subtitle
+#codec_id 0: hdmv_pgs_subtitle
+            0,       9214,       9214,        0,    14880, 0x4aa272a7
+            0,      10966,      10966,        0,       35, 0x3dad039d
+            0,      17598,      17598,        0,    14850, 0x3142283b
+            0,      19934,      19934,        0,       35, 0x3e3f03ad
+";
+        assert_eq!(picture_events(listed_packets(listing)), [(9.214, 10.966), (17.598, 19.934)]);
+        // DVD pictures say how long they show, here in 90 000ths of a second.
+        let listing = "#tb 0: 1/90000
+0, 180000, 180000, 270000, 4096, 0x00000000
+0, 900000, 900000, 135000, 2048, 0x00000000
+";
+        assert_eq!(picture_events(listed_packets(listing)), [(2.0, 5.0), (10.0, 11.5)]);
     }
 
     #[test]

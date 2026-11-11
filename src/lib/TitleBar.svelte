@@ -8,9 +8,14 @@
   const task = $derived(act?.tasks[0] ?? null);
   const label = $derived.by(() => {
     if (!act || !task) return "";
-    if (act.total > 0 && act.done < act.total) return `Getting ${act.title} ready · ${act.done} of ${act.total}`;
+    if (act.total > 0 && act.done < act.total) {
+      const what = act.shows > 1 ? `${act.shows} shows` : act.title;
+      return `Getting ${what} ready · ${act.done} of ${act.total}`;
+    }
     return task.label;
   });
+  // Several episodes are worked on at once: the tooltip says what each is at.
+  const doing = $derived(act?.tasks.map((t) => t.label).join("\n") ?? "");
   const progress = $derived.by(() => {
     if (!act || !task) return 0;
     if (act.total > 0 && act.done < act.total) return act.done / act.total;
@@ -33,7 +38,7 @@
   </svg>
   <span class="wt-name" data-tauri-drag-region>Telly</span>
   {#if label}
-    <button type="button" class="wt-act" onclick={() => act?.showId && goto(`/show?id=${act.showId}`)} title={task?.label}>
+    <button type="button" class="wt-act" onclick={() => act?.showId && goto(`/show?id=${act.showId}`)} title={doing}>
       <span class="spin"></span>
       <span>{label}</span>
       <span class="wt-bar"><i style:width="{Math.round(progress * 100)}%"></i></span>

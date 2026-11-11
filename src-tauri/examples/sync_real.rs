@@ -106,7 +106,7 @@ fn run(
             let length = samples.len() as f64 / sync::FIRERED_RATE as f64;
             jobs::Timing { spans: sync::firered_spans(&samples)?, length, against: "the speech".into(), lead: 0.1, calibration: sync::Calibration::CLEAN }
         } else {
-            jobs::timing_of(ffmpeg, ffprobe, &probe, &episode)?
+            jobs::timing_of(ffmpeg, &probe, &episode)?
         };
         outcome.against = timing.against.clone();
         let stem = Path::new(path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();

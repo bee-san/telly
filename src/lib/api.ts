@@ -110,6 +110,8 @@ export interface Task {
 
 export interface Activity {
   tasks: Task[];
+  /** How many shows are being got ready at once. */
+  shows: number;
   showId: number | null;
   title: string;
   done: number;

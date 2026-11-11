@@ -23,6 +23,11 @@ const SUBTITLE_EXTENSIONS: &[&str] = &["srt", "ass", "ssa", "vtt"];
 /// Season packs bigger than this aren't downloaded.
 const MAX_ZIP: u64 = 80 * 1024 * 1024;
 
+/// Where to ask: Jimaku, or TELLY_JIMAKU_API (a stand-in for tests).
+fn api() -> String {
+    std::env::var("TELLY_JIMAKU_API").unwrap_or_else(|_| API.to_string())
+}
+
 fn agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
     AGENT.get_or_init(|| {
@@ -86,7 +91,7 @@ fn entries_from(v: &Value) -> Vec<Entry> {
 /// The show's entries on Jimaku: by AniList ID, else by name.
 pub fn find_entries(key: &str, anilist_id: Option<i64>, title: &str) -> Result<Vec<Entry>> {
     if let Some(id) = anilist_id {
-        let found = entries_from(&get_json(key, &format!("{API}/entries/search?anilist_id={id}&anime=true"))?);
+        let found = entries_from(&get_json(key, &format!("{}/entries/search?anilist_id={id}&anime=true", api()))?);
         if !found.is_empty() {
             return Ok(found);
         }
@@ -95,13 +100,13 @@ pub fn find_entries(key: &str, anilist_id: Option<i64>, title: &str) -> Result<V
         return Ok(Vec::new());
     }
     let q = percent_encoding::utf8_percent_encode(title.trim(), percent_encoding::NON_ALPHANUMERIC).to_string();
-    let found = entries_from(&get_json(key, &format!("{API}/entries/search?query={q}&anime=true"))?);
+    let found = entries_from(&get_json(key, &format!("{}/entries/search?query={q}&anime=true", api()))?);
     // A name search can find other shows; keep only ones without a different AniList ID.
     Ok(found.into_iter().filter(|e| anilist_id.is_none() || e.anilist_id.is_none() || e.anilist_id == anilist_id).collect())
 }
 
 pub fn files(key: &str, entry_id: i64) -> Result<Vec<RemoteFile>> {
-    let v = get_json(key, &format!("{API}/entries/{entry_id}/files"))?;
+    let v = get_json(key, &format!("{}/entries/{entry_id}/files", api()))?;
     Ok(v.as_array()
         .into_iter()
         .flatten()

@@ -117,6 +117,23 @@ When Jimaku has nothing for an episode (or there's no key yet), its show's page 
 
 With an OpenRouter API key in Settings, a model on [OpenRouter](https://openrouter.ai) makes them instead, and the button names it: ElevenLabs Scribe v2 (the default) or Whisper large v3, chosen in Settings. Each episode's Japanese audio is sent to OpenRouter in pieces of about 5 minutes, cut where the audio is quietest, because a provider gives a request 60 seconds. An episode costs about $0.09 with ElevenLabs and $0.01 to $0.04 with Whisper (OpenRouter's prices in November 2026). How well either hears Japanese hasn't been measured here.
 
+## Getting a library ready
+
+Telly works through a library in the background: each show's next episode first, then the 10 after it, then the rest. Several episodes are worked on at once, and the title bar says which show is being got ready, or how many shows (point at it to see what each episode is at).
+
+- **Video:** one conversion at a time. A rip that plays as it is doesn't wait behind one: a second worker reads what's in the rips nobody has looked at yet, about a second each.
+- **Subtitles:** 3 episodes at once. A rip is read through once for all its subtitle tracks together, text and pictures, however many it has. Jimaku is asked by one episode at a time, and a show's files are fetched once.
+- **One rip at a time from each drive:** the rest of an episode's work (asking Jimaku, syncing its files) goes on while the next rip is read, but two rips aren't read from one drive at once, and they're read in the order their episodes were taken. A hard drive reads two at once slower than one after the other.
+
+Measured on a 4 TB USB hard drive (Seagate Expansion, exFAT) nothing else was reading, each run on rips that weren't in Windows' file cache:
+
+- **A film** (Princess Mononoke: one file of 18 GB with five text subtitle tracks and one of pictures, and a Japanese subtitle file beside it): 26.8 minutes when each track was read in a pass of its own (six passes of 233 to 277 s), 4.4 minutes now (261 and 267 s). The subtitles kept are the same, byte for byte.
+- **8 ordinary episodes** (four of Fullmetal Alchemist: Brotherhood and four of Sword Art Online II, 2.9 GB, 2 or 3 text tracks each): 67 and 84 s before, 60 and 62 s now. A small rip's second and third passes came from Windows' file cache, so they cost little; a film is bigger than the cache.
+- **Two rips at once:** 8 episodes of one show were read at 37 and 40 MB/s one at a time, 26 and 31 MB/s two at a time, 25 and 35 MB/s four at a time. 8 episodes of four shows, which lie further apart on the drive: 38 and 48 MB/s one at a time, 23 MB/s two at a time, 21 and 23 MB/s four at a time.
+- **How many at once:** on an SSD, where nothing waits long for the drive, 24 episodes of Fairy Tail took 81 and 103 s with one worker, 54 and 59 s with two, 34 s with three, 27 and 47 s with four, 26 and 39 s with six. On the hard drive the drive is the limit whatever the number.
+
+`cargo run --profile measure --example jobs_check -- <data folder>` runs the background work over a scratch copy of a library and says when each episode was done, and what the title bar said.
+
 ## Where things go
 
 | | |
@@ -136,8 +153,8 @@ Your rips are never moved or changed.
 - `cargo test --manifest-path src-tauri/Cargo.toml --lib` runs the backend's tests.
 - `npm run check` type-checks the frontend.
 - `npm run devserver -- dev-data` runs the backend over HTTP on port 1430, and `npm run dev` then works in an ordinary browser, so the UI can be driven without the app (no Hachidori there).
-- `TELLY_YOMITAN_API` points premining at a stand-in for Hachidori's API, and `TELLY_CLAUDE` Explain and Previously on at a stand-in for Claude Code, for testing without your own.
-- `--profile measure` builds optimised but without the release build's link-time optimisation, for the measuring examples: `sync_real` (subtitle matching over a library), `recap_check` (one Previously on from real subtitles), `explain_check` (how soon Explain answers in the warm session) and `names_check` (one show's character dictionary).
+- `TELLY_YOMITAN_API` points premining at a stand-in for Hachidori's API, `TELLY_CLAUDE` Explain and Previously on at a stand-in for Claude Code, and `TELLY_JIMAKU_API` the subtitle search at a stand-in for Jimaku, for testing without your own.
+- `--profile measure` builds optimised but without the release build's link-time optimisation, for the measuring examples: `sync_real` (subtitle matching over a library), `recap_check` (one Previously on from real subtitles), `explain_check` (how soon Explain answers in the warm session), `names_check` (one show's character dictionary) and `jobs_check` (the background work over a scratch library).
 
 Ports: 8771 is Hachidori Relay's (Telly runs its own while Anki is closed), 8773 is where Telly listens for Anki Beacon.
 

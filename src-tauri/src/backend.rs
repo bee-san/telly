@@ -183,7 +183,9 @@ pub struct EpisodeRow {
 #[serde(rename_all = "camelCase")]
 pub struct Activity {
     pub tasks: Vec<Task>,
-    /// The show being got ready: its title, episodes with subtitles settled, and its episode count.
+    /// The shows being got ready: how many, the first one and its title, and
+    /// between them, episodes with subtitles settled and episodes in all.
+    pub shows: usize,
     pub show_id: Option<i64>,
     pub title: String,
     pub done: usize,
@@ -532,20 +534,23 @@ impl Backend {
     }
 
     fn activity(&self) -> Activity {
-        let mut tasks = Vec::new();
-        for slot in [&self.jobs.media, &self.jobs.subs, &self.jobs.download, &self.names.task] {
-            if let Some(t) = slot.lock().ok().and_then(|t| t.clone()) {
-                tasks.push(t);
-            }
-        }
+        let mut tasks = self.jobs.tasks();
+        tasks.extend(self.names.task.lock().ok().and_then(|t| t.clone()));
         let mut activity = Activity { tasks, ..Default::default() };
-        if let Some(t) = activity.tasks.last().cloned() {
-            if let Ok(eps) = self.db.episodes(t.show_id) {
+        // Several episodes are worked on at once, often of different shows.
+        let mut seen = std::collections::HashSet::new();
+        for t in activity.tasks.iter().filter(|t| t.show_id != 0) {
+            if !seen.insert(t.show_id) {
+                continue;
+            }
+            let Ok(eps) = self.db.episodes(t.show_id) else { continue };
+            if activity.shows == 0 {
                 activity.show_id = Some(t.show_id);
                 activity.title = t.title.clone();
-                activity.total = eps.len();
-                activity.done = eps.iter().filter(|e| settled(&e.subs_state)).count();
             }
+            activity.shows += 1;
+            activity.total += eps.len();
+            activity.done += eps.iter().filter(|e| settled(&e.subs_state)).count();
         }
         activity
     }

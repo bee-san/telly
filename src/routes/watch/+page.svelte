@@ -1255,12 +1255,6 @@
       onpointerdown={(e) => { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); seekTo(pointerTime(e)); }}
       onpointermove={(e) => { hoverAt = pointerTime(e); if (e.buttons === 1) seekTo(hoverAt); }}
       onpointerleave={() => (hoverAt = null)}>
-      {#if duration > 0}
-        <!-- Where the lines are. -->
-        <svg class="marks" viewBox="0 0 {duration} 1" preserveAspectRatio="none" aria-hidden="true">
-          {#each dialogue as l, i (i)}<rect x={l.start + nudge / 1000} y="0" width={l.end - l.start} height="1" />{/each}
-        </svg>
-      {/if}
       <span class="track"><i style:width="{duration ? (100 * now) / duration : 0}%"></i></span>
       {#each chapterMarks as c (c.start)}<span class="chapter" style:left="{(100 * c.start) / duration}%"></span>{/each}
       <span class="knob" style:left="{duration ? (100 * now) / duration : 0}%"></span>
@@ -1549,7 +1543,6 @@
   .seek:hover .track { height: 5px; top: 9px; }
   .seek .track i { display: block; height: 100%; background: var(--vid-ink); }
   .seek .knob { position: absolute; top: 6px; width: 11px; height: 11px; margin-left: -5.5px; border-radius: 50%; background: var(--vid-ink); }
-  .seek .marks { position: absolute; left: 0; right: 0; top: 3px; width: 100%; height: 3px; fill: rgba(255, 255, 255, .42); pointer-events: none; }
   .seek .chapter { position: absolute; top: 8px; width: 2px; height: 7px; margin-left: -1px; background: var(--vid); pointer-events: none; }
   .seek-time { position: absolute; left: var(--at); bottom: 24px; transform: translateX(-50%); padding: 5px 8px; border-radius: 6px; font: 500 12.5px/1 var(--font-mono); font-variant-numeric: tabular-nums; background: var(--vid-panel); border: 1px solid var(--vid-edge); pointer-events: none; white-space: nowrap; text-align: center; }
   .seek-time.away { visibility: hidden; }

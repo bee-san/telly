@@ -67,9 +67,14 @@ fn whisper_candidates(tools_dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// A multilingual whisper.cpp model in Telly's models folder (English-only
-/// ".en" models can't hear Japanese).
-fn whisper_model(models_dir: &Path) -> Option<PathBuf> {
+/// The whisper.cpp model in Telly's models folder that Settings picked
+/// (`chosen`, a file name), if it's been downloaded. With none picked, any
+/// multilingual one there (English-only ".en" models can't hear Japanese).
+fn whisper_model(models_dir: &Path, chosen: &str) -> Option<PathBuf> {
+    if !chosen.is_empty() {
+        let path = models_dir.join(chosen);
+        return path.is_file().then_some(path);
+    }
     let mut found: Vec<PathBuf> = std::fs::read_dir(models_dir)
         .ok()?
         .flatten()
@@ -105,7 +110,7 @@ fn encoders(ffmpeg: &Path) -> String {
         .unwrap_or_default()
 }
 
-pub fn find(tools_dir: &Path, models_dir: &Path, custom_ffmpeg: &str) -> Tools {
+pub fn find(tools_dir: &Path, models_dir: &Path, custom_ffmpeg: &str, whisper_model_file: &str) -> Tools {
     let mut tools = Tools::default();
     for candidate in ffmpeg_candidates(tools_dir, custom_ffmpeg) {
         let probe = candidate.with_file_name(exe("ffprobe"));
@@ -130,6 +135,6 @@ pub fn find(tools_dir: &Path, models_dir: &Path, custom_ffmpeg: &str) -> Tools {
             .to_string();
     }
     tools.whisper = whisper_candidates(tools_dir).into_iter().find(|p| p.is_file());
-    tools.whisper_model = whisper_model(models_dir);
+    tools.whisper_model = whisper_model(models_dir, whisper_model_file);
     tools
 }

@@ -115,6 +115,8 @@ export interface Episode {
   mediaError: string;
   playPath: string;
   audioIndex: number;
+  /** The rip's audio track that plays (null: the Japanese one). */
+  audioTrack: number | null;
   endingAt: number | null;
   position: number;
   watchedAt: number | null;
@@ -131,6 +133,8 @@ export interface EpisodeRow extends Episode {
   file: string;
   watched: boolean;
   isNext: boolean;
+  /** Uses of words in the episode, and how many are of words on cards studied in Anki. */
+  words: { uses: number; known: number } | null;
 }
 
 export interface ShowView {
@@ -139,6 +143,8 @@ export interface ShowView {
   activity: Activity;
   /** whisper.cpp is on this PC (Tidepool's), and a Japanese model for it. */
   whisper: { cli: boolean; model: boolean };
+  /** Why episodes have no share of known words ("" when they do, or it's being worked out). */
+  wordsError: string;
 }
 
 export interface Line {
@@ -175,6 +181,12 @@ export interface PlayerView {
   next: EpisodeLite | null;
   count: number;
   tried: Tried[];
+  /** The rip's chapters. */
+  chapters: { start: number; end: number; title: string }[];
+  opening: { start: number; end: number } | null;
+  /** The rip's audio tracks, by name, and which one plays. */
+  audio: string[];
+  audioTrack: number;
   /** openPlayer only: how long since the show was last open, in ms (null the first time). */
   awayMs?: number | null;
   /** openPlayer only: whether there's an episode before this one to recap, and whether its recap is written. */
@@ -317,6 +329,8 @@ export interface Status {
   anki: boolean;
   ankiUrl: string;
   dataDir: string;
+  /** Where Telly's copies of episodes go. */
+  mediaDir: string;
   logPath: string;
   spaceUsed: number;
   fields: { sentence: string; picture: string; audio: string; info: string };

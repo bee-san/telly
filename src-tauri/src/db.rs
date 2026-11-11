@@ -83,6 +83,10 @@ CREATE TABLE answers (
   created_at  INTEGER NOT NULL,
   PRIMARY KEY (episode_id, kind, line)
 );
+", "
+-- The rip's audio track that play_path plays, as a position among its audio
+-- tracks. NULL: the Japanese one, as it was picked when the episode was got ready.
+ALTER TABLE episodes ADD COLUMN audio_track INTEGER;
 "];
 
 /// Something Claude said, kept so it's there instantly next time.
@@ -153,6 +157,7 @@ pub struct Episode {
     pub media_error: String,
     pub play_path: String,
     pub audio_index: i64,
+    pub audio_track: Option<i64>,
     pub ending_at: Option<f64>,
     pub position: f64,
     pub watched_at: Option<i64>,
@@ -167,7 +172,7 @@ pub struct Episode {
 
 const EPISODE_COLUMNS: &str = "id, show_id, number, path, size, duration, media_state, media_plan, media_progress,
   media_error, play_path, audio_index, ending_at, position, watched_at, last_played_at, subs_state, subs_detail,
-  subs_file, subs_score, subs_offset_ms, subs_nudge_ms";
+  subs_file, subs_score, subs_offset_ms, subs_nudge_ms, audio_track";
 
 fn episode_from_row(r: &Row) -> rusqlite::Result<Episode> {
     Ok(Episode {
@@ -193,6 +198,7 @@ fn episode_from_row(r: &Row) -> rusqlite::Result<Episode> {
         subs_score: r.get(19)?,
         subs_offset_ms: r.get(20)?,
         subs_nudge_ms: r.get(21)?,
+        audio_track: r.get(22)?,
     })
 }
 
@@ -512,12 +518,31 @@ impl Db {
         Ok(())
     }
 
-    pub fn media_ready(&self, id: i64, play_path: &str, audio_index: i64) -> Result<()> {
+    /// `audio_index` is the track among `play_path`'s; `audio_track`, the one of the rip's it is.
+    pub fn media_ready(&self, id: i64, play_path: &str, audio_index: i64, audio_track: i64) -> Result<()> {
         self.conn()?.execute(
-            "UPDATE episodes SET media_state = 'ready', media_progress = 1, media_error = '', play_path = ?2, audio_index = ?3
+            "UPDATE episodes SET media_state = 'ready', media_progress = 1, media_error = '', play_path = ?2, audio_index = ?3,
+               audio_track = ?4
              WHERE id = ?1",
-            params![id, play_path, audio_index],
+            params![id, play_path, audio_index, audio_track],
         )?;
+        Ok(())
+    }
+
+    /// What ffprobe found in the rip, as JSON ("" before the episode was first got ready).
+    pub fn probe(&self, id: i64) -> Result<String> {
+        Ok(self.conn()?.query_row("SELECT probe FROM episodes WHERE id = ?1", params![id], |r| r.get(0)).optional()?.unwrap_or_default())
+    }
+
+    /// Sends a ready episode back to the conversion queue, keeping Telly's copy (for a change of audio track).
+    pub fn media_requeue(&self, id: i64) -> Result<()> {
+        self.conn()?.execute("UPDATE episodes SET media_state = 'pending', media_progress = 0 WHERE id = ?1 AND media_state = 'ready'", params![id])?;
+        Ok(())
+    }
+
+    /// Telly's copy of an episode was moved (to another copies folder).
+    pub fn set_play_path(&self, id: i64, play_path: &str) -> Result<()> {
+        self.conn()?.execute("UPDATE episodes SET play_path = ?2 WHERE id = ?1", params![id, play_path])?;
         Ok(())
     }
 

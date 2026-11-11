@@ -6,6 +6,8 @@ An anime player for learning Japanese, for Windows. Point it at a folder of rips
 - gets each episode playable, converting what WebView2 can't play (MPEG-2 DVD rips, 10-bit HEVC) in the background, next episode first
 - finds Japanese subtitles on [Jimaku](https://jimaku.cc) and syncs them to your rip: to the rip's own subtitles when it has any (in any language, pictures included), or to its speech, heard by [FireRedVAD](https://github.com/FireRedTeam/FireRedVAD)
 - shows them as lines you can look up with [Hachidori](https://github.com/bee-san/hachidori), pausing while you read and carrying on when you move back to the picture
+- plays the Japanese audio track unless you pick another for the show (**Audio ▾**, on rips with more than one), offers **Skip opening** from the rip's chapters, and marks the chapters and the lines on the seek bar
+- shows the rip's own English subtitles for the line while you hold **Tab**, when the rip has them as text (**?** lists every key)
 - finishes the cards you mine with an animated AVIF of the line and its audio as Opus
 - explains the line on screen when you press **E**, and when you come back to a show, opens on **Previously on**: the story so far in its arcs, the episode you left, and key moments to watch again, each with a caption (both by Claude, through the Claude Code on your computer)
 - premines: before you watch, it lists the words in the next episodes that you don't know yet and makes them into cards in your Hachidori card format
@@ -47,7 +49,7 @@ Both use [Claude Code](https://claude.com/claude-code), installed and signed in 
 
 Claude Code takes 3 to 15 seconds to start, longer than Haiku takes to answer. So while the player is open Telly keeps one Claude Code started and past its first turn, and Explain asks in it: the answer starts 1 to 3 seconds after you press E and is complete within 4 (measured over 12 questions: first words after 1.1 to 3.3 s, the whole answer after 1.8 to 4.1 s, against 24 s starting Claude Code for each question with its default model). What's left is Haiku's own time to answer. Telly also starts Claude Code with its non-essential traffic off (update checks, telemetry), which saves a few seconds more.
 
-- **Explain** (E, or Explain on a transcript line) pauses and explains the line: a translation, then the words and grammar a learner might trip on. The answer shows as it's written and is saved, so asking again is instant.
+- **Explain** (E, or Explain on a transcript line) pauses and explains the line: a translation, then the words and grammar a learner might trip on. The answer shows as it's written and is saved, so asking again is instant. The box under it asks a follow-up question about the line, in the same warm Claude Code; each question carries the line, its explanation and the questions before, and follow-ups aren't saved.
 - **Previously on** (P, or Recap) tells the story so far: the story cut into its arcs, each with what happens in it and the episodes it spans, then **Last time** for the episode you left, then up to 6 moments to play back as clips, each with a caption saying what's happening in it. Each recap carries on from the one kept for the episode before, so only the episode you just left is read (up to six when there's no recap to carry on from). When you come back to a show after 8 hours (Settings → Claude), the moments play first and the episode starts after them; Read recap shows the text instead. Back within 3 days, it's only Last time and that episode's moments, with the rest behind Show story so far. Picking up in the middle of an episode, the recap runs up to where you stopped. It's written when you leave the player, so it's ready next time (Haiku takes about 15 seconds for one episode); if it isn't, the episode starts and Telly says when the recap is ready.
 
 ## Filters
@@ -78,6 +80,8 @@ A show's page has **Premine…**: the words in the next episode (or the next 3 o
 - **Most useful first:** the words that come up most in those episodes, then the most common anywhere.
 - **Cards** are made in your Hachidori card format (the first Template in its Settings → Anki), word audio included, in a **Premined** subdeck of the show's deck (`Type::Fairy Tail::Premined`), so you can set how many new ones you see a day. The sentence, its furigana and the cloze come from the word's line. Telly then adds the moving picture, the line's audio and MiscInfo as it does for the cards you mine while watching, and tags them `telly::premine`.
 
+A show's page also shows, for each episode with subtitles, the share of its words that are on cards you've studied in Anki, counted the same way. It's worked out when the page opens, with Anki open.
+
 ## How subtitles are matched
 
 Telly tries every file Jimaku has that could be the episode's, syncs each to the episode, and keeps the one that fits best.
@@ -95,14 +99,14 @@ Files timed to the TV broadcast, measured on episodes 1 to 40: the 23 that don't
 
 ## Whisper
 
-When Jimaku has nothing for an episode (or there's no key yet), its show's page offers **Make subtitles with Whisper**. It uses the whisper.cpp Tidepool downloads for voice input, with whisper.cpp's small multilingual model (190 MB, from Settings → Whisper). Whisper's subtitles are marked as machine-made.
+When Jimaku has nothing for an episode (or there's no key yet), its show's page offers **Make subtitles with Whisper**. It uses the whisper.cpp Tidepool downloads for voice input, with one of whisper.cpp's multilingual models, chosen and downloaded in Settings → Whisper: small (190 MB, the default), medium (539 MB), large v3 turbo (574 MB) or large v3 (1.1 GB). How much better the bigger ones hear Japanese hasn't been measured here. Whisper's subtitles are marked as machine-made.
 
 ## Where things go
 
 | | |
 |---|---|
 | `%LOCALAPPDATA%\Telly\telly.sqlite` | your shows, episodes, where you are, settings, the card queue |
-| `%LOCALAPPDATA%\Telly\media` | Telly's copies of episodes WebView2 can't play as they are |
+| `%LOCALAPPDATA%\Telly\media` | Telly's copies of episodes WebView2 can't play as they are. Settings → Disk space can move them to another folder, on an external drive, say |
 | `%LOCALAPPDATA%\Telly\subtitles` | synced subtitles, one file per episode |
 | `%LOCALAPPDATA%\Telly\names` | casts from AniList, their portraits, and the character dictionary |
 | `%APPDATA%\Telly\telly-log.sqlite` | what you watched, for Tidepool (counts only, never the text) |

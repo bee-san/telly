@@ -37,6 +37,8 @@
       timer = setTimeout(loop, busy ? 1500 : 6000);
     };
     loop();
+    // Each episode's share of known words is worked out again, from Anki as it is now.
+    call("wordShares", { show: id }).catch(() => {});
     const close = () => (menu = null);
     window.addEventListener("click", close);
     return () => {
@@ -110,7 +112,7 @@
 
   async function getModel() {
     await call("getWhisperModel");
-    toast({ key: "whispermodel", state: "working", title: "Getting Whisper’s Japanese model", text: "190 MB. The title bar shows how it’s going." });
+    toast({ key: "whispermodel", state: "working", title: "Getting Whisper’s Japanese model", text: "The title bar shows how it’s going." });
   }
 
   async function lookAgain() {
@@ -183,7 +185,7 @@
     </div>
 
     <div class="eps">
-      <div class="ep-row head"><span>#</span><span>Video</span><span>Subtitles</span><span>Sync</span><span class="right">Watched</span></div>
+      <div class="ep-row head"><span>#</span><span>Video</span><span>Subtitles</span><span>Sync</span><span class="right" title={view?.wordsError || "The share of each episode’s words that are on cards studied in Anki"}>Words known</span><span class="right">Watched</span></div>
       {#each view?.episodes ?? [] as ep (ep.id)}
         {@const m = mediaLabel(ep.mediaState, ep.mediaPlan, ep.mediaProgress)}
         {@const s = subsLabel(ep.subsState, ep.subsScore)}
@@ -198,6 +200,7 @@
             <span>{s.text}</span>
           </span>
           <span class="cell muted" title={ep.subsFile || ep.subsDetail}><span>{["synced", "check", "manual", "failed", "none"].includes(ep.subsState) ? ep.subsDetail || ep.subsFile : ""}</span></span>
+          <span class="ep-known" title={ep.words ? `${ep.words.known} of ${ep.words.uses} words` : ""}>{ep.words?.uses ? `${Math.round((100 * ep.words.known) / ep.words.uses)}%` : ""}</span>
           <span class="ep-state" class:ok={ep.watched}>
             {#if ep.watched}<i></i>Watched{:else if ep.position > 20}<i class="part"></i>{clock(ep.position)}{:else if ep.isNext}Next{/if}
             <span class="more" role="presentation" onclick={(e) => rowMenu(e, ep)}><Icon name="more" /></span>
@@ -259,9 +262,9 @@
   .sp-state .bar { width: 110px; }
   .sp-state :global(svg) { width: 14px; height: 14px; color: var(--ok); }
   .eps { border-top: 1px solid var(--rule); }
-  .ep-row { display: grid; grid-template-columns: 44px minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1.2fr) 120px; gap: 12px; align-items: center; padding: 9px 6px; border-bottom: 1px solid var(--rule); font-size: 13px; color: var(--ink-2); }
+  .ep-row { display: grid; grid-template-columns: 44px minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1.2fr) 96px 120px; gap: 12px; align-items: center; padding: 9px 6px; border-bottom: 1px solid var(--rule); font-size: 13px; color: var(--ink-2); }
   .ep-row.head { font: 600 12px/1 var(--font-ui); color: var(--ink-3); padding: 10px 6px; }
-  button.ep-row { all: unset; box-sizing: border-box; display: grid; grid-template-columns: 44px minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1.2fr) 120px; gap: 12px; align-items: center; padding: 9px 6px; border-bottom: 1px solid var(--rule); font-size: 13px; color: var(--ink-2); width: 100%; cursor: pointer; }
+  button.ep-row { all: unset; box-sizing: border-box; display: grid; grid-template-columns: 44px minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1.2fr) 96px 120px; gap: 12px; align-items: center; padding: 9px 6px; border-bottom: 1px solid var(--rule); font-size: 13px; color: var(--ink-2); width: 100%; cursor: pointer; }
   button.ep-row:hover { background: var(--surface); }
   button.ep-row.next { background: var(--surface); }
   button.ep-row:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
@@ -275,6 +278,7 @@
   .tone-bad span:last-child { color: var(--bad); }
   .tone-wait { color: var(--ink-3); }
   .muted { color: var(--ink-3); font-size: 12.5px; }
+  .ep-known { justify-self: end; font: 500 12.5px/1 var(--font-mono); color: var(--ink); font-variant-numeric: tabular-nums; }
   .ep-state { display: inline-flex; align-items: center; gap: 7px; justify-self: end; font-weight: 600; font-size: 12.5px; color: var(--ink-3); }
   .ep-state i { width: 7px; height: 7px; border-radius: 50%; background: var(--rule-2); }
   .ep-state i.part { background: var(--warn-dot); }

@@ -1,4 +1,5 @@
-//! What Telly asks Claude (claude.rs): "Explain this line" in the player, and
+//! What Telly asks Claude (claude.rs): "Explain this line" in the player, with
+//! follow-up questions about it, and
 //! "Previously on", a recap of the story so far, with the moments of it to
 //! play back. Answers are kept (db answers), so asking twice is instant.
 //!
@@ -157,9 +158,9 @@ fn names_line(backend: &Backend, show: &Show, text: &str) -> String {
     if named.is_empty() { String::new() } else { format!("\nCharacters named in them, from AniList: {}.", named.join(", ")) }
 }
 
-/// The prompt for explaining `lines[index]`: the line, what came just before
-/// it, and the next two lines.
-pub fn explain_prompt(show_title: &str, number: i64, lines: &[Line], index: usize, names: &str, answer_in: &str) -> String {
+/// `lines[index]` for a prompt: the line, what came just before it, and the
+/// next two lines.
+fn line_in_context(show_title: &str, number: i64, lines: &[Line], index: usize, names: &str) -> String {
     let line = &lines[index];
     let before: Vec<String> = spoken(&lines[..index])
         .filter(|(_, l)| l.start >= line.start - 90.0)
@@ -171,15 +172,61 @@ pub fn explain_prompt(show_title: &str, number: i64, lines: &[Line], index: usiz
         "I’m watching {show_title}, Episode {number}, an anime in Japanese, with Japanese subtitles.{names}\n\n\
          The subtitles just before the line, oldest first:\n<before>\n{before}\n</before>\n\n\
          The line:\n<line>{line}</line>\n\n\
-         The next subtitles:\n<after>\n{after}\n</after>\n\n\
-         Explain the line for a learner, in {answer_in}. First a natural translation of it, on a line of its own. \
-         Then, one per line, the words, grammar and expressions a learner might trip on, each as \"term (reading): explanation\", \
-         with the reading in hiragana for words with kanji. Leave out what a beginner already knows. \
-         Use the other subtitles only to understand the line. Keep it under 160 words.",
+         The next subtitles:\n<after>\n{after}\n</after>\n\n",
         before = before.join("\n"),
         line = one_line(&line.text),
         after = after.join("\n"),
     )
+}
+
+/// The prompt for explaining `lines[index]`.
+pub fn explain_prompt(show_title: &str, number: i64, lines: &[Line], index: usize, names: &str, answer_in: &str) -> String {
+    format!(
+        "{}Explain the line for a learner, in {answer_in}. First a natural translation of it, on a line of its own. \
+         Then, one per line, the words, grammar and expressions a learner might trip on, each as \"term (reading): explanation\", \
+         with the reading in hiragana for words with kanji. Leave out what a beginner already knows. \
+         Use the other subtitles only to understand the line. Keep it under 160 words.",
+        line_in_context(show_title, number, lines, index, names)
+    )
+}
+
+/// A follow-up question that was asked about a line, and its answer.
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+pub struct Exchange {
+    pub q: String,
+    pub a: String,
+}
+
+/// The prompt for a follow-up question about `lines[index]`. It carries the
+/// line, its explanation and the questions before, so it can be asked in any
+/// session: a kept explanation never went through the warm one.
+pub fn follow_up_prompt(context: &str, explanation: &str, thread: &[Exchange], question: &str, answer_in: &str) -> String {
+    let earlier: String = thread
+        .iter()
+        .map(|e| format!("I then asked:\n<question>{}</question>\nYou answered:\n<answer>\n{}\n</answer>\n\n", e.q.trim(), e.a.trim()))
+        .collect();
+    format!(
+        "{context}You explained the line to me like this:\n<explanation>\n{}\n</explanation>\n\n{earlier}\
+         Now I ask:\n<question>{}</question>\n\n\
+         Answer the question in {answer_in}, for a learner, in under 120 words. Use the other subtitles only to understand the line.",
+        explanation.trim(),
+        question.trim(),
+    )
+}
+
+/// A follow-up question about an explained line: an ask to follow. Asked in the warm session; not kept.
+pub fn follow_up(backend: &Arc<Backend>, episode_id: i64, index: usize, explanation: &str, thread: &[Exchange], question: &str) -> Result<Value> {
+    let episode = backend.db.episode(episode_id)?.ok_or_else(|| anyhow!("That episode isn’t in Telly any more"))?;
+    let show = backend.db.show(episode.show_id)?.ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?;
+    let lines = jobs::read_lines(backend, episode_id);
+    if index >= lines.len() {
+        return Err(anyhow!("That line isn’t in the subtitles any more"));
+    }
+    let near: String = lines[index.saturating_sub(12)..(index + 3).min(lines.len())].iter().map(|l| l.text.as_str()).collect();
+    let context = line_in_context(&show_title(&show), episode.number, &lines, index, &names_line(backend, &show, &near));
+    let prompt = follow_up_prompt(&context, explanation, thread, question, answer_in(backend));
+    let id = backend.asks.start(prompt, model(backend), EFFORT, true, |_| {});
+    Ok(json!({ "ask": id }))
 }
 
 /// "Explain this line": a kept answer, or an ask to follow.
@@ -642,6 +689,18 @@ mod tests {
         assert!(p.contains("<before>\nナツ！\nなんだよ\n</before>"));
         assert!(p.contains("<after>\nまた？\nうん\n</after>"));
         assert!(p.contains("in English") && p.contains("Episode 3"));
+    }
+
+    #[test]
+    fn a_follow_up_carries_the_line_its_explanation_and_the_questions_before() {
+        let lines = vec![line(1.0, 2.0, "ナツ！"), line(5.0, 6.0, "腹減った…"), line(7.0, 8.0, "また？")];
+        let context = line_in_context("『FAIRY TAIL』", 3, &lines, 1, "");
+        let thread = vec![Exchange { q: "Why no は?".into(), a: "It’s dropped in casual speech.".into() }];
+        let p = follow_up_prompt(&context, "I’m hungry…\n腹 (はら): belly", &thread, " Is 腹 rude? ", "English");
+        assert!(p.contains("<line>腹減った…</line>") && p.contains("<before>\nナツ！\n</before>"));
+        assert!(p.contains("<explanation>\nI’m hungry…\n腹 (はら): belly\n</explanation>"));
+        assert!(p.contains("<question>Why no は?</question>\nYou answered:\n<answer>\nIt’s dropped in casual speech.\n</answer>"));
+        assert!(p.contains("Now I ask:\n<question>Is 腹 rude?</question>") && p.contains("in English"));
     }
 
     #[test]

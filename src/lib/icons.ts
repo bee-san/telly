@@ -17,6 +17,8 @@ export const icons = {
   subs: s(`<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M7 14.5h4M13 14.5h4M7 11h10"/>`),
   blur: s(`<path d="M4 12h3M17 12h3M12 4v3M12 17v3"/><circle cx="12" cy="12" r="3.2"/>`),
   transcript: s(`<path d="M5 6h14M5 10h14M5 14h9M5 18h6"/>`),
+  volume: s(`<path d="M4 9.5v5h3.5l4.5 4v-13l-4.5 4z"/><path d="M15.5 9a4.2 4.2 0 0 1 0 6M18.2 6.5a7.8 7.8 0 0 1 0 11"/>`),
+  muted: s(`<path d="M4 9.5v5h3.5l4.5 4v-13l-4.5 4z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/>`),
   full: s(`<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>`),
   exitFull: s(`<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>`),
   more: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5.5" cy="12" r="1.7" fill="currentColor"/><circle cx="12" cy="12" r="1.7" fill="currentColor"/><circle cx="18.5" cy="12" r="1.7" fill="currentColor"/></svg>`,

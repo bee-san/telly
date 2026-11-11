@@ -8,6 +8,7 @@ use crate::cards::{self, Event};
 use crate::db::{Db, Episode, NewShow, Show};
 use crate::jobs::{self, Jobs, Task};
 use crate::log::{Log, Sitting};
+use crate::media;
 use crate::mining::{self, Mining};
 use crate::names::{self, Names};
 use crate::own_hachidori::{self, Own};
@@ -163,6 +164,8 @@ pub struct EpisodeRow {
     pub file: String,
     pub watched: bool,
     pub is_next: bool,
+    /// How much of its words you know, once worked out (premine.rs).
+    pub words: Option<premine::Share>,
 }
 
 /// What's being worked on, for the title bar.
@@ -269,7 +272,7 @@ impl Backend {
             let _ = db.set_setting("hachidori.link", &json!(false));
             let _ = db.set_setting("hachidori.own", &json!(OWN_HACHIDORI));
         }
-        let found = tools::find(&dirs.tools(), &dirs.models(), &db.setting_str("tools.ffmpeg"));
+        let found = tools::find(&dirs.tools(), &dirs.models(), &db.setting_str("tools.ffmpeg"), &db.setting_str("whisper.model"));
         Ok(Backend {
             db,
             log,
@@ -311,6 +314,26 @@ impl Backend {
         let _ = self.mining.set(m);
     }
 
+    /// Where Telly's copies of episodes go: the folder Settings chose
+    /// ("media.folder", on an external drive, say), else Telly's own.
+    pub fn media_dir(&self) -> PathBuf {
+        match self.db.setting_str("media.folder") {
+            folder if folder.is_empty() => self.dirs.media(),
+            folder => PathBuf::from(folder),
+        }
+    }
+
+    /// Chooses the copies folder (None: Telly's own again) and moves the copies there.
+    fn set_media_folder(self: &Arc<Self>, folder: Option<String>) -> Result<Value> {
+        let folder = folder.map(|f| f.trim().to_string()).filter(|f| !f.is_empty());
+        if let Some(folder) = &folder {
+            std::fs::create_dir_all(folder).map_err(|e| anyhow!("Telly can’t use {folder}: {e}. Choose another folder."))?;
+        }
+        self.db.set_setting("media.folder", &folder.map(Value::String).unwrap_or(Value::Null))?;
+        jobs::move_copies(self.clone());
+        Ok(self.status())
+    }
+
     pub fn tools(&self) -> Tools {
         self.tools.read().map(|t| t.clone()).unwrap_or_default()
     }
@@ -320,7 +343,7 @@ impl Backend {
     }
 
     fn refind_tools(&self) {
-        let found = tools::find(&self.dirs.tools(), &self.dirs.models(), &self.db.setting_str("tools.ffmpeg"));
+        let found = tools::find(&self.dirs.tools(), &self.dirs.models(), &self.db.setting_str("tools.ffmpeg"), &self.db.setting_str("whisper.model"));
         if let Ok(mut t) = self.tools.write() {
             *t = found;
         }
@@ -450,9 +473,11 @@ impl Backend {
         let cards_by_show = self.db.cards_per_show().unwrap_or_default();
         let episodes = self.db.episodes(id)?;
         let next_id = jobs::next_episode(&episodes).map(|e| e.id);
+        let (shares, words_error) = premine::shares(self);
         let rows: Vec<EpisodeRow> = episodes
             .into_iter()
             .map(|e| EpisodeRow {
+                words: shares.get(&e.id).copied(),
                 file: Path::new(&e.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                 watched: e.watched_at.is_some(),
                 is_next: Some(e.id) == next_id,
@@ -462,7 +487,7 @@ impl Backend {
         let card = self.card(show, &cards_by_show)?;
         let tools = self.tools();
         let whisper = json!({ "cli": tools.whisper.is_some(), "model": tools.whisper_model.is_some() });
-        Ok(json!({ "card": card, "episodes": rows, "activity": self.activity(), "whisper": whisper }))
+        Ok(json!({ "card": card, "episodes": rows, "activity": self.activity(), "whisper": whisper, "wordsError": words_error }))
     }
 
     fn scan(&self, folder: &str) -> Result<Value> {
@@ -597,9 +622,10 @@ impl Backend {
         let episodes = self.db.episodes(id)?;
         self.db.remove_show(id)?;
         // Only Telly's own files go; your rips stay where they are.
-        let _ = std::fs::remove_dir_all(self.dirs.media().join(id.to_string()));
+        let _ = std::fs::remove_dir_all(self.media_dir().join(id.to_string()));
         for e in episodes {
             let _ = std::fs::remove_file(jobs::lines_path(self, e.id));
+            let _ = std::fs::remove_file(jobs::translation_path(self, e.id));
             let _ = std::fs::remove_file(premine::words_path(self, e.id));
         }
         let _ = std::fs::remove_file(self.cover_path(id));
@@ -645,7 +671,7 @@ impl Backend {
                 })
                 .unwrap_or(0)
         }
-        size(&self.dirs.media())
+        size(&self.media_dir())
     }
 
     fn episode_view(&self, id: i64) -> Result<Value> {
@@ -655,10 +681,29 @@ impl Backend {
         let i = episodes.iter().position(|e| e.id == id).unwrap_or(0);
         let lite = |e: &Episode| json!({ "id": e.id, "number": e.number, "ready": e.media_state == "ready", "mediaState": e.media_state, "mediaProgress": e.media_progress });
         let lines: Vec<Line> = jobs::read_lines(self, id);
+        // From what ffprobe found in the rip: its chapters, its opening and its audio tracks.
+        let probe = jobs::stored_probe(self, id).unwrap_or_default();
+        let audio: Vec<String> = probe
+            .audio
+            .iter()
+            .enumerate()
+            .map(|(i, a)| {
+                let language = match jobs::language_name(&a.language).trim() {
+                    "" if a.language.is_empty() || a.language == "und" => format!("Track {}", i + 1),
+                    "" => a.language.clone(),
+                    name => name.to_string(),
+                };
+                if a.title.is_empty() || a.title.eq_ignore_ascii_case(&language) { language } else { format!("{language} · {}", a.title) }
+            })
+            .collect();
         Ok(json!({
             "show": show,
+            "chapters": probe.chapters,
+            "opening": media::opening(&probe).map(|(start, end)| json!({ "start": start, "end": end })),
+            "audio": audio,
+            "audioTrack": jobs::playing_track(&episode, &probe),
+            "src": format!("/ep/{id}?v={}-{}", episode.media_plan, episode.audio_track.unwrap_or(-1)),
             "episode": episode,
-            "src": format!("/ep/{id}?v={}", episode.media_plan),
             "lines": lines,
             "prev": if i > 0 { Some(lite(&episodes[i - 1])) } else { None },
             "next": episodes.get(i + 1).map(lite),
@@ -698,6 +743,33 @@ impl Backend {
             view["resume"] = ask::recap_state(self, &episode, Some(episode.position));
         }
         Ok(view)
+    }
+
+    /// Plays the rip's audio track `track` in this episode from now on, and in
+    /// the show's later episodes as they're got ready again. The Japanese
+    /// track stays the default: picking it forgets the choice.
+    fn set_audio(&self, id: i64, track: usize) -> Result<Value> {
+        let episode = self.episode_or_err(id)?;
+        let probe = jobs::stored_probe(self, id).ok_or_else(|| anyhow!("Telly hasn’t read this episode’s audio tracks yet"))?;
+        if track >= probe.audio.len() {
+            return Err(anyhow!("This episode has no audio track {}", track + 1));
+        }
+        let ffmpeg = self.tools().ffmpeg.ok_or_else(|| anyhow!("Telly needs ffmpeg for this. Choose it in Settings."))?;
+        let chosen = if track == media::japanese_audio(&probe) { Value::Null } else { json!(track) };
+        self.db.set_setting(&jobs::audio_setting(episode.show_id), &chosen)?;
+        if jobs::playing_track(&episode, &probe) != track {
+            jobs::change_audio(self, &ffmpeg, &episode, &probe, track)?;
+        }
+        // Later episodes that are ready with another track are got ready again; their copies keep their picture.
+        for later in self.db.episodes(episode.show_id)?.into_iter().filter(|e| e.number > episode.number && e.media_state == "ready") {
+            if let Some(p) = jobs::stored_probe(self, later.id) {
+                if jobs::playing_track(&later, &p) != jobs::audio_track(self, later.show_id, &p) {
+                    self.db.media_requeue(later.id)?;
+                }
+            }
+        }
+        self.jobs.poke();
+        self.episode_view(id)
     }
 
     fn end_sitting(&self, p: Option<Playing>) {
@@ -792,6 +864,7 @@ impl Backend {
             "anki": anki,
             "ankiUrl": url,
             "dataDir": self.dirs.local,
+            "mediaDir": self.media_dir(),
             "logPath": self.log.path,
             "spaceUsed": self.space_used(),
             "fields": {
@@ -806,7 +879,7 @@ impl Backend {
     fn set_setting(&self, key: &str, value: &Value) -> Result<Value> {
         self.db.set_setting(key, value)?;
         match key {
-            "tools.ffmpeg" => self.refind_tools(),
+            "tools.ffmpeg" | "whisper.model" => self.refind_tools(),
             "jimaku.key" => {
                 self.jobs.forget_jimaku();
                 self.db.requeue_subs(None, &["nokey", "none", "failed"])?;
@@ -924,6 +997,7 @@ impl Backend {
                 Ok(json!({}))
             }
             "freeSpace" => self.free_space(arg(&args, "show")?),
+            "setMediaFolder" => self.set_media_folder(arg(&args, "folder")?),
             "whisperSubs" => {
                 let n = self.db.queue_whisper(arg(&args, "show")?, arg(&args, "id")?)?;
                 self.jobs.poke();
@@ -933,6 +1007,8 @@ impl Backend {
                 jobs::get_whisper_model(self.clone());
                 Ok(json!({}))
             }
+            "setAudio" => self.set_audio(arg(&args, "id")?, arg(&args, "track")?),
+            "translation" => to_value(jobs::translation(self, &self.episode_or_err(arg(&args, "id")?)?)?),
             "mineLine" => {
                 let job = cards::add_line_to_last_card(self, arg(&args, "id")?, arg(&args, "start")?, arg(&args, "end")?, &arg::<String>(&args, "text")?)?;
                 Ok(json!({ "job": job }))
@@ -967,6 +1043,18 @@ impl Backend {
                 let show = self.db.show(arg(&args, "id")?)?.ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?;
                 to_value(names::show_names(self, &show))
             }
+            "wordShares" => {
+                premine::start_shares(self, arg(&args, "show")?);
+                Ok(json!({}))
+            }
+            "followUp" => ask::follow_up(
+                self,
+                arg(&args, "id")?,
+                arg(&args, "index")?,
+                &arg::<String>(&args, "explanation")?,
+                &arg::<Vec<ask::Exchange>>(&args, "thread")?,
+                &arg::<String>(&args, "question")?,
+            ),
             "premine" => to_value(premine::start_list(self, arg(&args, "show")?)?),
             "premineStatus" => to_value(premine::status(self)),
             "ownHachidori" => to_value(own_hachidori::report(self)),

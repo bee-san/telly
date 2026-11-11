@@ -20,7 +20,7 @@ fn main() {
     let all = std::env::args().any(|a| a == "--all");
     let args: Vec<String> = std::env::args().skip(1).filter(|a| a != "--all").collect();
     let video = Path::new(&args[0]);
-    let found = tools::find(Path::new("."), Path::new("."), "");
+    let found = tools::find(Path::new("."), Path::new("."), "", "");
     let (ffmpeg, ffprobe) = (found.ffmpeg.expect("ffmpeg"), found.ffprobe.expect("ffprobe"));
     let probe = media::probe(&ffprobe, video).expect("probe");
     let jp = media::japanese_audio(&probe);

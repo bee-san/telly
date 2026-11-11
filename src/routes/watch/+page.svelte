@@ -30,6 +30,17 @@
   let countdown = $state<number | null>(null);
   let note = $state("");
   let subMenu = $state(false);
+  let audioMenu = $state(false);
+  let help = $state(false);
+  let volume = $state(1);
+  let muted = $state(false);
+  /** Where the pointer is over the seek bar, in seconds. */
+  let hoverAt = $state<number | null>(null);
+  /** The rip's own English subtitles (null until they're read), shown while Tab is held. */
+  let translation = $state<Line[] | null>(null);
+  let showTranslation = $state(false);
+  /** After a change of audio track: where to carry on from, and whether it was paused. */
+  let reloadAt: { t: number; paused: boolean } | null = null;
   let videoError = $state("");
   let settings = $state<Record<string, unknown>>({});
   // Filters (V): the picture drawn through one, on a canvas over the video. Kept for each show.
@@ -43,6 +54,13 @@
   let explaining = $state<{ index: number; text: string; done: boolean; error: string; ask: number } | null>(null);
   let explainResume = false;
   let explainPoll: ReturnType<typeof setTimeout> | null = null;
+  // Follow-up questions about the line explained, and their answers.
+  let thread = $state<{ q: string; a: string; done: boolean; error: string; ask: number }[]>([]);
+  let question = $state("");
+  let threadPoll: ReturnType<typeof setTimeout> | null = null;
+  /** Goes up when the thread is dropped, so an answer on its way isn't followed. */
+  let threadRun = 0;
+  let exBody = $state<HTMLDivElement | null>(null);
   // Previously on (P): the moments of the story so far, and the recap card.
   // `full` is the whole story; without it, only the episode just left.
   let recap = $state<{ state: "writing" | "ready" | "error"; error: string; data: Recap | null; full: boolean } | null>(null);
@@ -79,6 +97,11 @@
   const dialogue = $derived(lines.filter((l) => !l.sign));
   const t = $derived(now - nudge / 1000);
   const active = $derived(dialogue.filter((l) => l.start <= t && t < l.end));
+  /** The rip's English lines showing now. They're timed to the rip, so the nudge doesn't move them. */
+  const translated = $derived(showTranslation ? (translation ?? []).filter((l) => l.start <= now && now < l.end) : []);
+  /** Chapter starts to mark on the seek bar. */
+  const chapterMarks = $derived((view?.chapters ?? []).filter((c) => c.start > 0.5 && c.start < duration));
+  const inOpening = $derived(!!view?.opening && now >= view.opening.start && now < view.opening.end - 1);
   /** The last line that has started: what ← → and ↓ move from. */
   const current = $derived.by(() => {
     let found = -1;
@@ -201,6 +224,15 @@
       nudge = v.episode.subsNudgeMs;
       subsOn = settings["player.subtitles"] !== false;
       blur = settings["player.blur"] === true;
+      volume = typeof settings["player.volume"] === "number" ? (settings["player.volume"] as number) : 1;
+      muted = settings["player.muted"] === true;
+      translation = null;
+      showTranslation = false;
+      call<Line[]>("translation", { id })
+        .catch(() => [])
+        .then((lines) => {
+          if (view?.episode.id === id) translation = lines;
+        });
       filter = filters.find((f) => f.id === settings[`player.filter.${v.show.id}`])?.id ?? "none";
       await setWindowTitle(`${v.show.title} · Episode ${v.episode.number} — Telly`);
       if (v.episode.mediaState !== "ready") {
@@ -244,11 +276,13 @@
   function onLoaded() {
     if (!video) return;
     duration = video.duration || view?.episode.duration || 0;
-    const at = startAt();
+    const reload = reloadAt;
+    reloadAt = null;
+    const at = reload ? reload.t : startAt();
     if (at > 0) video.currentTime = at;
     lastT = video.currentTime;
     video.playbackRate = rate;
-    if (!holdPlay) video.play().catch(() => {});
+    if (!holdPlay && !reload?.paused) video.play().catch(() => {});
   }
 
   // ---- the frame loop: subtitles and the lines that played -------------------
@@ -352,6 +386,92 @@
     clearResume();
     if (video.paused) video.play().catch(() => {});
     else video.pause();
+  }
+
+  // A click on the picture pauses, a double-click goes fullscreen. The click
+  // waits a moment for a second one, so a double-click doesn't pause and play.
+  let clickTimer: ReturnType<typeof setTimeout> | null = null;
+  let clickToggled = false;
+
+  function picClick(e: MouseEvent) {
+    if (e.detail !== 1) return;
+    clickToggled = false;
+    clickTimer = setTimeout(() => {
+      clickTimer = null;
+      clickToggled = true;
+      togglePlay();
+    }, 220);
+  }
+
+  function picDoubleClick() {
+    if (clickTimer) clearTimeout(clickTimer);
+    // A slow double-click: its first click already paused or played, so that's undone.
+    else if (clickToggled) togglePlay();
+    clickTimer = null;
+    clickToggled = false;
+    toggleFull();
+  }
+
+  // ---- sound ---------------------------------------------------------------------
+
+  function setVolume(v: number) {
+    volume = Math.round(Math.min(1, Math.max(0, v)) * 20) / 20;
+    if (volume > 0) muted = false;
+  }
+
+  function saveSound() {
+    call("setSetting", { key: "player.volume", value: volume }).catch(() => {});
+    call("setSetting", { key: "player.muted", value: muted }).catch(() => {});
+  }
+
+  /** The - and = keys. */
+  function stepVolume(by: number) {
+    setVolume(volume + by);
+    flash(`Volume ${Math.round(volume * 100)}%`);
+    saveSound();
+  }
+
+  function toggleMute() {
+    muted = !muted;
+    flash(muted ? "Muted" : `Volume ${Math.round(volume * 100)}%`);
+    saveSound();
+  }
+
+  async function useAudio(track: number) {
+    audioMenu = false;
+    if (!view || !video || track === view.audioTrack) return;
+    const name = view.audio[track];
+    toast({ key: "audio", state: "working", title: "Changing audio", text: name });
+    try {
+      const v = await call<PlayerView>("setAudio", { id: view.episode.id, track });
+      if (view.episode.id !== v.episode.id) return;
+      reloadAt = { t: video.currentTime, paused: video.paused };
+      view.episode = v.episode;
+      view.audioTrack = v.audioTrack;
+      view.src = v.src;
+      toast({ key: "audio", state: "done", title: "Audio changed", text: name });
+    } catch (e) {
+      toast({ key: "audio", state: "failed", title: "Couldn’t change audio", text: errorText(e) });
+    }
+  }
+
+  function toggleSubs() {
+    subsOn = !subsOn;
+    flash(subsOn ? "Subtitles on" : "Subtitles off");
+    call("setSetting", { key: "player.subtitles", value: subsOn }).catch(() => {});
+  }
+
+  function toggleBlur() {
+    blur = !blur;
+    flash(blur ? "Subtitles blurred until hovered" : "Blur off");
+    call("setSetting", { key: "player.blur", value: blur }).catch(() => {});
+  }
+
+  /** Tab down: the rip's English subtitles show until it's let go. */
+  function holdTranslation() {
+    if (translation === null) flash("Reading the rip’s English subtitles…");
+    else if (!translation.length) flash("This rip has no English text subtitles");
+    else showTranslation = true;
   }
 
   // ---- lines ---------------------------------------------------------------------
@@ -539,12 +659,56 @@
     }, 250);
   }
 
-  /** Stops following an answer, and Claude writing it if it isn’t done. */
+  /** Stops following an answer, and Claude writing it if it isn’t done. The follow-ups go with it. */
   function stopExplain() {
     if (explainPoll) clearTimeout(explainPoll);
     explainPoll = null;
     if (explaining && !explaining.done && explaining.ask) call("stopAsk", { ask: explaining.ask }).catch(() => {});
+    if (threadPoll) clearTimeout(threadPoll);
+    threadPoll = null;
+    threadRun++;
+    for (const item of thread) if (!item.done && item.ask) call("stopAsk", { ask: item.ask }).catch(() => {});
+    thread = [];
+    question = "";
   }
+
+  /** Asks Claude the question in the box, about the line explained. */
+  async function askFollowUp() {
+    const q = question.trim();
+    if (!q || !view || !explaining?.done || explaining.error || thread.some((item) => !item.done)) return;
+    const run = threadRun;
+    const earlier = thread.filter((item) => !item.error).map((item) => ({ q: item.q, a: item.a }));
+    question = "";
+    thread.push({ q, a: "", done: false, error: "", ask: 0 });
+    const at = thread.length - 1;
+    try {
+      const r = await call<AskProgress>("followUp", { id: view.episode.id, index: explaining.index, explanation: explaining.text, thread: earlier, question: q });
+      if (run !== threadRun) return;
+      thread[at].ask = r.ask ?? 0;
+      followThread(at, run);
+    } catch (e) {
+      if (run === threadRun) thread[at] = { ...thread[at], done: true, error: errorText(e) };
+    }
+  }
+
+  function followThread(at: number, run: number) {
+    threadPoll = setTimeout(async () => {
+      if (run !== threadRun) return;
+      try {
+        const r = await call<AskProgress>("ask", { ask: thread[at].ask });
+        if (run !== threadRun) return;
+        thread[at] = { ...thread[at], a: r.text ?? "", done: !!r.done, error: r.error ?? "" };
+        if (!r.done) followThread(at, run);
+      } catch (e) {
+        if (run === threadRun) thread[at] = { ...thread[at], done: true, error: errorText(e) };
+      }
+    }, 250);
+  }
+
+  // Keep the newest follow-up in view as it's written.
+  $effect(() => {
+    if (thread.length && thread[thread.length - 1].a !== undefined) exBody?.scrollTo({ top: exBody.scrollHeight });
+  });
 
   function closeExplain(resume = true) {
     stopExplain();
@@ -736,7 +900,7 @@
     idle = false;
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
-      if (video && !video.paused && !subMenu) idle = true;
+      if (video && !video.paused && !subMenu && !audioMenu && !help) idle = true;
     }, 2500);
   }
 
@@ -745,6 +909,10 @@
     if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     wake();
+    if (help) {
+      if (e.key === "?" || e.key === "Escape") help = false;
+      return;
+    }
     // The recap card, or its moments, takes Space, Enter, P and Esc.
     if (recap) {
       if (e.key === " " || e.key === "Enter" || e.key === "Escape") {
@@ -778,15 +946,28 @@
         break;
       case "s":
       case "S":
-        subsOn = !subsOn;
-        flash(subsOn ? "Subtitles on" : "Subtitles off");
-        call("setSetting", { key: "player.subtitles", value: subsOn }).catch(() => {});
+        toggleSubs();
         break;
       case "b":
       case "B":
-        blur = !blur;
-        flash(blur ? "Subtitles blurred until hovered" : "Blur off");
-        call("setSetting", { key: "player.blur", value: blur }).catch(() => {});
+        toggleBlur();
+        break;
+      case "-":
+        stepVolume(-0.05);
+        break;
+      case "=":
+      case "+":
+        stepVolume(0.05);
+        break;
+      case "0":
+        toggleMute();
+        break;
+      case "Tab":
+        e.preventDefault();
+        if (!e.repeat) holdTranslation();
+        break;
+      case "?":
+        help = true;
         break;
       case "t":
       case "T":
@@ -832,10 +1013,38 @@
         else if (countdown !== null) stopCountdown();
         else if (subMenu) subMenu = false;
         else if (filterPanel) filterPanel = false;
+        else if (audioMenu) audioMenu = false;
         else if (app.fullscreen) toggleFull();
         break;
     }
   }
+
+  function onKeyUp(e: KeyboardEvent) {
+    if (e.key === "Tab") showTranslation = false;
+  }
+  const dropTranslation = () => (showTranslation = false);
+
+  /** The keys, for the list ? shows. */
+  const SHORTCUTS: [string, string][] = [
+    ["Space or K", "Play or pause"],
+    ["← and →", "Previous and next line"],
+    ["↓", "Replay the line"],
+    ["- and =", "Volume down and up"],
+    ["0", "Mute"],
+    ["[ and ]", "Slower and faster"],
+    ["S", "Show subtitles"],
+    ["B", "Blur subtitles until hovered"],
+    ["Hold Tab", "Show the rip’s English subtitles"],
+    ["Z and X", "Subtitles earlier and later"],
+    ["T", "Show transcript"],
+    ["V", "Show filters"],
+    ["M", "Add the line to the last card"],
+    ["E", "Explain the line"],
+    ["P", "Show Previously on"],
+    ["F", "Fullscreen"],
+    ["Esc", "Close, or leave fullscreen"],
+    ["?", "Show shortcuts"],
+  ];
 
   // Keep the transcript on the line playing.
   $effect(() => {
@@ -866,6 +1075,8 @@
     frame = requestAnimationFrame(loop);
     tickTimer = setInterval(sendTick, 1000);
     window.addEventListener("keydown", onKey);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", dropTranslation);
     window.addEventListener("hachidori-popup-shown", popupShown);
     window.addEventListener("hachidori-popup-hidden", popupHidden);
     const unload = () => {
@@ -884,6 +1095,9 @@
     stopCountdown();
     clearResume();
     window.removeEventListener("keydown", onKey);
+    window.removeEventListener("keyup", onKeyUp);
+    window.removeEventListener("blur", dropTranslation);
+    if (clickTimer) clearTimeout(clickTimer);
     window.removeEventListener("hachidori-popup-shown", popupShown);
     window.removeEventListener("hachidori-popup-hidden", popupHidden);
     close();
@@ -904,15 +1118,15 @@
     return e.subsDetail || "No subtitles";
   });
 
-  function seekFromPointer(e: PointerEvent) {
-    const el = e.currentTarget as HTMLElement;
-    const r = el.getBoundingClientRect();
-    seekTo(((e.clientX - r.left) / r.width) * (duration || 0));
+  /** Where the pointer is along the seek bar, in seconds. */
+  function pointerTime(e: PointerEvent): number {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * (duration || 0);
   }
 </script>
 
 <div class="player" class:idle class:paused onpointermove={wake} role="application" aria-label="Player">
-  <div class="pic" onpointermove={picMove} onpointerleave={clearResume} onclick={togglePlay} ondblclick={toggleFull} role="presentation">
+  <div class="pic" onpointermove={picMove} onpointerleave={clearResume} onclick={picClick} ondblclick={picDoubleClick} role="presentation">
     {#if view && view.episode.mediaState === "ready"}
       <!-- svelte-ignore a11y_media_has_caption -->
       <video
@@ -921,6 +1135,8 @@
         crossorigin="anonymous"
         src={mediaUrl(view.src)}
         preload="auto"
+        bind:volume
+        bind:muted
         onloadedmetadata={onLoaded}
         onplay={() => { paused = false; wake(); }}
         onpause={() => (paused = true)}
@@ -934,6 +1150,9 @@
   </div>
 
   <div class="subs" class:off={!subsOn} style:--sub-size="{subSize}px">
+    {#each translated as line (line.start + line.text)}
+      <p class="tr-line">{line.speaker ? `(${line.speaker}) ` : ""}{line.text}</p>
+    {/each}
     {#each active as line (line.start + line.text)}
       <p class="sub-line" class:blur lang="ja" onpointerenter={hoverText}>
         {#if line.speaker}<span class="speaker">{line.speaker}</span>{/if}{@html lineHtml(line)}
@@ -943,6 +1162,9 @@
 
   {#if pausedByHover}<span class="paused-note">Paused for reading · Move back to the picture to continue</span>{/if}
   {#if note}<span class="flash">{note}</span>{/if}
+  {#if inOpening && view?.opening && !recap && !ended}
+    <button type="button" class="skip" class:aside={transcript || filterPanel || !!explaining} onclick={() => view?.opening && seekTo(view.opening.end)}>Skip opening</button>
+  {/if}
 
   <div class="ptop">
     <button type="button" class="pbtn" aria-label="Back to library" title="Back to library" onclick={() => leave("/")}><Icon name="back" /></button>
@@ -970,10 +1192,19 @@
 
   <div class="pctl">
     <div class="seek" role="slider" tabindex="-1" aria-label="Seek" aria-valuemin={0} aria-valuemax={duration} aria-valuenow={now}
-      onpointerdown={(e) => { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); seekFromPointer(e); }}
-      onpointermove={(e) => e.buttons === 1 && seekFromPointer(e)}>
+      onpointerdown={(e) => { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); seekTo(pointerTime(e)); }}
+      onpointermove={(e) => { hoverAt = pointerTime(e); if (e.buttons === 1) seekTo(hoverAt); }}
+      onpointerleave={() => (hoverAt = null)}>
+      {#if duration > 0}
+        <!-- Where the lines are. -->
+        <svg class="marks" viewBox="0 0 {duration} 1" preserveAspectRatio="none" aria-hidden="true">
+          {#each dialogue as l, i (i)}<rect x={l.start + nudge / 1000} y="0" width={l.end - l.start} height="1" />{/each}
+        </svg>
+      {/if}
       <span class="track"><i style:width="{duration ? (100 * now) / duration : 0}%"></i></span>
+      {#each chapterMarks as c (c.start)}<span class="chapter" style:left="{(100 * c.start) / duration}%"></span>{/each}
       <span class="knob" style:left="{duration ? (100 * now) / duration : 0}%"></span>
+      {#if hoverAt !== null && duration > 0}<span class="seek-time" style:left="{(100 * hoverAt) / duration}%">{clock(hoverAt)}</span>{/if}
     </div>
     <div class="prow">
       <button type="button" class="pbtn big" aria-label={paused ? "Play" : "Pause"} onclick={togglePlay}><Icon name={paused ? "play" : "pause"} /></button>
@@ -981,18 +1212,34 @@
       <button type="button" class="pbtn" aria-label="Replay the line" title="Replay the line (↓)" onclick={replayLine}><Icon name="replay" /></button>
       <button type="button" class="pbtn" aria-label="Next line" title="Next line (→)" onclick={nextLine}><Icon name="nextLine" /></button>
       <span class="ptime">{clock(now)} / {clock(duration)}</span>
+      <button type="button" class="pbtn" aria-label={muted ? "Unmute" : "Mute"} title="{muted ? "Unmute" : "Mute"} (0)" onclick={toggleMute}><Icon name={muted || volume === 0 ? "muted" : "volume"} /></button>
+      <input class="vol" type="range" min="0" max="1" step="0.05" value={muted ? 0 : volume} aria-label="Volume" title="Volume (- and =)"
+        oninput={(e) => setVolume(Number(e.currentTarget.value))} onchange={(e) => { saveSound(); e.currentTarget.blur(); }} />
       <span class="grow"></span>
       {#if rate !== 1}<button type="button" class="pbtn txt" title="Speed ([ and ])" onclick={() => setRate(1)}>{rate.toFixed(1)}×</button>{/if}
-      <button type="button" class="pbtn" class:on={subsOn} aria-label="Subtitles" title="Subtitles (S)" onclick={() => (subsOn = !subsOn)}><Icon name="subs" /></button>
-      <button type="button" class="pbtn" class:on={blur} aria-label="Blur until hovered" title="Blur until hovered (B)" onclick={() => (blur = !blur)}><Icon name="blur" /></button>
+      <button type="button" class="pbtn" class:on={subsOn} aria-label="Subtitles" title="Subtitles (S)" onclick={toggleSubs}><Icon name="subs" /></button>
+      <button type="button" class="pbtn" class:on={blur} aria-label="Blur until hovered" title="Blur until hovered (B)" onclick={toggleBlur}><Icon name="blur" /></button>
       <button type="button" class="pbtn" class:on={transcript} aria-label="Transcript" title="Transcript (T)" onclick={() => (transcript = !transcript)}><Icon name="transcript" /></button>
       <button type="button" class="pbtn txt" class:on={!!explaining} title="Explain the line with Claude (E)" onclick={() => explainLine()}>Explain</button>
       {#if canRecap}
         <button type="button" class="pbtn txt" title="Previously on (P)" onclick={() => openRecap()}>Recap</button>
       {/if}
       <button type="button" class="pbtn txt" class:on={filterPanel} aria-expanded={filterPanel} title="Filters (V)" onclick={() => (filterPanel = !filterPanel)}>Filters</button>
+      {#if view && view.audio.length > 1}
+        <span class="menuwrap">
+          <button type="button" class="pbtn txt" class:on={audioMenu} aria-haspopup="menu" aria-expanded={audioMenu} title="Choose the audio track" onclick={() => { audioMenu = !audioMenu; subMenu = false; }}>Audio ▾</button>
+          {#if audioMenu}
+            <div class="submenu" role="menu">
+              <span class="sm-h">Audio track for this show</span>
+              {#each view.audio as name, i (i)}
+                <button type="button" class="sm-file" class:on={i === view.audioTrack} role="menuitemradio" aria-checked={i === view.audioTrack} onclick={() => useAudio(i)}><span>{name}</span></button>
+              {/each}
+            </div>
+          {/if}
+        </span>
+      {/if}
       <span class="menuwrap">
-        <button type="button" class="pbtn txt" class:on={subMenu} aria-haspopup="menu" aria-expanded={subMenu} title="Fix the subtitle timing" onclick={() => (subMenu = !subMenu)}>Sync ▾</button>
+        <button type="button" class="pbtn txt" class:on={subMenu} aria-haspopup="menu" aria-expanded={subMenu} title="Fix the subtitle timing" onclick={() => { subMenu = !subMenu; audioMenu = false; }}>Sync ▾</button>
         {#if subMenu && view}
           <div class="submenu" role="menu">
             <span class="sm-h">Nudge every line by 0.1 seconds (Z and X)</span>
@@ -1017,6 +1264,7 @@
           </div>
         {/if}
       </span>
+      <button type="button" class="pbtn txt" class:on={help} aria-label="Show shortcuts" title="Show shortcuts (?)" onclick={() => (help = !help)}>?</button>
       <button type="button" class="pbtn" aria-label="Fullscreen" title="Fullscreen (F)" onclick={toggleFull}><Icon name={app.fullscreen ? "exitFull" : "full"} /></button>
     </div>
   </div>
@@ -1056,7 +1304,7 @@
   {#if explaining && view}
     <aside class="tx ex" aria-label="Explain this line">
       <div class="tx-head"><b>Explain line</b><button type="button" class="ex-close" title="Close (E)" onclick={() => closeExplain()}>Close</button></div>
-      <div class="ex-body scroll">
+      <div class="ex-body scroll" bind:this={exBody}>
         {#if lines[explaining.index]}<p class="ex-line" lang="ja" onpointerenter={hoverText}>{@html lineHtml(lines[explaining.index])}</p>{/if}
         {#if explaining.error}
           <p class="ex-err">{explaining.error}</p>
@@ -1073,10 +1321,39 @@
             </dl>
           {/if}
           {#if !explaining.done}<p class="ex-wait">…</p>{/if}
+          {#each thread as item, k (k)}
+            <p class="ex-q">{item.q}</p>
+            {#if item.error}
+              <p class="ex-err">{item.error}</p>
+            {:else}
+              <p class="ex-a" onpointerenter={hoverText}>{item.a || "Asking Claude…"}</p>
+            {/if}
+          {/each}
         {/if}
       </div>
+      {#if explaining.done && !explaining.error}
+        <form class="ex-ask" onsubmit={(e) => { e.preventDefault(); askFollowUp(); }}>
+          <input bind:value={question} placeholder="Ask about this line" aria-label="Follow-up question" />
+          <button type="submit" disabled={!question.trim() || thread.some((item) => !item.done)}>Ask</button>
+        </form>
+      {/if}
       <div class="ex-foot">Answered by Claude, through Claude Code{explaining.done && !explaining.error ? " · saved for next time" : ""}</div>
     </aside>
+  {/if}
+
+  {#if help}
+    <div class="endov" role="presentation" onclick={(e) => e.target === e.currentTarget && (help = false)}>
+      <div class="end-card keys-card" role="dialog" aria-label="Shortcuts">
+        <h3>Shortcuts</h3>
+        <dl class="keys">
+          {#each SHORTCUTS as [key, what] (key)}
+            <dt>{key}</dt>
+            <dd>{what}</dd>
+          {/each}
+        </dl>
+        <div class="end-actions"><button type="button" class="btn quiet" onclick={() => (help = false)}>Close</button></div>
+      </div>
+    </div>
   {/if}
 
   {#if recap && view && !montage}
@@ -1122,7 +1399,7 @@
   {#if montage && moments[montage.i] && view}
     <div class="montage">
       <!-- svelte-ignore a11y_media_has_caption -->
-      <video bind:this={montageVideo} src={montageSrc} preload="auto" onloadedmetadata={startMoment} ontimeupdate={montageTick} onerror={() => endMontage(false)}></video>
+      <video bind:this={montageVideo} src={montageSrc} preload="auto" bind:volume bind:muted onloadedmetadata={startMoment} ontimeupdate={montageTick} onerror={() => endMontage(false)}></video>
       <div class="montage-top">
         <span class="montage-label">Previously on {view.show.title} · Episode {moments[montage.i].number} · {montage.i + 1} of {moments.length}</span>
         {#if moments[montage.i].caption}<p class="montage-caption" aria-live="polite">{moments[montage.i].caption}</p>{/if}
@@ -1200,6 +1477,26 @@
   .seek:hover .track { height: 5px; top: 9px; }
   .seek .track i { display: block; height: 100%; background: var(--vid-ink); }
   .seek .knob { position: absolute; top: 6px; width: 11px; height: 11px; margin-left: -5.5px; border-radius: 50%; background: var(--vid-ink); }
+  .seek .marks { position: absolute; left: 0; right: 0; top: 3px; width: 100%; height: 3px; fill: rgba(255, 255, 255, .42); pointer-events: none; }
+  .seek .chapter { position: absolute; top: 8px; width: 2px; height: 7px; margin-left: -1px; background: var(--vid); pointer-events: none; }
+  .seek-time { position: absolute; bottom: 24px; transform: translateX(-50%); padding: 5px 8px; border-radius: 6px; font: 500 12.5px/1 var(--font-mono); font-variant-numeric: tabular-nums; background: var(--vid-panel); border: 1px solid var(--vid-edge); pointer-events: none; white-space: nowrap; }
+  .vol { width: 84px; height: 22px; margin: 0 6px 0 2px; accent-color: var(--vid-ink); cursor: pointer; flex: none; }
+  .skip { position: absolute; right: 20px; bottom: 236px; z-index: 6; height: 40px; padding: 0 18px; font: 600 14px/1 var(--font-ui); color: var(--vid-ink); background: var(--vid-panel); border: 1px solid rgba(255, 255, 255, .5); border-radius: 6px; cursor: pointer; }
+  .skip:hover { background: #2a2a2e; }
+  .skip.aside { right: 388px; }
+  .tr-line { pointer-events: none; max-width: 86%; margin: 0 0 4px; padding: 4px 12px; border-radius: 6px; font: 500 calc(var(--sub-size, 36px) * .62)/1.35 var(--font-ui); color: var(--vid-ink); background: rgba(0, 0, 0, .72); text-align: center; white-space: pre-line; visibility: visible; }
+  .keys-card { width: min(460px, 92%); max-height: 88vh; overflow: auto; }
+  .keys-card h3 { padding-right: 0; }
+  .keys { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 7px 22px; font-size: 14px; }
+  .keys dt { font: 600 13px/1.5 var(--font-mono); white-space: nowrap; }
+  .keys dd { margin: 0; color: var(--vid-ink-2); }
+  .ex-q { margin: 8px 0 0; padding-top: 12px; border-top: 1px solid var(--vid-edge); font: 600 14px/1.45 var(--font-ui); user-select: text; -webkit-user-select: text; }
+  .ex-a { margin: 0; font: 400 14px/1.55 var(--font-ui); white-space: pre-line; user-select: text; -webkit-user-select: text; cursor: text; }
+  .ex-ask { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--vid-edge); }
+  .ex-ask input { flex: 1; min-width: 0; height: 34px; padding: 0 10px; font: 400 14px/1 var(--font-ui); color: var(--vid-ink); background: rgba(255, 255, 255, .07); border: 1px solid var(--vid-edge); border-radius: 6px; }
+  .ex-ask input:focus-visible { outline: 2px solid var(--vid-ink); outline-offset: 1px; }
+  .ex-ask button { height: 34px; padding: 0 14px; font: 600 13px/1 var(--font-ui); color: var(--vid); background: var(--vid-ink); border: 0; border-radius: 6px; cursor: pointer; }
+  .ex-ask button:disabled { opacity: .42; cursor: default; }
   .prow { display: flex; align-items: center; gap: 2px; margin-top: 4px; }
   .pbtn { display: grid; place-items: center; width: 38px; height: 38px; border: 0; border-radius: 6px; background: transparent; color: var(--vid-ink); cursor: pointer; flex: none; }
   .pbtn:hover { background: var(--vid-hover); }

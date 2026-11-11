@@ -37,7 +37,7 @@ fn main() -> anyhow::Result<()> {
     let mut stmt = db.prepare("SELECT number, path FROM episodes WHERE show_id = (SELECT show_id FROM episodes WHERE number = ?1) ORDER BY number")?;
     let listing: Vec<(i64, String)> = stmt.query_map([first], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?;
     let groups = matching::groups(&folder, &listing);
-    let found = tools::find(Path::new("."), Path::new("."), "");
+    let found = tools::find(Path::new("."), Path::new("."), "", "");
     let (ffmpeg, ffprobe) = (found.ffmpeg.expect("ffmpeg"), found.ffprobe.expect("ffprobe"));
     let locals: Vec<jimaku::Local> = dirs.iter().flat_map(|d| jimaku::cached(d)).collect();
     let eps: Vec<&(i64, String)> = listing.iter().filter(|(n, _)| (first..=last).contains(n)).collect();

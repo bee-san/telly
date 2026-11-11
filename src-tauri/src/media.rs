@@ -12,8 +12,9 @@
 //!           the DVD's telecine undone or the picture deinterlaced, square
 //!           pixels, and a keyframe every 2 seconds so seeking is instant
 //!
-//! The Japanese audio track is picked by its language tag and is the only one
-//! in Telly's copy, so it's the one that plays.
+//! The Japanese audio track is picked by its language tag, unless the player
+//! picked another for the show. It's the only one in Telly's copy, so it's the
+//! one that plays.
 
 use crate::util::command;
 use anyhow::{anyhow, Context, Result};
@@ -238,13 +239,13 @@ fn container_plays(probe: &Probe, path: &Path) -> bool {
     probe.format.contains("mp4") && matches!(ext.as_str(), "mp4" | "m4v" | "mov")
 }
 
-/// How to get an episode playing.
-pub fn plan(probe: &Probe, path: &Path) -> Plan {
+/// How to get an episode playing with its audio track `audio` (a position
+/// among the audio tracks).
+pub fn plan(probe: &Probe, path: &Path, audio: usize) -> Plan {
     let Some(video) = &probe.video else { return Plan::Video };
-    let jp = japanese_audio(probe);
-    let audio_ok = probe.audio.get(jp).is_some_and(audio_plays_in_mp4);
+    let audio_ok = probe.audio.get(audio).is_some_and(audio_plays_in_mp4);
     match (video_plays(video), audio_ok) {
-        (true, true) if container_plays(probe, path) && jp == 0 => Plan::Direct,
+        (true, true) if container_plays(probe, path) && audio == 0 => Plan::Direct,
         (true, true) => Plan::Remux,
         (true, false) => Plan::Audio,
         _ => Plan::Video,
@@ -270,6 +271,28 @@ pub fn ending_at(probe: &Probe) -> Option<f64> {
         .iter()
         .find(|c| c.start > 0.7 * d && (55.0..=150.0).contains(&(c.end - c.start)))
         .map(|c| c.start)
+}
+
+/// The opening, as (start, end): a chapter called that, else the chapter in
+/// the first 30% of the episode that's nearest an opening's 90 seconds.
+pub fn opening(probe: &Probe) -> Option<(f64, f64)> {
+    let d = probe.duration;
+    if d <= 0.0 || probe.chapters.len() < 3 {
+        return None;
+    }
+    let named = probe.chapters.iter().find(|c| {
+        let t = c.title.to_lowercase();
+        t.contains("opening") || t == "op" || t.starts_with("op ") || c.title.contains("オープニング")
+    });
+    named
+        .or_else(|| {
+            probe
+                .chapters
+                .iter()
+                .filter(|c| c.start < 0.3 * d && (55.0..=150.0).contains(&(c.end - c.start)))
+                .min_by(|a, b| (a.end - a.start - 90.0).abs().total_cmp(&(b.end - b.start - 90.0).abs()))
+        })
+        .map(|c| (c.start, c.end))
 }
 
 /// ffmpeg's video filter for a conversion: undo telecine or deinterlace, then square pixels.
@@ -303,9 +326,8 @@ fn encoder_args(encoder: &str) -> Vec<String> {
     args.iter().map(|a| a.to_string()).collect()
 }
 
-/// ffmpeg's arguments for making `output` (an MP4) from `input`.
-pub fn convert_args(probe: &Probe, plan: Plan, encoder: &str, input: &Path, output: &Path) -> Vec<String> {
-    let jp = japanese_audio(probe);
+/// ffmpeg's arguments for making `output` (an MP4) from `input`, with its audio track `audio`.
+pub fn convert_args(probe: &Probe, plan: Plan, encoder: &str, input: &Path, output: &Path, audio: usize) -> Vec<String> {
     let mut args: Vec<String> = ["-nostdin", "-hide_banner", "-y", "-v", "error", "-progress", "pipe:1", "-nostats", "-i"]
         .iter()
         .map(|a| a.to_string())
@@ -313,7 +335,7 @@ pub fn convert_args(probe: &Probe, plan: Plan, encoder: &str, input: &Path, outp
     args.push(input.to_string_lossy().into_owned());
     args.extend(["-map".into(), "0:v:0".into()]);
     if !probe.audio.is_empty() {
-        args.extend(["-map".into(), format!("0:a:{jp}")]);
+        args.extend(["-map".into(), format!("0:a:{audio}")]);
     }
     args.extend(["-map_metadata".into(), "-1".into(), "-sn".into(), "-dn".into()]);
     match plan {
@@ -325,8 +347,31 @@ pub fn convert_args(probe: &Probe, plan: Plan, encoder: &str, input: &Path, outp
         }
         _ => args.extend(["-c:v".into(), "copy".into()]),
     }
-    let audio_ok = probe.audio.get(jp).is_some_and(audio_plays_in_mp4);
+    let audio_ok = probe.audio.get(audio).is_some_and(audio_plays_in_mp4);
     if audio_ok {
+        args.extend(["-c:a".into(), "copy".into()]);
+    } else {
+        args.extend(["-c:a", "aac", "-b:a", "192k", "-ac", "2"].iter().map(|a| a.to_string()));
+    }
+    args.extend(["-movflags".into(), "+faststart".into(), "-f".into(), "mp4".into()]);
+    args.push(output.to_string_lossy().into_owned());
+    args
+}
+
+/// ffmpeg's arguments for making `output` (an MP4) from `video`'s picture as
+/// it is (Telly's copy, or the rip when it plays as it is) and the rip's audio
+/// track `audio`: changing the audio track without converting again.
+pub fn swap_audio_args(probe: &Probe, video: &Path, rip: &Path, audio: usize, output: &Path) -> Vec<String> {
+    let mut args: Vec<String> = ["-nostdin", "-hide_banner", "-y", "-v", "error", "-progress", "pipe:1", "-nostats", "-i"]
+        .iter()
+        .map(|a| a.to_string())
+        .collect();
+    args.push(video.to_string_lossy().into_owned());
+    args.extend(["-i".into(), rip.to_string_lossy().into_owned()]);
+    args.extend(["-map".into(), "0:v:0".into(), "-map".into(), format!("1:a:{audio}")]);
+    // A copy's chapters point at a track that isn't carried over.
+    args.extend(["-map_metadata".into(), "-1".into(), "-map_chapters".into(), "-1".into(), "-sn".into(), "-dn".into(), "-c:v".into(), "copy".into()]);
+    if probe.audio.get(audio).is_some_and(audio_plays_in_mp4) {
         args.extend(["-c:a".into(), "copy".into()]);
     } else {
         args.extend(["-c:a", "aac", "-b:a", "192k", "-ac", "2"].iter().map(|a| a.to_string()));
@@ -437,6 +482,26 @@ pub fn picture_codec(codec: &str) -> bool {
     matches!(codec, "hdmv_pgs_subtitle" | "dvd_subtitle" | "dvb_subtitle" | "xsub")
 }
 
+/// Subtitle codecs that are text.
+pub fn text_codec(codec: &str) -> bool {
+    matches!(codec, "ass" | "ssa" | "subrip" | "srt" | "webvtt" | "mov_text")
+}
+
+/// Whether a subtitle track's title says it's only signs, songs or forced lines.
+fn partial_title(title: &str) -> bool {
+    let title = title.to_lowercase();
+    ["sign", "song", "forced", "karaoke", "lyric"].iter().any(|w| title.contains(w)) && !title.contains("full") && !title.contains("dialog")
+}
+
+/// The rip's English subtitles as text, if it has them: the first track that
+/// isn't only signs and songs, else the first.
+pub fn english_text_track(probe: &Probe) -> Option<&SubtitleInfo> {
+    let english = |s: &&SubtitleInfo| {
+        text_codec(&s.codec) && (matches!(s.language.to_lowercase().as_str(), "eng" | "en") || s.title.to_lowercase().contains("english"))
+    };
+    probe.subtitles.iter().filter(english).find(|s| !partial_title(&s.title)).or_else(|| probe.subtitles.iter().find(english))
+}
+
 /// One of the rip's own subtitle tracks, by when its subtitles show.
 #[derive(Clone, Debug, Default)]
 pub struct TrackTiming {
@@ -509,10 +574,7 @@ pub fn subtitle_timings(ffmpeg: &Path, ffprobe: &Path, path: &Path, probe: &Prob
 /// The track whose timing follows the dialogue best: not one only for signs,
 /// songs or forced lines, and of those the one with the most subtitles.
 pub fn dialogue_track(timings: &[TrackTiming]) -> Option<&TrackTiming> {
-    let partial = |t: &TrackTiming| {
-        let title = t.title.to_lowercase();
-        ["sign", "song", "forced", "karaoke", "lyric"].iter().any(|w| title.contains(w)) && !title.contains("full") && !title.contains("dialog")
-    };
+    let partial = |t: &TrackTiming| partial_title(&t.title);
     let enough = |t: &&TrackTiming| t.events.len() >= 60;
     timings
         .iter()
@@ -566,13 +628,14 @@ mod tests {
         let p = parse_probe(&dvd());
         assert_eq!(p.duration, 1421.5);
         assert_eq!(japanese_audio(&p), 1);
-        assert_eq!(plan(&p, Path::new("title_t00.mkv")), Plan::Video);
+        assert_eq!(plan(&p, Path::new("title_t00.mkv"), 1), Plan::Video);
         assert_eq!(ending_at(&p), Some(1300.0));
+        assert_eq!(opening(&p), Some((0.0, 90.0)));
         let v = p.video.as_ref().unwrap();
         let filter = video_filter(v, "h264_amf");
         assert!(filter.starts_with("fieldmatch"), "{filter}");
         assert!(filter.contains("setsar=1") && filter.ends_with("format=nv12"), "{filter}");
-        let args = convert_args(&p, Plan::Video, "h264_amf", Path::new("in.mkv"), Path::new("out.mp4"));
+        let args = convert_args(&p, Plan::Video, "h264_amf", Path::new("in.mkv"), Path::new("out.mp4"), 1);
         let joined = args.join(" ");
         assert!(joined.contains("-map 0:a:1") && joined.contains("-c:a aac") && joined.contains("h264_amf"), "{joined}");
     }
@@ -584,16 +647,50 @@ mod tests {
         j["streams"][0]["profile"] = json!("High");
         j["streams"][2]["codec_name"] = json!("aac");
         let p = parse_probe(&j);
-        assert_eq!(plan(&p, Path::new("a.mkv")), Plan::Remux);
+        assert_eq!(plan(&p, Path::new("a.mkv"), 1), Plan::Remux);
         j["streams"][2]["codec_name"] = json!("flac");
-        assert_eq!(plan(&parse_probe(&j), Path::new("a.mkv")), Plan::Audio);
+        assert_eq!(plan(&parse_probe(&j), Path::new("a.mkv"), 1), Plan::Audio);
         j["streams"][0]["codec_name"] = json!("hevc");
         j["streams"][0]["pix_fmt"] = json!("yuv420p10le");
-        assert_eq!(plan(&parse_probe(&j), Path::new("a.mkv")), Plan::Video);
+        assert_eq!(plan(&parse_probe(&j), Path::new("a.mkv"), 1), Plan::Video);
         // An MP4 with the Japanese track first plays as it is.
         let mp4 = json!({"format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2", "duration": "1400"},
           "streams": [{"index": 0, "codec_type": "video", "codec_name": "h264", "pix_fmt": "yuv420p", "profile": "High"},
                       {"index": 1, "codec_type": "audio", "codec_name": "aac", "tags": {"language": "jpn"}}]});
-        assert_eq!(plan(&parse_probe(&mp4), Path::new("a.mp4")), Plan::Direct);
+        assert_eq!(plan(&parse_probe(&mp4), Path::new("a.mp4"), 0), Plan::Direct);
+    }
+
+    #[test]
+    fn finds_the_opening_after_a_cold_open() {
+        let mut j = dvd();
+        j["chapters"] = json!([
+            {"start_time": "0.0", "end_time": "130.0", "tags": {"title": "Chapter 01"}},
+            {"start_time": "130.0", "end_time": "220.0", "tags": {"title": "Chapter 02"}},
+            {"start_time": "220.0", "end_time": "1300.0", "tags": {"title": "Chapter 03"}},
+            {"start_time": "1300.0", "end_time": "1421.5", "tags": {"title": "Chapter 04"}}
+        ]);
+        assert_eq!(opening(&parse_probe(&j)), Some((130.0, 220.0)));
+        j["chapters"][0]["tags"]["title"] = json!("Opening");
+        assert_eq!(opening(&parse_probe(&j)), Some((0.0, 130.0)));
+    }
+
+    #[test]
+    fn changes_the_audio_track_without_converting() {
+        let p = parse_probe(&dvd());
+        let joined = swap_audio_args(&p, Path::new("copy.mp4"), Path::new("in.mkv"), 0, Path::new("out.part")).join(" ");
+        assert!(joined.contains("-i copy.mp4 -i in.mkv -map 0:v:0 -map 1:a:0") && joined.contains("-c:v copy -c:a aac"), "{joined}");
+    }
+
+    #[test]
+    fn picks_the_english_dialogue_track_of_the_rip() {
+        let mut j = dvd();
+        j["streams"] = json!([
+            {"index": 3, "codec_type": "subtitle", "codec_name": "ass", "tags": {"language": "eng", "title": "Signs & Songs"}},
+            {"index": 4, "codec_type": "subtitle", "codec_name": "ass", "tags": {"language": "eng", "title": "Full"}},
+            {"index": 5, "codec_type": "subtitle", "codec_name": "hdmv_pgs_subtitle", "tags": {"language": "eng"}}
+        ]);
+        assert_eq!(english_text_track(&parse_probe(&j)).map(|s| s.index), Some(4));
+        j["streams"] = json!([{"index": 5, "codec_type": "subtitle", "codec_name": "hdmv_pgs_subtitle", "tags": {"language": "eng"}}]);
+        assert_eq!(english_text_track(&parse_probe(&j)), None);
     }
 }

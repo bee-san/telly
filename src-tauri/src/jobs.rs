@@ -249,9 +249,105 @@ fn media_worker(backend: &Backend) {
     }
 }
 
-/// Telly's copy of an episode: %LOCALAPPDATA%\Telly\media\<show>\<episode>.mp4.
+/// The audio track a show's episodes play, as a position among the rip's
+/// audio tracks: the one picked in the player, else the Japanese one.
+pub fn audio_track(backend: &Backend, show_id: i64, probe: &media::Probe) -> usize {
+    backend
+        .db
+        .setting(&audio_setting(show_id))
+        .ok()
+        .flatten()
+        .and_then(|v| v.as_u64())
+        .map(|t| t as usize)
+        // An episode with fewer audio tracks than the one picked plays its Japanese one.
+        .filter(|t| *t < probe.audio.len())
+        .unwrap_or_else(|| media::japanese_audio(probe))
+}
+
+pub fn audio_setting(show_id: i64) -> String {
+    format!("audio.track.{show_id}")
+}
+
+/// The audio track an episode that's ready plays.
+pub fn playing_track(episode: &Episode, probe: &media::Probe) -> usize {
+    episode.audio_track.map(|t| t as usize).unwrap_or_else(|| media::japanese_audio(probe))
+}
+
+/// What ffprobe found in an episode's rip when it was got ready.
+pub fn stored_probe(backend: &Backend, episode_id: i64) -> Option<media::Probe> {
+    serde_json::from_str(&backend.db.probe(episode_id).ok()?).ok()
+}
+
+/// Gives a ready episode another of the rip's audio tracks, keeping its
+/// picture: seconds, where converting again takes minutes.
+pub fn change_audio(backend: &Backend, ffmpeg: &Path, episode: &Episode, probe: &media::Probe, track: usize) -> Result<()> {
+    let source = PathBuf::from(&episode.path);
+    let output = copy_path(backend, episode.show_id, episode.id);
+    let forced = backend.db.setting_bool(&format!("convert.force.{}", episode.id), false);
+    if !forced && media::plan(probe, &source, track) == Plan::Direct {
+        let _ = std::fs::remove_file(&output);
+        backend.db.media_ready(episode.id, &episode.path, track as i64, track as i64)?;
+        return Ok(());
+    }
+    std::fs::create_dir_all(output.parent().expect("a folder"))?;
+    let partial = output.with_extension("part");
+    let video = if output.is_file() { &output } else { &source };
+    let args = media::swap_audio_args(probe, video, &source, track, &partial);
+    if let Err(e) = media::run_ffmpeg(ffmpeg, &args, probe.duration, &AtomicBool::new(false), &|_| {}) {
+        let _ = std::fs::remove_file(&partial);
+        return Err(e);
+    }
+    std::fs::rename(&partial, &output).context("saving the video with its new audio")?;
+    backend.db.media_ready(episode.id, &output.to_string_lossy(), 0, track as i64)?;
+    Ok(())
+}
+
+/// Telly's copy of an episode: <copies folder>\<show>\<episode>.mp4, in
+/// %LOCALAPPDATA%\Telly\media unless Settings chose another copies folder.
 pub fn copy_path(backend: &Backend, show_id: i64, episode_id: i64) -> PathBuf {
-    backend.dirs.media().join(show_id.to_string()).join(format!("{episode_id}.mp4"))
+    backend.media_dir().join(show_id.to_string()).join(format!("{episode_id}.mp4"))
+}
+
+/// Moves Telly's copies of episodes into the copies folder (Settings just
+/// chose another one), in the background. A copy on another drive is copied
+/// across, then deleted where it was.
+pub fn move_copies(backend: Arc<Backend>) {
+    std::thread::spawn(move || {
+        let copies: Vec<Episode> = backend.db.all_episodes().unwrap_or_default().into_iter().filter(|e| !e.play_path.is_empty() && e.play_path != e.path).collect();
+        let task = |progress: f64| {
+            let label = "Moving Telly’s copies of episodes".to_string();
+            set_task(&backend.jobs.download, Some(Task { show_id: 0, episode_id: 0, number: 0, title: "Telly".into(), label, progress }))
+        };
+        let mut failed: Vec<String> = Vec::new();
+        for (i, e) in copies.iter().enumerate() {
+            task(i as f64 / copies.len() as f64);
+            let from = PathBuf::from(&e.play_path);
+            let to = copy_path(&backend, e.show_id, e.id);
+            if from == to || !from.is_file() {
+                continue;
+            }
+            let moved = (|| -> Result<()> {
+                std::fs::create_dir_all(to.parent().expect("a folder"))?;
+                if std::fs::rename(&from, &to).is_err() {
+                    std::fs::copy(&from, &to)?;
+                    backend.db.set_play_path(e.id, &to.to_string_lossy())?;
+                    // An episode playing stays open; its old copy goes with Free up space, or by hand.
+                    let _ = std::fs::remove_file(&from);
+                    return Ok(());
+                }
+                backend.db.set_play_path(e.id, &to.to_string_lossy())
+            })();
+            if let Err(error) = moved {
+                failed.push(format!("Episode {}: {error:#}", e.number));
+            }
+        }
+        set_task(&backend.jobs.download, None);
+        if failed.is_empty() {
+            backend.push_event("done", "Copies moved", &backend.media_dir().to_string_lossy(), 0, 0);
+        } else {
+            backend.push_event("failed", "Some copies didn’t move", &failed.join("\n"), 0, 0);
+        }
+    });
 }
 
 fn prepare_video(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, encoder: &str, show: &Show, episode: &Episode) -> Result<()> {
@@ -261,16 +357,23 @@ fn prepare_video(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, encoder: &str
     }
     let probe = media::probe(ffprobe, &source)?;
     let forced = backend.db.setting_bool(&format!("convert.force.{}", episode.id), false);
-    let plan = if forced { Plan::Video } else { media::plan(&probe, &source) };
+    let audio = audio_track(backend, show.id, &probe);
+    let plan = if forced { Plan::Video } else { media::plan(&probe, &source, audio) };
     let probe_json = serde_json::to_string(&probe).unwrap_or_default();
     backend.db.set_probe(episode.id, &probe_json, probe.duration, media::ending_at(&probe), plan.name())?;
+    let output = copy_path(backend, show.id, episode.id);
     if plan == Plan::Direct {
-        backend.db.media_ready(episode.id, &episode.path, media::japanese_audio(&probe) as i64)?;
+        // A copy made for another audio track isn't needed any more.
+        let _ = std::fs::remove_file(&output);
+        backend.db.media_ready(episode.id, &episode.path, audio as i64, audio as i64)?;
         return Ok(());
     }
-    let output = copy_path(backend, show.id, episode.id);
     if output.is_file() && std::fs::metadata(&output).map(|m| m.len() > 0).unwrap_or(false) {
-        backend.db.media_ready(episode.id, &output.to_string_lossy(), 0)?;
+        if playing_track(episode, &probe) != audio {
+            update_task(&backend.jobs.media, Some(&format!("Changing the audio of {} {}", show.title, episode.number)), 0.0);
+            return change_audio(backend, ffmpeg, episode, &probe, audio);
+        }
+        backend.db.media_ready(episode.id, &output.to_string_lossy(), 0, audio as i64)?;
         return Ok(());
     }
     std::fs::create_dir_all(output.parent().expect("a folder"))?;
@@ -290,17 +393,17 @@ fn prepare_video(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, encoder: &str
             }
         }
     };
-    let mut result = media::run_ffmpeg(ffmpeg, &media::convert_args(&probe, plan, encoder, &source, &partial), probe.duration, &backend.jobs.cancel_media, &report);
+    let mut result = media::run_ffmpeg(ffmpeg, &media::convert_args(&probe, plan, encoder, &source, &partial, audio), probe.duration, &backend.jobs.cancel_media, &report);
     // A GPU encoder can fail on some inputs; the CPU one always works.
     if plan == Plan::Video && encoder != "libx264" && result.as_ref().is_err_and(|e| e.to_string() != "cancelled") {
-        result = media::run_ffmpeg(ffmpeg, &media::convert_args(&probe, plan, "libx264", &source, &partial), probe.duration, &backend.jobs.cancel_media, &report);
+        result = media::run_ffmpeg(ffmpeg, &media::convert_args(&probe, plan, "libx264", &source, &partial, audio), probe.duration, &backend.jobs.cancel_media, &report);
     }
     if let Err(e) = result {
         let _ = std::fs::remove_file(&partial);
         return Err(e);
     }
     std::fs::rename(&partial, &output).context("saving the converted video")?;
-    backend.db.media_ready(episode.id, &output.to_string_lossy(), 0)?;
+    backend.db.media_ready(episode.id, &output.to_string_lossy(), 0, audio as i64)?;
     Ok(())
 }
 
@@ -360,9 +463,18 @@ fn subs_worker(backend: &Backend) {
     }
 }
 
-/// Where Whisper's Japanese model comes from: whisper.cpp's own models on Hugging Face.
-pub const WHISPER_MODEL_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin";
+/// Where Whisper's models come from: whisper.cpp's own on Hugging Face.
+const WHISPER_MODELS_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
+/// The model used unless Settings picks a bigger one.
 pub const WHISPER_MODEL_NAME: &str = "ggml-small-q5_1.bin";
+
+/// The model file Settings picked ("whisper.model"), else the small one.
+pub fn whisper_model_name(backend: &Backend) -> String {
+    match backend.db.setting_str("whisper.model") {
+        name if name.is_empty() => WHISPER_MODEL_NAME.to_string(),
+        name => name,
+    }
+}
 
 /// Makes subtitles from the episode's Japanese audio with whisper.cpp,
 /// marked as machine-made. Whisper times them itself, so they need no sync.
@@ -371,9 +483,11 @@ fn whisper_subtitles(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, whisper: 
     std::fs::create_dir_all(backend.dirs.subs())?;
     let subs_dir = std::path::absolute(backend.dirs.subs()).unwrap_or_else(|_| backend.dirs.subs());
     let wav = subs_dir.join(format!("{}.whisper.wav", episode.id));
+    // One transcript per model, so a bigger model's isn't taken for a smaller one's.
+    let made_by = model.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     // whisper.cpp adds ".srt" to this.
-    let out = subs_dir.join(format!("{}.whisper", episode.id));
-    let srt = subs_dir.join(format!("{}.whisper.srt", episode.id));
+    let out = subs_dir.join(format!("{}.whisper.{made_by}", episode.id));
+    let srt = subs_dir.join(format!("{}.whisper.{made_by}.srt", episode.id));
     // A transcript newer than the model and the rip is still good (a retry after an error).
     let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
     let fresh = matches!((modified(&srt), modified(model), modified(source)), (Some(s), Some(m), Some(r)) if s > m && s > r);
@@ -439,9 +553,10 @@ pub fn without_repeats(lines: Vec<Line>) -> Vec<Line> {
     out
 }
 
-/// Downloads Whisper's Japanese model into Telly's models folder, in the background.
+/// Downloads Whisper's model (the one Settings picked) into Telly's models folder, in the background.
 pub fn get_whisper_model(backend: std::sync::Arc<Backend>) {
     std::thread::spawn(move || {
+        let name = whisper_model_name(&backend);
         let task = |label: &str, progress: f64| {
             set_task(
                 &backend.jobs.download,
@@ -452,9 +567,9 @@ pub fn get_whisper_model(backend: std::sync::Arc<Backend>) {
         let result = (|| -> Result<()> {
             let dir = backend.dirs.models();
             std::fs::create_dir_all(&dir)?;
-            let partial = dir.join(format!("{WHISPER_MODEL_NAME}.part"));
+            let partial = dir.join(format!("{name}.part"));
             let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(3600))).build().into();
-            let mut response = agent.get(WHISPER_MODEL_URL).call().map_err(|e| anyhow!("couldn’t download the model ({e})"))?;
+            let mut response = agent.get(format!("{WHISPER_MODELS_URL}/{name}")).call().map_err(|e| anyhow!("couldn’t download the model ({e})"))?;
             let total = response.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
             let mut reader = response.body_mut().with_config().limit(2 * 1024 * 1024 * 1024).reader();
             let mut file = std::fs::File::create(&partial)?;
@@ -472,7 +587,7 @@ pub fn get_whisper_model(backend: std::sync::Arc<Backend>) {
                 }
             }
             drop(file);
-            std::fs::rename(&partial, dir.join(WHISPER_MODEL_NAME))?;
+            std::fs::rename(&partial, dir.join(&name))?;
             Ok(())
         })();
         set_task(&backend.jobs.download, None);
@@ -523,6 +638,29 @@ pub fn write_lines(backend: &Backend, episode_id: i64, lines: &[Line]) -> Result
     std::fs::create_dir_all(backend.dirs.subs())?;
     std::fs::write(lines_path(backend, episode_id), serde_json::to_vec(lines)?)?;
     Ok(())
+}
+
+pub fn translation_path(backend: &Backend, episode_id: i64) -> PathBuf {
+    backend.dirs.subs().join(format!("{episode_id}.en.json"))
+}
+
+/// The rip's own English subtitles, timed to it already, for the player to
+/// show while Tab is held. Read from the rip once, then kept. None when the
+/// rip has none as text (picture subtitles can't be shown this way).
+pub fn translation(backend: &Backend, episode: &Episode) -> Result<Vec<Line>> {
+    let kept = translation_path(backend, episode.id);
+    if let Some(lines) = std::fs::read(&kept).ok().and_then(|b| serde_json::from_slice(&b).ok()) {
+        return Ok(lines);
+    }
+    let Some(probe) = stored_probe(backend, episode.id) else { return Ok(Vec::new()) };
+    let Some(track) = media::english_text_track(&probe) else { return Ok(Vec::new()) };
+    let ffmpeg = backend.tools().ffmpeg.ok_or_else(|| anyhow!("Telly needs ffmpeg for this. Choose it in Settings."))?;
+    let format = if matches!(track.codec.as_str(), "ass" | "ssa") { "ass" } else { "srt" };
+    let text = media::read_subtitle_track(&ffmpeg, Path::new(&episode.path), track.index, format)?;
+    let lines: Vec<Line> = subs::parse(&format!("track.{format}"), text.as_bytes())?.into_iter().filter(|l| !l.sign).collect();
+    std::fs::create_dir_all(backend.dirs.subs())?;
+    std::fs::write(&kept, serde_json::to_vec(&lines)?)?;
+    Ok(lines)
 }
 
 /// Where people speak in an episode, from its Japanese track, and how long it
@@ -580,7 +718,7 @@ fn led(mut synced: sync::Synced, timing: &Timing) -> sync::Synced {
     synced
 }
 
-fn language_name(code: &str) -> &'static str {
+pub fn language_name(code: &str) -> &'static str {
     match code.to_lowercase().as_str() {
         "eng" | "en" => "English ",
         "jpn" | "ja" | "jp" => "Japanese ",
@@ -974,6 +1112,7 @@ mod tests {
             media_error: String::new(),
             play_path: String::new(),
             audio_index: 0,
+            audio_track: None,
             ending_at: None,
             position,
             watched_at: watched.then_some(1),

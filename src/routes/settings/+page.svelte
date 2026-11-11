@@ -122,6 +122,22 @@
     status = await call<Status>("status");
   }
 
+  /** Moves Telly's copies of episodes to another folder (null: Telly's own again). */
+  async function moveCopies(folder: string | null) {
+    try {
+      status = await call<Status>("setMediaFolder", { folder });
+      settings = await call<Settings>("settings");
+      toast({ key: "copies", state: "working", title: "Moving Telly’s copies of episodes", text: "The title bar shows how it’s going." });
+    } catch (e) {
+      toast({ key: "copies", state: "failed", title: "Folder not changed", text: errorText(e) });
+    }
+  }
+
+  async function chooseCopiesFolder() {
+    const folder = await pickFolder("Choose the folder for copies");
+    if (folder) await moveCopies(folder);
+  }
+
   async function chooseDictionaries() {
     const folder = await pickFolder("Choose the dictionaries folder");
     if (!folder) return;
@@ -197,6 +213,19 @@
     if (n.error) return `Made, but Hachidori didn’t take it yet: ${n.error}. Telly tries again every 5 minutes.`;
     return `Made: ${what}. Waiting for Hachidori to take it (it goes to the browser’s Hachidori once they’re linked).`;
   });
+
+  /** whisper.cpp's multilingual models, smallest first. */
+  const WHISPER_MODELS = [
+    ["ggml-small-q5_1.bin", "Small · 190 MB"],
+    ["ggml-medium-q5_0.bin", "Medium · 539 MB"],
+    ["ggml-large-v3-turbo-q5_0.bin", "Large v3 turbo · 574 MB"],
+    ["ggml-large-v3-q5_0.bin", "Large v3 · 1.1 GB"],
+  ];
+
+  async function chooseWhisperModel(file: string) {
+    await set("whisper.model", file);
+    status = await call<Status>("status");
+  }
 
   async function openJimaku() {
     if (inTauri) {
@@ -354,14 +383,25 @@
     <h2>Whisper</h2>
     {#if !status?.tools.whisper}
       <p class="lede">Whisper can make subtitles for episodes Jimaku has nothing for. Telly uses the whisper.cpp Tidepool downloads for voice input, and Tidepool hasn’t downloaded it on this computer yet.</p>
-    {:else if !status.tools.whisperModel}
-      <p class="lede">Whisper can make subtitles for episodes Jimaku has nothing for, marked as machine-made. It needs a model that knows Japanese (190 MB, from whisper.cpp’s own models).</p>
-      <div class="actions">
-        <button type="button" class="btn quiet" onclick={async () => { await call("getWhisperModel"); toast({ key: "whispermodel", state: "working", title: "Getting Whisper’s Japanese model", text: "The title bar shows how it’s going." }); }}>Get Whisper’s model</button>
-      </div>
     {:else}
-      <p class="lede">Ready. On a show’s page, <b>Make subtitles with Whisper</b> covers the episodes Jimaku has nothing for. They’re marked as machine-made.</p>
-      <p class="muted mono path">{status.tools.whisperModel}</p>
+      {#if status.tools.whisperModel}
+        <p class="lede">Ready. On a show’s page, <b>Make subtitles with Whisper</b> covers the episodes Jimaku has nothing for. They’re marked as machine-made.</p>
+      {:else}
+        <p class="lede">Whisper can make subtitles for episodes Jimaku has nothing for, marked as machine-made. It needs a model that knows Japanese, from whisper.cpp’s own models.</p>
+      {/if}
+      <label class="field narrow"><span>Model</span>
+        <select class="input" value={str("whisper.model", WHISPER_MODELS[0][0])} onchange={(e) => chooseWhisperModel(e.currentTarget.value)}>
+          {#each WHISPER_MODELS as [file, label]}<option value={file}>{label}</option>{/each}
+        </select>
+        <small>Bigger models take longer for each episode.</small>
+      </label>
+      {#if status.tools.whisperModel}
+        <p class="muted mono path">{status.tools.whisperModel}</p>
+      {:else}
+        <div class="actions">
+          <button type="button" class="btn quiet" onclick={async () => { await call("getWhisperModel"); toast({ key: "whispermodel", state: "working", title: "Getting Whisper’s Japanese model", text: "The title bar shows how it’s going." }); }}>Get model</button>
+        </div>
+      {/if}
     {/if}
   </section>
 
@@ -386,6 +426,12 @@
       <button type="button" class="btn quiet" onclick={freeAll}>Free up space</button>
       <span class="muted">Removes Telly’s copies of watched episodes.</span>
     </div>
+    <div class="field">
+      <span>Copies folder</span>
+      <span class="inline"><input class="input grow mono" value={status?.mediaDir ?? ""} readonly aria-label="Copies folder" /><button type="button" class="btn quiet" onclick={chooseCopiesFolder}>Choose folder…</button></span>
+      {#if str("media.folder")}<span><button type="button" class="link-btn" onclick={() => moveCopies(null)}>Use Telly’s own folder</button></span>{/if}
+    </div>
+    <p class="muted">The library and subtitles stay in:</p>
     <p class="muted mono path">{status?.dataDir}</p>
   </section>
 

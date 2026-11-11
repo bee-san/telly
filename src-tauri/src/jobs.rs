@@ -923,6 +923,68 @@ fn embedded(backend: &Backend, ffmpeg: &Path, probe: &media::Probe, episode: &Ep
     out
 }
 
+/// Japanese subtitle files beside the rip and named after it: "Episode 01.srt",
+/// "Episode 01.ja.srt", "Episode 01.alass.srt".
+fn beside(episode: &Episode) -> Vec<jimaku::Local> {
+    let rip = Path::new(&episode.path);
+    let (Some(folder), Some(stem)) = (rip.parent(), rip.file_stem().and_then(|s| s.to_str())) else { return Vec::new() };
+    let mut out: Vec<jimaku::Local> = std::fs::read_dir(folder)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = path.file_name()?.to_str()?.to_string();
+            let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+            let named_after = name.strip_prefix(stem).is_some_and(|rest| rest.starts_with('.'));
+            let wanted = named_after && matches!(ext.as_str(), "srt" | "ass" | "ssa" | "vtt") && japanese_lines(&path, &name).is_ok();
+            wanted.then(|| jimaku::Local { name, path, episode: Some(episode.number) })
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// A file a sync would move less than this is in sync already (a sync centres
+/// its shift within half a second).
+const IN_SYNC_MS: i64 = 500;
+
+/// Whether a sync left one of the rip's own subtitles where it was: one shift
+/// of under half a second, no change of speed. Whose subtitles they are isn't
+/// in doubt, and a file that doesn't belong lands within half a second of
+/// where it was once in 600 tries. So it needn't fit well, only better than
+/// another episode's file would: where subtitles show two thirds of the time,
+/// as in Bocchi the Rock!, the right file stands only 6 spreads up.
+fn in_sync(synced: &sync::Synced) -> bool {
+    synced.score >= FITS_NOT && !synced.cut && synced.shifts == 1 && (synced.ratio - 1.0).abs() < 1e-6 && synced.offset_ms.abs() < IN_SYNC_MS
+}
+
+/// Keeps the best of the rip's own subtitles (`own`) that's in sync as it is,
+/// its lines untouched. False when none is.
+fn keep_own(backend: &Backend, episode: &Episode, own: &[jimaku::Local], timing: &Timing, video: &str) -> Result<bool> {
+    let mut tried: Vec<Tried> = Vec::new();
+    let mut best: Option<(&jimaku::Local, sync::Synced, matching::Fit)> = None;
+    for file in own {
+        let path = file.path.to_string_lossy().into_owned();
+        match sync_file(&file.path, &file.name, timing, video) {
+            Ok((synced, fit)) => {
+                tried.push(Tried { name: file.name.clone(), path, score: synced.score, offset_ms: synced.offset_ms, error: String::new() });
+                if in_sync(&synced) && best.as_ref().is_none_or(|(_, _, b)| matching::better(&fit, b)) {
+                    best = Some((file, synced, fit));
+                }
+            }
+            Err(e) => tried.push(Tried { name: file.name.clone(), path, score: 0.0, offset_ms: 0, error: format!("{e:#}") }),
+        }
+    }
+    let Some((file, synced, _)) = best else { return Ok(false) };
+    write_lines(backend, episode.id, &japanese_lines(&file.path, &file.name)?)?;
+    std::fs::write(tried_path(backend, episode.id), serde_json::to_vec(&tried)?)?;
+    let detail = format!("in sync as it is · matched to {}", timing.against);
+    backend.db.set_subs(episode.id, "synced", &detail, &file.name, Some(synced.score), Some(0))?;
+    crate::premine::prepare(backend, episode.id);
+    Ok(true)
+}
+
 /// Syncs one file to the episode's timing (its own subtitles or its speech),
 /// with how it compares with the others (see `matching::better`).
 pub fn sync_file(path: &Path, name: &str, timing: &Timing, video: &str) -> Result<(sync::Synced, matching::Fit)> {
@@ -1064,6 +1126,22 @@ fn find_subtitles(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, show: &Show,
     let key = backend.db.setting_str("jimaku.key");
     let probe = media::probe(ffprobe, Path::new(&episode.path))?;
     let mut files = embedded(backend, ffmpeg, &probe, episode);
+    files.extend(beside(episode));
+    let video = Path::new(&episode.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let read_timing = || {
+        update_task(&backend.jobs.subs, Some(&format!("Reading the timing of {} {}", show.title, episode.number)), 0.0);
+        timing_of(ffmpeg, ffprobe, &probe, episode).context("reading the episode’s timing")
+    };
+    // The rip's own Japanese subtitles (a track inside it, a file beside it)
+    // are kept as they are when they're in sync already, and Jimaku isn't asked.
+    let mut timing = None;
+    if !files.is_empty() {
+        let read = read_timing()?;
+        if keep_own(backend, episode, &files, &read, &video)? {
+            return Ok(());
+        }
+        timing = Some(read);
+    }
     // Where this episode sits among the show's season folders.
     let listing: Vec<(i64, String)> = backend.db.episodes(show.id)?.into_iter().map(|e| (e.number, e.path)).collect();
     let groups = matching::groups(&show.folder, &listing);
@@ -1099,9 +1177,10 @@ fn find_subtitles(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, show: &Show,
         backend.db.set_subs(episode.id, state, detail, "", None, None)?;
         return Ok(());
     }
-    update_task(&backend.jobs.subs, Some(&format!("Reading the timing of {} {}", show.title, episode.number)), 0.0);
-    let timing = timing_of(ffmpeg, ffprobe, &probe, episode).context("reading the episode’s timing")?;
-    let video = Path::new(&episode.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let timing = match timing {
+        Some(read) => read,
+        None => read_timing()?,
+    };
     let (best, tried) = pick_subtitles(&files, &pool, &timing, &video, |what, progress| {
         update_task(&backend.jobs.subs, Some(&format!("{what} {} {}", show.title, episode.number)), progress);
     });
@@ -1196,6 +1275,37 @@ mod tests {
             subs_offset_ms: None,
             subs_nudge_ms: 0,
         }
+    }
+
+    #[test]
+    fn finds_the_japanese_subtitles_beside_a_rip() {
+        let folder = std::env::temp_dir().join(format!("telly-beside-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let japanese = "1\n00:00:01,000 --> 00:00:03,000\nそこは魔法の世界。\n\n2\n00:00:04,000 --> 00:00:06,000\n彼らは魔道士と呼ばれる。\n";
+        let english = "1\n00:00:01,000 --> 00:00:03,000\nA world of magic.\n\n2\n00:00:04,000 --> 00:00:06,000\nThey are called wizards.\n";
+        for (name, text) in [("Show - 01.mkv", ""), ("Show - 01.srt", english), ("Show - 01.jpn.srt", japanese), ("Show - 01.alass.srt", japanese), ("Show - 010.srt", japanese), ("Show - 01.txt", japanese)] {
+            std::fs::write(folder.join(name), text).unwrap();
+        }
+        let mut rip = ep(1, false, 0.0, 0);
+        rip.path = folder.join("Show - 01.mkv").to_string_lossy().into_owned();
+        let found: Vec<String> = beside(&rip).into_iter().map(|f| f.name).collect();
+        std::fs::remove_dir_all(&folder).unwrap();
+        // Not the English file, another episode's, or one that isn't subtitles.
+        assert_eq!(found, ["Show - 01.alass.srt", "Show - 01.jpn.srt"]);
+    }
+
+    #[test]
+    fn subtitles_a_sync_barely_moves_are_in_sync_already() {
+        let synced = |score: f64, offset_ms: i64, ratio: f64, shifts: usize, cut: bool| sync::Synced { lines: vec![], score, offset_ms, ratio, shifts, cut, standing: Default::default() };
+        assert!(in_sync(&synced(0.9, 120, 1.0, 1, false)));
+        assert!(in_sync(&synced(0.9, -480, 1.0, 1, false)));
+        // A weak fit will do: where it lands says enough.
+        assert!(in_sync(&synced(0.3, -80, 1.0, 1, false)));
+        // Moved 3 seconds, sped up for PAL, cut for a broadcast, or fitting no better than another episode's.
+        assert!(!in_sync(&synced(0.9, 3000, 1.0, 1, false)));
+        assert!(!in_sync(&synced(0.9, 0, 25.0 / 23.976, 1, false)));
+        assert!(!in_sync(&synced(0.9, 0, 1.0, 3, true)));
+        assert!(!in_sync(&synced(0.1, 0, 1.0, 1, false)));
     }
 
     #[test]

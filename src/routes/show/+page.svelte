@@ -138,8 +138,12 @@
 
   async function freeSpace() {
     if (!card) return;
-    const r = await call<{ episodes: number; bytes: number }>("freeSpace", { show: card.id });
-    toast({ key: "free", state: "done", title: r.episodes ? `Freed ${bytes(r.bytes)}` : "Nothing to free", text: r.episodes ? `Removed Telly’s copies of ${plural(r.episodes, "watched episode")}. The rips are untouched.` : "Telly only removes its copies of watched episodes." });
+    try {
+      const r = await call<{ episodes: number; bytes: number }>("freeSpace", { show: card.id });
+      toast({ key: "free", state: "done", title: r.episodes ? `Freed ${bytes(r.bytes)}` : "Nothing to free", text: r.episodes ? `Removed Telly’s copies of ${plural(r.episodes, "watched episode")}. The rips are untouched.` : "Telly only removes its copies of watched episodes." });
+    } catch (e) {
+      toast({ key: "free", state: "failed", title: "Couldn’t free up space", text: errorText(e) });
+    }
     load();
   }
 
@@ -150,14 +154,22 @@
 
   async function whisperAll() {
     if (!card) return;
-    const r = await call<{ queued: number }>("whisperSubs", { show: card.id });
-    toast({ key: "whisper", state: "info", title: `${maker} will make subtitles for ${plural(r.queued, "episode")}`, text: "One at a time, a few minutes each. They’re marked as machine-made." });
+    try {
+      const r = await call<{ queued: number }>("whisperSubs", { show: card.id });
+      toast({ key: "whisper", state: "info", title: `${maker} will make subtitles for ${plural(r.queued, "episode")}`, text: "One at a time, a few minutes each. They’re marked as machine-made." });
+    } catch (e) {
+      toast({ key: "whisper", state: "failed", title: `${maker} can’t make subtitles`, text: errorText(e) });
+    }
     load();
   }
 
   async function getModel() {
-    await call("getWhisperModel");
-    toast({ key: "whispermodel", state: "working", title: "Getting Whisper’s Japanese model", text: "The title bar shows how it’s going." });
+    try {
+      await call("getWhisperModel");
+      toast({ key: "whispermodel", state: "working", title: "Getting Whisper’s Japanese model", text: "The title bar shows how it’s going." });
+    } catch (e) {
+      toast({ key: "whispermodel", state: "failed", title: "Couldn’t get Whisper’s model", text: errorText(e) });
+    }
   }
 
   async function lookAgain() {
@@ -176,8 +188,12 @@
   async function remove() {
     const show = card;
     if (!show || !confirm(`Remove ${show.title} from Telly? The video files stay where they are. Telly’s copies and subtitles are deleted.`)) return;
-    await call("removeShow", { id: show.id });
-    goto("/");
+    try {
+      await call("removeShow", { id: show.id });
+      goto("/");
+    } catch (e) {
+      toast({ key: "remove", state: "failed", title: `Couldn’t remove ${show.title}`, text: errorText(e) });
+    }
   }
 
   function tone(t: string) {

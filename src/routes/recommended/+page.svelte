@@ -6,6 +6,7 @@
   import { call, callKept, errorText, inTauri, kept, setWindowTitle, type Pick, type Recommended } from "$lib/api";
   import { plural } from "$lib/format";
   import { app } from "$lib/state.svelte";
+  import { toast } from "$lib/toast-store.svelte";
 
   /** How many picks show at first, and how many Show more adds. */
   const STEP = 12;
@@ -73,10 +74,14 @@
 
   async function openOnAniList(p: Pick) {
     const link = `https://anilist.co/anime/${p.id}`;
-    if (inTauri) {
-      const { openUrl } = await import("@tauri-apps/plugin-opener");
-      await openUrl(link);
-    } else window.open(link);
+    try {
+      if (inTauri) {
+        const { openUrl } = await import("@tauri-apps/plugin-opener");
+        await openUrl(link);
+      } else window.open(link);
+    } catch (e) {
+      toast({ key: "link", state: "failed", title: "Couldn’t open the browser", text: errorText(e) });
+    }
   }
 
   /** "Film · 2016", "TV · 2011 · 148 episodes". */

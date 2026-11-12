@@ -9,6 +9,7 @@
   import { call, callKept, errorText, kept, mediaUrl, pickFolder, setWindowTitle, type FoundLine, type LineSearch, type Library, type Settings, type ShowCard } from "$lib/api";
   import { clock, plural, statusOf } from "$lib/format";
   import { app } from "$lib/state.svelte";
+  import { toast } from "$lib/toast-store.svelte";
 
   let lib = $state.raw<Library | null>(kept<Library>("library"));
   let error = $state("");
@@ -208,7 +209,11 @@
   async function remove(s: ShowCard) {
     menu = null;
     if (!confirm(`Remove ${s.title} from Telly? The video files stay where they are. Telly’s copies and subtitles are deleted.`)) return;
-    await call("removeShow", { id: s.id });
+    try {
+      await call("removeShow", { id: s.id });
+    } catch (e) {
+      toast({ key: "remove", state: "failed", title: `Couldn’t remove ${s.title}`, text: errorText(e) });
+    }
     load();
   }
 

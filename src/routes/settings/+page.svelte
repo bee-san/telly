@@ -67,12 +67,18 @@
     setWindowTitle("Settings — Telly");
     load();
     let unlisten: (() => void) | null = null;
+    let left = false;
     if (inTauri) {
-      import("@tauri-apps/api/event").then(({ listen }) =>
-        listen<HostStatus>("hachidori-status", (e) => {
-          if (hd) hd.status = e.payload;
-        }).then((u) => (unlisten = u)),
-      );
+      import("@tauri-apps/api/event")
+        .then(({ listen }) =>
+          listen<HostStatus>("hachidori-status", (e) => {
+            if (hd) hd.status = e.payload;
+          }),
+        )
+        // Left before it was listening: it stops at once.
+        .then((u) => (left ? u() : (unlisten = u)))
+        // Without it, Hachidori's status stays as it was when the page opened.
+        .catch(() => {});
     }
     const timer = setInterval(async () => {
       status = await call<Status>("status").catch(() => status);
@@ -81,6 +87,7 @@
       own = await call<OwnHachidori>("ownHachidori").catch(() => own);
     }, 5000);
     return () => {
+      left = true;
       clearInterval(timer);
       unlisten?.();
     };
@@ -120,12 +127,20 @@
     const path = await pickFile("Choose ffmpeg.exe", ["exe"], "ffmpeg");
     if (!path) return;
     await set("tools.ffmpeg", path);
-    status = await call<Status>("findTools");
+    try {
+      status = await call<Status>("findTools");
+    } catch (e) {
+      toast({ key: "tools", state: "failed", title: "Couldn’t look for ffmpeg", text: errorText(e) });
+    }
   }
 
   async function lookAgain() {
-    status = await call<Status>("findTools");
-    toast({ key: "tools", state: status.tools.ffmpeg ? "done" : "failed", title: status.tools.ffmpeg ? "Found ffmpeg" : "No ffmpeg found", text: status.tools.ffmpeg ?? "Choose ffmpeg.exe yourself." });
+    try {
+      status = await call<Status>("findTools");
+      toast({ key: "tools", state: status.tools.ffmpeg ? "done" : "failed", title: status.tools.ffmpeg ? "Found ffmpeg" : "No ffmpeg found", text: status.tools.ffmpeg ?? "Choose ffmpeg.exe yourself." });
+    } catch (e) {
+      toast({ key: "tools", state: "failed", title: "Couldn’t look for ffmpeg", text: errorText(e) });
+    }
   }
 
   async function kikuFields() {
@@ -143,9 +158,14 @@
   }
 
   async function freeAll() {
-    const r = await call<{ episodes: number; bytes: number }>("freeSpace", { show: null });
-    toast({ key: "free", state: "done", title: r.episodes ? `Freed ${bytes(r.bytes)}` : "Nothing to free", text: r.episodes ? `Removed Telly’s copies of ${r.episodes} watched episodes.` : "Only copies of watched episodes are removed." });
-    status = await call<Status>("status");
+    try {
+      const r = await call<{ episodes: number; bytes: number }>("freeSpace", { show: null });
+      toast({ key: "free", state: "done", title: r.episodes ? `Freed ${bytes(r.bytes)}` : "Nothing to free", text: r.episodes ? `Removed Telly’s copies of ${r.episodes} watched episodes.` : "Only copies of watched episodes are removed." });
+    } catch (e) {
+      toast({ key: "free", state: "failed", title: "Couldn’t free up space", text: errorText(e) });
+    }
+    // Asked for again every 5 seconds anyway.
+    status = await call<Status>("status").catch(() => status);
   }
 
   /** Moves Telly's copies of episodes to another folder (null: Telly's own again). */
@@ -193,8 +213,12 @@
   });
 
   async function restartHachidori() {
-    await hachidoriStart();
-    hd = await hachidoriInfo();
+    try {
+      await hachidoriStart();
+      hd = await hachidoriInfo();
+    } catch (e) {
+      toast({ key: "hd", state: "failed", title: "Couldn’t restart Hachidori", text: errorText(e) });
+    }
   }
 
   const hdText = $derived.by(() => {
@@ -223,8 +247,12 @@
   );
 
   async function remakeNames() {
-    names = await call<NamesStatus>("rebuildNames");
-    toast({ key: "names", state: "working", title: "Making the character dictionary again", text: "Every cast is fetched from AniList again. The title bar shows how it’s going." });
+    try {
+      names = await call<NamesStatus>("rebuildNames");
+      toast({ key: "names", state: "working", title: "Making the character dictionary again", text: "Every cast is fetched from AniList again. The title bar shows how it’s going." });
+    } catch (e) {
+      toast({ key: "names", state: "failed", title: "Couldn’t make the character dictionary again", text: errorText(e) });
+    }
   }
 
   const namesText = $derived.by(() => {
@@ -250,7 +278,17 @@
 
   async function chooseWhisperModel(file: string) {
     await set("whisper.model", file);
-    status = await call<Status>("status");
+    // Asked for again every 5 seconds anyway.
+    status = await call<Status>("status").catch(() => status);
+  }
+
+  async function getWhisperModel() {
+    try {
+      await call("getWhisperModel");
+      toast({ key: "whispermodel", state: "working", title: "Getting Whisper’s Japanese model", text: "The title bar shows how it’s going." });
+    } catch (e) {
+      toast({ key: "whispermodel", state: "failed", title: "Couldn’t get Whisper’s model", text: errorText(e) });
+    }
   }
 
   /** OpenRouter's models for making subtitles, and who each one's are marked as made by. The first is used until one is picked. */
@@ -277,15 +315,23 @@
   }
 
   async function anilistSignOut() {
-    await call("anilistSignOut");
-    settings = await call<Settings>("settings");
+    try {
+      await call("anilistSignOut");
+      settings = await call<Settings>("settings");
+    } catch (e) {
+      toast({ key: "anilist", state: "failed", title: "Not signed out", text: errorText(e) });
+    }
   }
 
   async function openLink(link: string) {
-    if (inTauri) {
-      const { openUrl } = await import("@tauri-apps/plugin-opener");
-      await openUrl(link);
-    } else window.open(link);
+    try {
+      if (inTauri) {
+        const { openUrl } = await import("@tauri-apps/plugin-opener");
+        await openUrl(link);
+      } else window.open(link);
+    } catch (e) {
+      toast({ key: "link", state: "failed", title: "Couldn’t open the browser", text: errorText(e) });
+    }
   }
 </script>
 
@@ -405,7 +451,7 @@
     <p class="lede">Telly makes a dictionary of the characters in the shows being watched, from AniList, the way characterdictionary.tokyo does, and adds it to Hachidori as “Telly characters”. Hovering a name shows who it is, with their picture and how they’re being addressed. Their names are also coloured in the subtitles.</p>
     <p class="lede">{namesText}</p>
     <div class="rows">
-      <label class="check"><input type="checkbox" checked={bool("names.enabled", true)} onchange={async (e) => { await set("names.enabled", e.currentTarget.checked); names = await call<NamesStatus>("namesStatus"); }} /><span>Make the character dictionary<small>The casts of the six most recently watched shows.</small></span></label>
+      <label class="check"><input type="checkbox" checked={bool("names.enabled", true)} onchange={async (e) => { await set("names.enabled", e.currentTarget.checked); names = await call<NamesStatus>("namesStatus").catch(() => names); }} /><span>Make the character dictionary<small>The casts of the six most recently watched shows.</small></span></label>
       <label class="check"><input type="checkbox" checked={bool("names.spoilers", false)} onchange={(e) => set("names.spoilers", e.currentTarget.checked)} /><span>Include spoilers<small>AniList marks some of a character’s description and names as spoilers. They’re left out unless this is on.</small></span></label>
       <label class="check"><input type="checkbox" checked={bool("player.names", true)} onchange={(e) => set("player.names", e.currentTarget.checked)} /><span>Colour characters’ names in the subtitles</span></label>
     </div>
@@ -505,7 +551,7 @@
         <p class="muted mono path">{status.tools.whisperModel}</p>
       {:else}
         <div class="actions">
-          <button type="button" class="btn quiet" onclick={async () => { await call("getWhisperModel"); toast({ key: "whispermodel", state: "working", title: "Getting Whisper’s Japanese model", text: "The title bar shows how it’s going." }); }}>Get model</button>
+          <button type="button" class="btn quiet" onclick={getWhisperModel}>Get model</button>
         </div>
       {/if}
     {/if}

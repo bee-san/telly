@@ -393,7 +393,10 @@
       title: ev.title,
       text: ev.text,
       ja: true,
-      action: ev.state === "failed" && ev.jobId ? { label: "Retry", run: () => call("retryCard", { job: ev.jobId }) } : undefined,
+      action:
+        ev.state === "failed" && ev.jobId
+          ? { label: "Retry", run: () => call("retryCard", { job: ev.jobId }).catch((e) => toast({ key, state: "failed", title: "Couldn’t retry the card", text: errorText(e) })) }
+          : undefined,
     });
   }
 
@@ -971,6 +974,18 @@
     await call("closePlayer", { id: view.episode.id, position: video?.currentTime ?? null }).catch(() => {});
   }
 
+  /** The video won't play: Telly converts the episode, and its show's page says how that's going. */
+  async function convert() {
+    if (!view) return;
+    const { episode, show } = view;
+    try {
+      await call("retryMedia", { id: episode.id, force: true });
+      leave(`/show?id=${show.id}`);
+    } catch (e) {
+      toast({ key: "convert", state: "failed", title: "Couldn’t convert the episode", text: errorText(e) });
+    }
+  }
+
   async function leave(to = "/") {
     stopWaiting();
     await close();
@@ -1270,7 +1285,7 @@
       <p>{error || videoError}</p>
       <div class="end-actions">
         {#if videoError && view}
-          <button type="button" class="btn" onclick={async () => { if (view) { await call("retryMedia", { id: view.episode.id, force: true }); leave(`/show?id=${view.show.id}`); } }}>Convert this episode</button>
+          <button type="button" class="btn" onclick={convert}>Convert this episode</button>
         {/if}
         <button type="button" class="btn quiet" onclick={() => leave(view ? `/show?id=${view.show.id}` : "/")}>Back</button>
       </div>

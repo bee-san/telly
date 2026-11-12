@@ -542,10 +542,21 @@ fn outside_words(kept: Vec<Kept>, q: &str) -> Vec<Hit> {
     kept.into_iter()
         .filter_map(|kept| {
             let spans: Vec<(usize, usize)> = unpack(&kept.words).map(|w| (w.from, w.to)).collect();
-            let from = kept.text.match_indices(q).map(|(at, _)| at).find(|&at| !spans.iter().any(|&(from, to)| from < at + q.len() && at < to))?;
+            let from = places(&kept.text, q).find(|&at| !spans.iter().any(|&(from, to)| from < at + q.len() && at < to))?;
             Some(Hit { from, to: from + q.len(), kept })
         })
         .collect()
+}
+
+/// Every place `q` is written in `text`, in order, those that overlap one
+/// another too: ハハ in アハハハ at its second character and its third.
+fn places<'a>(text: &'a str, q: &'a str) -> impl Iterator<Item = usize> + 'a {
+    let mut next = 0;
+    std::iter::from_fn(move || {
+        let at = next + text.get(next..)?.find(q)?;
+        next = at + text[at..].chars().next().map_or(1, char::len_utf8);
+        Some(at)
+    })
 }
 
 /// How many of a line's other words you don't know: words that aren't the
@@ -962,6 +973,18 @@ mod tests {
     }
 
     #[test]
+    fn a_text_written_over_itself_is_found_where_it_s_outside_the_words() {
+        let index = index();
+        // Hachidori reads ハハ as 母 in one line. In アハハハ it has アハ, so the ハハ
+        // outside it starts at the third character, inside the ハハ at the second.
+        let lines = [line(1.0, 2.0, "ハハに会う"), line(3.0, 4.0, "アハハハ")];
+        let uses = [word(0, &lines[0].text, "ハハ", "母", "はは"), word(1, &lines[1].text, "アハ", "アハ", "あは")];
+        index.replace(8, &entries(&lines, &uses).unwrap(), "now", true).unwrap();
+        let hits = hits(&index, "ハハ").unwrap();
+        assert_eq!(hits.iter().map(|h| (h.kept.line, h.from)).collect::<Vec<_>>(), [(0, 0), (1, "アハ".len())]);
+    }
+
+    #[test]
     fn text_is_found_as_it_s_written() {
         let index = index();
         let lines = [line(1.0, 2.0, "全品50%オフ！"), line(3.0, 4.0, "50_50だね"), line(5.0, 6.0, "Abcの歌")];
@@ -1227,5 +1250,333 @@ mod tests {
         let mut expected = Vec::new();
         whole.crop_imm(16, 9, 16, 9).to_rgb8().write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(&mut expected, 85)).unwrap();
         assert!(cut(&png, 10, 12, 11).unwrap() == expected);
+    }
+
+    // ---- A plain search, line by line, to check the index's against ----
+
+    /// A small seeded random number generator (xorshift).
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+        fn pick<'a, T>(&mut self, items: &'a [T]) -> &'a T {
+            &items[self.below(items.len())]
+        }
+    }
+
+    /// Words a line may say: headword, reading, and how it may be written.
+    const SAID: &[(&str, &str, &[&str])] = &[
+        ("食べる", "たべる", &["食べる", "食べた", "食べない", "たべる"]),
+        ("魔法", "まほう", &["魔法"]),
+        ("魔法使い", "まほうつかい", &["魔法使い"]),
+        ("使い", "つかい", &["使い"]),
+        ("研究", "けんきゅう", &["研究"]),
+        ("最後", "さいご", &["最後"]),
+        ("後", "あと", &["後"]),
+        ("俺", "おれ", &["オラ", "おれ"]),
+        ("フリーレン", "ふりーれん", &["フリーレン"]),
+        ("フリーレン様", "ふりーれんさま", &["フリーレン様"]),
+        ("カメラ", "カメラ", &["カメラ"]),
+        ("駄目", "だめ", &["駄目", "ダメ", "だめ"]),
+        ("ダメ", "ダメ", &["ダメ"]),
+        ("本物", "ほんもの", &["本物"]),
+        ("行く", "いく", &["行く", "行った"]),
+        ("ジョン・ドウ", "じょん・どう", &["ジョン・ドウ"]),
+        ("Ｔシャツ", "てぃーしゃつ", &["Ｔシャツ", "Tシャツ"]),
+        ("ねえ", "", &["ねえ"]),
+        ("ハハ", "はは", &["ハハ"]),
+    ];
+
+    /// What's said between words: particles, pronouns, numbers, marks, and what FTS5 reads as syntax.
+    const BETWEEN: &[&str] = &[
+        "は", "が", "を", "の", "、", "。", "！", "？", "（", "）", "♪", "\n", " ", "　", "俺", "君", "二人", "ああ", "ね", "後で", "ＡＢＣ", "ABC", "abc", "\"", "*",
+        "NEAR(", "^", "-", ":", " OR ", "AND", "'", "%", "_", "ｶﾒﾗ", "ねえねえ", "ハハハ", "魔", "法", "使",
+    ];
+
+    /// A line as the plain search sees it: its text without line breaks, and its saved words.
+    struct Plain {
+        episode: i64,
+        line: usize,
+        text: String,
+        words: Vec<(String, String, usize, usize)>,
+    }
+
+    /// A made-up library: each episode's ID, whether its words are saved, and its lines.
+    fn library(rng: &mut Rng) -> Vec<(i64, bool, Vec<Line>, Vec<SavedUse>)> {
+        let mut episodes = Vec::new();
+        for id in 1..=1 + rng.below(6) as i64 {
+            let saved = rng.below(4) != 0;
+            let (mut lines, mut uses) = (Vec::new(), Vec::new());
+            for l in 0..rng.below(9) {
+                let mut text = String::new();
+                for _ in 0..rng.below(8) {
+                    if rng.below(2) == 0 {
+                        let (headword, reading, written) = *rng.pick(SAID);
+                        let surface = *rng.pick(written);
+                        // Hachidori doesn't always have it.
+                        if saved && rng.below(8) != 0 {
+                            let use_ = json!({ "line": l, "from": text.len(), "to": text.len() + surface.len(), "headword": headword, "reading": reading, "rank": null });
+                            uses.push(serde_json::from_value::<SavedUse>(use_).unwrap());
+                        }
+                        text.push_str(surface);
+                    } else {
+                        text.push_str(rng.pick(BETWEEN));
+                    }
+                }
+                lines.push(line(l as f64, l as f64 + 1.0, &text));
+            }
+            episodes.push((id, saved, lines, uses));
+        }
+        episodes
+    }
+
+    /// The library's lines as the plain search reads them, and an index of them.
+    fn indexed(episodes: &[(i64, bool, Vec<Line>, Vec<SavedUse>)], at: &Path, strict: bool) -> (Vec<Plain>, HashSet<i64>, Index) {
+        let _ = std::fs::remove_dir_all(at);
+        std::fs::create_dir_all(at).unwrap();
+        let index = Index::open(&at.join("telly-lines.sqlite")).unwrap();
+        let mut plain = Vec::new();
+        let mut saved = HashSet::new();
+        for (id, with_words, lines, uses) in episodes {
+            let entries = entries(lines, uses).unwrap();
+            for (l, (line, entry)) in lines.iter().zip(&entries).enumerate() {
+                let text = line.text.replace('\n', "");
+                let moved = |at: usize| at - line.text[..at].matches('\n').count();
+                let words: Vec<(String, String, usize, usize)> = uses
+                    .iter()
+                    .filter(|u| u.line == l)
+                    .map(|u| (u.headword.clone(), if u.reading.is_empty() { u.headword.clone() } else { u.reading.clone() }, moved(u.from), moved(u.to)))
+                    .collect();
+                // What's put in for it is the line and its words where they're written.
+                assert_eq!(entry.text, text);
+                let kept: Vec<(String, String, usize, usize)> = unpack(&entry.words).map(|w| (w.headword.to_string(), w.reading.to_string(), w.from, w.to)).collect();
+                // A verb's or an adjective's endings may be taken in.
+                if strict {
+                    assert_eq!(kept.len(), words.len(), "{:?}", line.text);
+                    for (k, w) in kept.iter().zip(&words) {
+                        assert!((&k.0, &k.1, k.2) == (&w.0, &w.1, w.2) && k.3 >= w.3, "{:?}: {k:?} for {w:?}", line.text);
+                    }
+                }
+                plain.push(Plain { episode: *id, line: l, text, words: kept });
+            }
+            index.replace(*id, &entries, "now", *with_words).unwrap();
+            if *with_words {
+                saved.insert(*id);
+            }
+        }
+        (plain, saved, index)
+    }
+
+    /// What a search for `q` finds, read off every line as the module's doc says.
+    fn plainly(plain: &[Plain], saved: &HashSet<i64>, q: &str) -> Vec<(i64, usize, usize, usize)> {
+        let mut forms = vec![q.to_string(), kata_to_hira(q)];
+        forms.extend(premine::dictionary_form(q));
+        let honorific = |headword: &str| q.chars().count() >= 2 && headword.strip_prefix(q).is_some_and(|rest| HONORIFIC_SUFFIXES.iter().any(|h| h.0 == rest));
+        let is_it = |(headword, reading, _, _): &&(String, String, usize, usize)| forms.contains(headword) || forms.contains(reading) || honorific(headword);
+        let as_word: Vec<(i64, usize, usize, usize)> =
+            plain.iter().filter_map(|p| p.words.iter().find(is_it).map(|w| (p.episode, p.line, w.2, w.3))).collect();
+        // Every place it's written, overlapping ones too.
+        let places = |text: &str| -> Vec<usize> {
+            if !text.contains(q) {
+                return Vec::new();
+            }
+            (0..text.len()).filter(|&at| text.is_char_boundary(at) && text[at..].starts_with(q)).collect()
+        };
+        let first = |p: &Plain| places(&p.text).first().map(|&at| (p.episode, p.line, at, at + q.len()));
+        // A single kana is looked for only as a word.
+        let by_text = q.chars().count() >= 2 || contains_kanji(q);
+        let mut found = as_word.clone();
+        if by_text && as_word.is_empty() {
+            // A word nowhere: every line it's written in.
+            found.extend(plain.iter().filter_map(first));
+        } else if by_text && premine::dictionary_form(q).is_some() {
+            // A word premining keeps: as it's written, only where words aren't saved.
+            found.extend(plain.iter().filter(|p| !saved.contains(&p.episode)).filter_map(first));
+        } else if by_text {
+            // One it doesn't keep: also where it's written outside every saved word.
+            for p in plain.iter().filter(|p| !as_word.iter().any(|f| (f.0, f.1) == (p.episode, p.line))) {
+                let outside = places(&p.text).into_iter().find(|&at| p.words.iter().all(|w| w.3 <= at || at + q.len() <= w.2));
+                found.extend(outside.map(|at| (p.episode, p.line, at, at + q.len())));
+            }
+        }
+        found.sort();
+        found
+    }
+
+    /// What to search a library for: its words in every way they're written, bits of its lines, and FTS5's syntax.
+    fn queries(rng: &mut Rng, plain: &[Plain]) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for (headword, reading, written) in SAID {
+            out.extend([headword.to_string(), reading.to_string(), names::kana::hira_to_kata(reading), kata_to_hira(headword)]);
+            out.extend(written.iter().map(|w| w.to_string()));
+        }
+        out.extend(BETWEEN.iter().map(|b| b.to_string()));
+        out.extend(["\"本物\"", "本物*", "NEAR(魔法", "魔法 OR 研究", "^魔法", "-魔法", "魔法:", "'魔法'", "ＡＢＣの", "ABCの", "魔法使", "法使い", "後で", "最後後", "ねえねえ", "ハハハ"].map(String::from));
+        for _ in 0..30 {
+            let Some(p) = (!plain.is_empty()).then(|| rng.pick(plain)) else { break };
+            let chars: Vec<char> = p.text.chars().collect();
+            if chars.is_empty() {
+                continue;
+            }
+            let from = rng.below(chars.len());
+            let to = (from + 1 + rng.below(6)).min(chars.len());
+            out.push(chars[from..to].iter().collect());
+        }
+        out.into_iter().map(|q| q.trim().to_string()).filter(|q| contains_japanese(q)).collect()
+    }
+
+    #[test]
+    fn lists_what_a_plain_search_lists() {
+        let mut rng = Rng(0x0dd5_eed5_0000_0042);
+        let dir = std::env::temp_dir().join(format!("telly-lines-listed-{}", std::process::id()));
+        for library_n in 0..6 {
+            let _ = std::fs::remove_dir_all(&dir);
+            let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+            // Shows of several episodes, some with a lot of lines.
+            let mut episodes: Vec<(i64, bool, Vec<Line>, Vec<SavedUse>)> = Vec::new();
+            let mut of: HashMap<i64, (i64, i64, i64)> = HashMap::new();
+            let mut generated = library(&mut rng);
+            for _ in 0..rng.below(6) {
+                // Many lines of a few words, to be more than a show lists.
+                let mut more = library(&mut rng);
+                for e in &mut more {
+                    for _ in 0..4 {
+                        let copy: Vec<Line> = e.2.clone();
+                        let base = e.2.len();
+                        e.2.extend(copy);
+                        let moved = |u: &SavedUse| {
+                            let mut u = serde_json::to_value(u).unwrap();
+                            u["line"] = json!(u["line"].as_u64().unwrap() as usize + base);
+                            serde_json::from_value::<SavedUse>(u).unwrap()
+                        };
+                        let uses: Vec<SavedUse> = e.3.iter().map(moved).collect();
+                        e.3.extend(uses);
+                    }
+                }
+                generated.extend(more);
+            }
+            let shows: Vec<i64> = (0..1 + rng.below(3))
+                .map(|s| backend.db.add_show(&crate::db::NewShow { folder: format!("Show {s}"), title: format!("Show {s}"), ..Default::default() }).unwrap())
+                .collect();
+            for (n, (_, saved, lines, uses)) in generated.into_iter().enumerate() {
+                let show = *rng.pick(&shows);
+                let number = n as i64 + 1;
+                backend.db.add_episodes(show, &[crate::db::NewEpisode { number, path: format!("{n}.mkv"), size: 1, duration: 1400.0 }]).unwrap();
+                let id = backend.db.episodes(show).unwrap().into_iter().find(|e| e.number == number).unwrap().id;
+                let nudge = rng.below(6001) as i64 - 3000;
+                backend.db.set_nudge(id, nudge).unwrap();
+                of.insert(id, (show, number, nudge));
+                // Lines start at different times.
+                let lines: Vec<Line> = lines.into_iter().map(|l| Line { start: l.start * 3.0 + rng.below(3) as f64, end: l.start * 3.0 + 4.0, ..l }).collect();
+                episodes.push((id, saved, lines, uses));
+            }
+            let known: Vec<&str> = SAID.iter().map(|s| s.0).filter(|_| rng.below(3) == 0).collect();
+            let notes: HashMap<String, &str> = known.iter().enumerate().map(|(i, w)| (i.to_string(), *w)).collect();
+            std::fs::write(dir.join("known-words.json"), json!({ "search": "", "notes": notes, "mature": [] }).to_string()).unwrap();
+            let (plain, saved, _) = indexed(&episodes, &dir.join("plain"), true);
+            for (id, with_words, lines, uses) in &episodes {
+                backend.lines.replace(*id, &entries(lines, uses).unwrap(), "now", *with_words).unwrap();
+            }
+            for q in queries(&mut rng, &plain) {
+                let answer = find(&backend, &q).unwrap();
+                let listed = answer["lines"].as_array().unwrap();
+                // As plainly found, with what the Library lists them by.
+                let forms = forms(&q);
+                let mut expected: HashMap<(i64, usize), Value> = HashMap::new();
+                let mut keys: HashMap<i64, Vec<(usize, i64, f64)>> = HashMap::new();
+                for (episode, line, from, to) in plainly(&plain, &saved, &q) {
+                    let p = plain.iter().find(|p| (p.episode, p.line) == (episode, line)).unwrap();
+                    let (show, number, nudge) = of[&episode];
+                    let start = episodes.iter().find(|e| e.0 == episode).unwrap().2[line].start + nudge as f64 / 1000.0;
+                    let end = episodes.iter().find(|e| e.0 == episode).unwrap().2[line].end + nudge as f64 / 1000.0;
+                    let said = premine::said(&p.text, from);
+                    let unknown = saved.contains(&episode).then(|| {
+                        let mut others: Vec<&str> = Vec::new();
+                        for w in &p.words {
+                            let theirs = forms.contains(&w.0) || forms.contains(&w.1) || (w.2 < to && from < w.3);
+                            if !theirs && !known.contains(&w.0.as_str()) && !known.contains(&w.1.as_str()) && !premine::bracketed(&p.text, w.2) && !others.contains(&w.0.as_str()) {
+                                others.push(&w.0);
+                            }
+                        }
+                        others.len()
+                    });
+                    let reach = if said { 0 } else { 2_000_000 } + unknown.unwrap_or(1_000_000);
+                    keys.entry(show).or_default().push((reach, number, start));
+                    expected.insert(
+                        (episode, line),
+                        json!({ "episodeId": episode, "showId": show, "number": number, "line": line, "start": start, "end": end, "before": &p.text[..from], "word": &p.text[from..to], "after": &p.text[to..], "unknown": unknown, "said": said, "picture": (start.max(0.0) / media::SHEET_EVERY).round() as usize }),
+                    );
+                }
+                let context = || format!("library {library_n}, {q:?}");
+                let totals: HashMap<i64, usize> = keys.iter().map(|(s, k)| (*s, k.len())).collect();
+                let shows_answer: HashMap<i64, usize> = answer["shows"].as_object().unwrap().iter().map(|(s, n)| (s.parse().unwrap(), n.as_u64().unwrap() as usize)).collect();
+                assert_eq!(shows_answer, totals, "{}", context());
+                let mut seen = HashSet::new();
+                let mut listed_keys: HashMap<i64, Vec<(usize, i64, f64)>> = HashMap::new();
+                let mut last: Option<(usize, i64, f64)> = None;
+                for l in listed {
+                    let at = (l["episodeId"].as_i64().unwrap(), l["line"].as_u64().unwrap() as usize);
+                    assert!(seen.insert(at), "{}: {at:?} twice", context());
+                    assert_eq!(Some(l), expected.get(&at), "{}", context());
+                    let key = (if l["said"].as_bool().unwrap() { 0 } else { 2_000_000 } + l["unknown"].as_u64().map_or(1_000_000, |u| u as usize), l["number"].as_i64().unwrap(), l["start"].as_f64().unwrap());
+                    assert!(last.is_none_or(|last| (last.0, last.1).cmp(&(key.0, key.1)).then(last.2.total_cmp(&key.2)).is_le()), "{}: out of order", context());
+                    last = Some(key);
+                    listed_keys.entry(l["showId"].as_i64().unwrap()).or_default().push(key);
+                }
+                // Each show's soonest lines, PER_SHOW at most.
+                for (show, mut all) in keys {
+                    all.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)).then(a.2.total_cmp(&b.2)));
+                    all.truncate(PER_SHOW);
+                    let mut got = listed_keys.remove(&show).unwrap_or_default();
+                    got.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)).then(a.2.total_cmp(&b.2)));
+                    assert_eq!(got, all, "{}: show {show}", context());
+                }
+            }
+            drop(backend);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn finds_what_a_plain_search_of_every_line_finds() {
+        let mut rng = Rng(0x5eed_1234_abcd_0001);
+        let at = std::env::temp_dir().join(format!("telly-lines-plain-{}", std::process::id()));
+        for library_n in 0..40 {
+            let episodes = library(&mut rng);
+            let (plain, saved, index) = indexed(&episodes, &at, true);
+            // Some episodes' text not in line_text yet, as before catch_up.
+            let behind: Vec<i64> = episodes.iter().map(|e| e.0).filter(|_| rng.below(3) == 0).collect();
+            for id in &behind {
+                let conn = index.conn().unwrap();
+                conn.execute("DELETE FROM line_text WHERE rowid >= ?1 AND rowid < ?2", params![id * PER_EPISODE, (id + 1) * PER_EPISODE]).unwrap();
+                conn.execute("UPDATE indexed SET text = 0 WHERE episode_id = ?1", params![id]).unwrap();
+            }
+            let qs = queries(&mut rng, &plain);
+            for round in 0..2 {
+                for q in &qs {
+                    let mut got: Vec<(i64, usize, usize, usize)> = hits(&index, q).unwrap().iter().map(|h| (h.kept.episode_id, h.kept.line, h.from, h.to)).collect();
+                    let lines: HashSet<(i64, usize)> = got.iter().map(|g| (g.0, g.1)).collect();
+                    assert_eq!(lines.len(), got.len(), "a line found twice for {q:?}");
+                    got.sort();
+                    let expected = plainly(&plain, &saved, q);
+                    if got != expected {
+                        let lines: Vec<String> = plain.iter().map(|p| format!("{}:{} {:?} {:?}", p.episode, p.line, p.text, p.words)).collect();
+                        panic!("library {library_n}, round {round}, {q:?}:\n got      {got:?}\n expected {expected:?}\n saved {saved:?}\n{}", lines.join("\n"));
+                    }
+                }
+                for id in index.without_text().unwrap() {
+                    index.index_text(id).unwrap();
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&at);
     }
 }

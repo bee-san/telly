@@ -970,8 +970,11 @@
   async function close() {
     if (!view || closed) return;
     closed = true;
+    // Where it was left, read before the page (and its video) can go.
+    const id = view.episode.id;
+    const position = video?.currentTime ?? null;
     await sendTick(true);
-    await call("closePlayer", { id: view.episode.id, position: video?.currentTime ?? null }).catch(() => {});
+    await call("closePlayer", { id, position }).catch(() => {});
   }
 
   /** The video won't play: Telly converts the episode, and its show's page says how that's going. */

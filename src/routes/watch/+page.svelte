@@ -997,6 +997,12 @@
     }, 1000);
   }
 
+  /** Stop (or Esc) on the countdown: it stays stopped for this episode, though the video reaches its end after. */
+  function holdCountdown() {
+    stopCountdown();
+    countdownStopped = true;
+  }
+
   function stopCountdown() {
     countdown = null;
     if (countTimer) clearInterval(countTimer);
@@ -1171,7 +1177,7 @@
         break;
       case "Escape":
         if (explaining) closeExplain();
-        else if (countdown !== null) stopCountdown();
+        else if (countdown !== null) holdCountdown();
         else if (subMenu) subMenu = false;
         else if (filterPanel) filterPanel = false;
         else if (audioMenu) audioMenu = false;
@@ -1608,7 +1614,7 @@
         <div class="end-actions">
           <button type="button" class="btn quiet" onclick={() => leave("/")}>Open library</button>
           {#if view.next}
-            <button type="button" class="btn quiet" onclick={() => { stopCountdown(); countdownStopped = true; }} disabled={countdown === null}>Stop</button>
+            <button type="button" class="btn quiet" onclick={holdCountdown} disabled={countdown === null}>Stop</button>
             <button type="button" class="btn" onclick={playNext} disabled={!view.next.ready}><Icon name="play" /><span>Play now</span></button>
           {/if}
         </div>

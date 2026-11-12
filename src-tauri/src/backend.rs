@@ -79,9 +79,11 @@ struct Playing {
     at: Instant,
     saved_at: Instant,
     session: Option<i64>,
-    /// Where this sitting began, and whether it has reached the point that
-    /// makes the episode watched: a rewatch counts once a sitting, played to.
-    from: f64,
+    /// Where this sitting began playing (its first tick that plays: the player
+    /// starts an episode you've watched from its beginning, wherever it was
+    /// left), and whether it has reached the point that makes the episode
+    /// watched: a rewatch counts once a sitting, played to.
+    from: Option<f64>,
     reached_end: bool,
 }
 
@@ -1223,21 +1225,7 @@ impl Backend {
         if first_time {
             self.names.poke();
         }
-        if let Ok(mut p) = self.playing.lock() {
-            self.end_sitting(p.take());
-            let now = Instant::now();
-            *p = Some(Playing {
-                episode_id: id,
-                show_id: episode.show_id,
-                position: episode.position,
-                playing: false,
-                at: now,
-                saved_at: now,
-                session: None,
-                from: episode.position,
-                reached_end: false,
-            });
-        }
+        self.begin_sitting(&episode);
         if let Some(m) = self.mining.get() {
             m.watch(true);
         }
@@ -1280,6 +1268,25 @@ impl Backend {
         }
         self.jobs.poke();
         self.episode_view(id)
+    }
+
+    /// The player opened `episode`: a sitting begins, and the last one ends.
+    fn begin_sitting(&self, episode: &Episode) {
+        if let Ok(mut p) = self.playing.lock() {
+            self.end_sitting(p.take());
+            let now = Instant::now();
+            *p = Some(Playing {
+                episode_id: episode.id,
+                show_id: episode.show_id,
+                position: episode.position,
+                playing: false,
+                at: now,
+                saved_at: now,
+                session: None,
+                from: None,
+                reached_end: false,
+            });
+        }
     }
 
     fn end_sitting(&self, p: Option<Playing>) {
@@ -1335,7 +1342,7 @@ impl Backend {
                     at: now,
                     saved_at: now,
                     session: None,
-                    from: a.position,
+                    from: None,
                     reached_end: false,
                 });
             }
@@ -1380,10 +1387,13 @@ impl Backend {
                     let _ = self.log.extend(session, now_ms(), seconds, &lines, a.subtitles);
                 }
             }
+            if a.playing && p.from.is_none() {
+                p.from = Some(a.position);
+            }
             // Watched to its end again: a rewatch (for AniList), once a sitting that played up to there.
             if duration > 0.0 && a.position >= watched_from && !p.reached_end {
                 p.reached_end = true;
-                if episode.watched_at.is_some() && p.from < watched_from {
+                if episode.watched_at.is_some() && p.from.is_some_and(|from| from < watched_from) {
                     rewatched = self.db.add_rewatch(a.id).is_ok();
                 }
             }
@@ -1926,6 +1936,28 @@ mod tests {
         let again: Vec<i64> = watches.iter().map(|w| w.0).filter(|id| *id == eps[0].id).collect();
         assert_eq!(again.len(), 2, "the first watch and one rewatch: {watches:?}");
         assert_eq!(watches.iter().filter(|w| w.0 == eps[1].id).count(), 1);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_episode_left_at_its_end_and_played_again_from_the_start_is_a_rewatch() {
+        let dir = std::env::temp_dir().join(format!("telly-rewatch-open-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let episodes = vec![crate::db::NewEpisode { number: 1, path: "1.mkv".into(), size: 1, duration: 1400.0 }];
+        let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let id = backend.db.episodes(show).unwrap()[0].id;
+        // Watched to its end, and left there.
+        backend.db.set_watched(id, true).unwrap();
+        backend.db.save_position(id, 1395.0).unwrap();
+        // Opened again: the player starts a watched episode from the beginning, and plays it to its end.
+        backend.begin_sitting(&backend.db.episode(id).unwrap().unwrap());
+        for position in [0.0, 1.0, 600.0, 1300.0] {
+            backend.tick(serde_json::from_value(json!({ "id": id, "position": position, "playing": position > 0.0 })).unwrap()).unwrap();
+        }
+        let watches = backend.db.watches_since(show, 0).unwrap();
+        assert_eq!(watches.len(), 2, "the first watch and the rewatch: {watches:?}");
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

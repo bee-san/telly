@@ -397,8 +397,9 @@ impl Backend {
         if let Some(folder) = &folder {
             std::fs::create_dir_all(folder).map_err(|e| anyhow!("Telly can’t use {folder}: {e}. Choose another folder."))?;
         }
+        let before = self.media_dir();
         self.db.set_setting("media.folder", &folder.map(Value::String).unwrap_or(Value::Null))?;
-        jobs::move_copies(self.clone());
+        jobs::move_copies(self.clone(), before);
         Ok(self.status())
     }
 
@@ -1523,6 +1524,30 @@ mod tests {
         // A second copy of an episode whose rip is still there is left alone.
         rip("[BD] Show - 01 [1080p].mkv");
         assert_eq!(backend.rescan(show).unwrap(), 0);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_new_copies_folder_gets_the_seek_bar_pictures_too() {
+        let dir = std::env::temp_dir().join(format!("telly-copies-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Arc::new(Backend::open(Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap());
+        let episodes = vec![crate::db::NewEpisode { number: 1, path: "1.mkv".into(), size: 1, duration: 1400.0 }];
+        let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let id = backend.db.episodes(show).unwrap()[0].id;
+        // A rip that plays as it is has no copy, but its pictures are in the copies folder.
+        let sheet = jobs::sheet_path(&backend, show, id);
+        std::fs::create_dir_all(sheet.parent().unwrap()).unwrap();
+        std::fs::write(&sheet, b"jpg").unwrap();
+        backend.set_media_folder(Some(dir.join("elsewhere").to_string_lossy().into_owned())).unwrap();
+        let moved = jobs::sheet_path(&backend, show, id);
+        assert!(moved.starts_with(dir.join("elsewhere")));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !moved.is_file() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(moved.is_file() && !sheet.exists());
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

@@ -544,11 +544,22 @@ pub fn sheet_path(backend: &Backend, show_id: i64, episode_id: i64) -> PathBuf {
     copy_path(backend, show_id, episode_id).with_extension("jpg")
 }
 
-/// Moves Telly's copies of episodes into the copies folder (Settings just
-/// chose another one), in the background. A copy on another drive is copied
-/// across, then deleted where it was.
-pub fn move_copies(backend: Arc<Backend>) {
+/// Moves Telly's copies of episodes, and every episode's seek-bar pictures,
+/// from the copies folder `before` into the one Settings just chose, in the
+/// background. A file on another drive is copied across, then deleted where
+/// it was. Pictures left behind would make every rip be read again.
+pub fn move_copies(backend: Arc<Backend>, before: PathBuf) {
     std::thread::spawn(move || {
+        for e in backend.db.all_episodes().unwrap_or_default() {
+            let from = before.join(e.show_id.to_string()).join(format!("{}.jpg", e.id));
+            let to = sheet_path(&backend, e.show_id, e.id);
+            if from != to && from.is_file() {
+                let _ = std::fs::create_dir_all(to.parent().expect("a folder"));
+                if std::fs::rename(&from, &to).is_err() && std::fs::copy(&from, &to).is_ok() {
+                    let _ = std::fs::remove_file(&from);
+                }
+            }
+        }
         let copies: Vec<Episode> = backend.db.all_episodes().unwrap_or_default().into_iter().filter(|e| !e.play_path.is_empty() && e.play_path != e.path).collect();
         let task = |progress: f64| {
             let label = "Moving Telly’s copies of episodes".to_string();

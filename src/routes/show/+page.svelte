@@ -105,11 +105,17 @@
   }
 
   async function chooseSubtitle(ep: EpisodeRow) {
-    const path = await pickFile("Subtitles for episode " + ep.number, ["srt", "ass", "ssa", "vtt"], "Subtitles");
-    if (!path) return;
-    toast({ key: "usesub", state: "working", title: "Syncing the file", text: path.split(/[\\/]/).pop() ?? "" });
-    await act(() => call("useSubtitle", { id: ep.id, path }));
-    toast({ key: "usesub", state: "done", title: "Subtitles synced", text: "" });
+    try {
+      const path = await pickFile("Subtitles for episode " + ep.number, ["srt", "ass", "ssa", "vtt"], "Subtitles");
+      if (!path) return;
+      const name = path.split(/[\\/]/).pop() ?? "";
+      toast({ key: "usesub", state: "working", title: "Syncing the file", text: name });
+      await call("useSubtitle", { id: ep.id, path });
+      toast({ key: "usesub", state: "done", title: "Subtitles synced", text: name });
+    } catch (e) {
+      toast({ key: "usesub", state: "failed", title: "Couldn’t use that file", text: errorText(e) });
+    }
+    load();
   }
 
   async function search() {

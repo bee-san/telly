@@ -1573,9 +1573,21 @@ fn hear_again(backend: &Backend) {
 /// Settles an episode no subtitle file fits: OpenRouter makes its subtitles
 /// when Settings has a key for it; else it has none, and `detail` says why.
 fn no_subtitles(backend: &Backend, episode_id: i64, detail: &str, score: Option<f64>) -> Result<()> {
+    forget_lines(backend, episode_id);
     let (state, detail) = if openrouter::chosen(backend).is_some() { ("whisper", "") } else { ("none", detail) };
     backend.db.set_subs(episode_id, state, detail, "", score, None)?;
     Ok(())
+}
+
+/// An episode's lines go when finding its subtitles again finds none: they
+/// were another file's, maybe another show's (Change match), and the player,
+/// premining and line search would go on using them. Its words, its lines in
+/// line search and its share of known words go with them.
+fn forget_lines(backend: &Backend, episode_id: i64) {
+    let _ = std::fs::remove_file(lines_path(backend, episode_id));
+    let _ = std::fs::remove_file(crate::premine::words_path(backend, episode_id));
+    let _ = backend.lines.forget(episode_id);
+    let _ = backend.db.forget_word_score(episode_id);
 }
 
 /// What a model on OpenRouter hears in a few stretches of an episode (see
@@ -1716,6 +1728,7 @@ fn find_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &Path, 
         if state == "none" {
             return no_subtitles(backend, episode.id, detail, None);
         }
+        forget_lines(backend, episode.id);
         backend.db.set_subs(episode.id, state, detail, "", None, None)?;
         return Ok(());
     }
@@ -1754,7 +1767,6 @@ fn find_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &Path, 
     };
     if synced.score < FITS_NOT {
         // Every file is another episode's, or another cut's: none is better than wrong ones.
-        let _ = std::fs::remove_file(lines_path(backend, episode.id));
         return no_subtitles(backend, episode.id, &format!("None of Jimaku’s {} files fit this episode", tried.len()), Some(synced.score));
     }
     // The numbering that fitted, for the rest of this season folder.
@@ -1886,6 +1898,27 @@ mod tests {
         // One that never had a copy still waits until it's near.
         backend.db.media_reset(after[21].id).unwrap();
         assert_eq!(take(&backend, "media").map(|(_, e, _)| e.number), None);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_episode_left_without_subtitles_doesn_t_keep_its_old_lines() {
+        let dir = std::env::temp_dir().join(format!("telly-none-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let episodes = vec![crate::db::NewEpisode { number: 1, path: "1.mkv".into(), size: 1, duration: 1400.0 }];
+        let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let id = backend.db.episodes(show).unwrap()[0].id;
+        // Lines from before Change match, with their words and share.
+        write_lines(&backend, id, &[Line { start: 1.0, end: 2.0, text: "前の番組".into(), ruby: vec![], speaker: String::new(), sign: false }]).unwrap();
+        std::fs::write(crate::premine::words_path(&backend, id), b"{}").unwrap();
+        backend.db.set_word_score(id, 10, 5, "x").unwrap();
+        no_subtitles(&backend, id, "Jimaku has nothing for this episode", None).unwrap();
+        assert!(read_lines(&backend, id).is_empty());
+        assert!(!crate::premine::words_path(&backend, id).exists());
+        assert!(!backend.db.word_scores().unwrap().contains_key(&id));
+        assert_eq!(backend.db.episode(id).unwrap().unwrap().subs_state, "none");
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

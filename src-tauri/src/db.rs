@@ -806,6 +806,12 @@ impl Db {
         Ok(rows.into_iter().collect())
     }
 
+    /// An episode with no lines any more has no share of known words.
+    pub fn forget_word_score(&self, episode_id: i64) -> Result<()> {
+        self.conn()?.execute("DELETE FROM word_scores WHERE episode_id = ?1", params![episode_id])?;
+        Ok(())
+    }
+
     pub fn set_word_score(&self, episode_id: i64, uses: i64, known: i64, stamp: &str) -> Result<()> {
         self.conn()?.execute(
             "INSERT INTO word_scores (episode_id, uses, known, stamp) VALUES (?1, ?2, ?3, ?4)

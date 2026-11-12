@@ -262,9 +262,25 @@ const CHUNK: u64 = 4 * 1024 * 1024;
 /// taken in turn with anything else reading the drive, get a fraction of it.
 const AHEAD_BLOCK: usize = 8 * 1024 * 1024;
 
+/// How far the reader goes past where the player last asked: a quarter of the
+/// computer's memory, from 512 MB to 4 GB. An episode is read to its end in
+/// one go. A file bigger than Windows' file cache (a 40 GB film) would push
+/// out what was read first, which is what the player wants next, so it's
+/// read as it plays instead.
+fn ahead_max() -> u64 {
+    static MAX: OnceLock<u64> = OnceLock::new();
+    *MAX.get_or_init(|| {
+        let total = sysinfo::System::new().ok().map(|mut s| {
+            s.refresh_memory();
+            s.total_memory()
+        });
+        (total.unwrap_or(0) / 4).clamp(512 << 20, 4 << 30)
+    })
+}
+
 /// The reading ahead of the episode in the player (see `Backend::read_ahead`):
-/// the file, where the reading started, how far it has got, and which reader
-/// it is (a new one takes over when the player jumps).
+/// the file, where the player last asked from, how far the reading has got,
+/// and which reader it is (a new one takes over when the player jumps).
 #[derive(Default)]
 struct Ahead {
     at: Mutex<(PathBuf, u64, u64, u64)>,
@@ -436,15 +452,17 @@ impl Backend {
     }
 
     /// Reads an episode's video ahead of the player, from `start` (where the
-    /// player just asked for) to the end, so what the player asks for next is
-    /// in Windows' file cache already and comes from memory, not the drive.
+    /// player just asked for) on, up to `ahead_max` past where the player last
+    /// asked (an episode's end), so what the player asks for next is in
+    /// Windows' file cache already and comes from memory, not the drive.
     /// The player itself keeps only a few seconds ahead. One reader at a time:
     /// asking from somewhere it isn't (another episode, a jump) starts a new
     /// one there, and the old one stops.
     fn read_ahead(&self, path: &Path, start: u64) {
         let Ok(mut at) = self.ahead.at.lock() else { return };
-        // The reader is here, or will be within a block.
+        // The reader is here, or will be within a block: it goes on from where the player is.
         if at.0 == path && start >= at.1 && start <= at.2 + AHEAD_BLOCK as u64 {
+            at.1 = start;
             return;
         }
         *at = (path.to_path_buf(), start, start, at.3 + 1);
@@ -456,6 +474,18 @@ impl Backend {
             }
             let mut block = vec![0; AHEAD_BLOCK];
             loop {
+                // Far enough ahead: wait for the player to catch up, or for another reader.
+                loop {
+                    let Ok(at) = ahead.at.lock() else { return };
+                    if at.3 != reader {
+                        return;
+                    }
+                    if at.2 < at.1 + ahead_max() {
+                        break;
+                    }
+                    drop(at);
+                    std::thread::sleep(Duration::from_millis(500));
+                }
                 let read = file.read(&mut block).unwrap_or(0);
                 let Ok(mut at) = ahead.at.lock() else { return };
                 if read == 0 || at.3 != reader {

@@ -486,15 +486,27 @@ fn by_text(q: &str) -> bool {
 }
 
 /// The lines among `kept` that have one of `forms` as a word, or `name` with an
-/// honorific after it: the first such word is what's found.
+/// honorific after it: the first such word that's said is what's found.
 fn word_hits(kept: Vec<Kept>, forms: &[String], name: Option<&str>) -> Vec<Hit> {
     kept.into_iter()
         .filter_map(|kept| {
             let is_it = |w: &Word| w.is_one_of(forms) || name.is_some_and(|n| with_honorific(w.headword, n));
-            let (from, to) = unpack(&kept.words).find(is_it).map(|w| (w.from, w.to))?;
+            let (from, to) = said_first(&kept.text, unpack(&kept.words).filter(is_it).map(|w| (w.from, w.to)))?;
             Some(Hit { kept, from, to })
         })
         .collect()
+}
+
+/// The first of `found` (places in `text`, in order) that's said, or the first
+/// when none is: タリア where it's said in -（タリア）ハァ -（ウィーク）タリア？, not
+/// where the caption names who's speaking.
+fn said_first(text: &str, mut found: impl Iterator<Item = (usize, usize)>) -> Option<(usize, usize)> {
+    let first = found.next()?;
+    // Only brackets make one place said and another not: a song's line (♪) is sung all through.
+    if !text.contains(['（', '(']) || premine::said(text, first.0) {
+        return Some(first);
+    }
+    Some(found.find(|f| premine::said(text, f.0)).unwrap_or(first))
 }
 
 /// The lines a search for `q` finds: those with `q` as a word, in any of its
@@ -529,23 +541,25 @@ fn hits(index: &Index, q: &str) -> Result<Vec<Hit>> {
     Ok(hits)
 }
 
+/// The lines among `kept` with `q` in their text, each where it's first said.
 fn text_hits(kept: Vec<Kept>, q: &str) -> Vec<Hit> {
     kept.into_iter()
         .filter_map(|kept| {
-            let from = kept.text.find(q)?;
-            Some(Hit { from, to: from + q.len(), kept })
+            let (from, to) = said_first(&kept.text, places(&kept.text, q).map(|at| (at, at + q.len())))?;
+            Some(Hit { kept, from, to })
         })
         .collect()
 }
 
 /// The lines with `q` written outside every saved word of theirs, each at the
-/// first such `q`: 後 in 後で, not in 最後.
+/// first such `q` that's said: 後 in 後で, not in 最後.
 fn outside_words(kept: Vec<Kept>, q: &str) -> Vec<Hit> {
     kept.into_iter()
         .filter_map(|kept| {
             let spans: Vec<(usize, usize)> = unpack(&kept.words).map(|w| (w.from, w.to)).collect();
-            let from = places(&kept.text, q).find(|&at| !spans.iter().any(|&(from, to)| from < at + q.len() && at < to))?;
-            Some(Hit { from, to: from + q.len(), kept })
+            let outside = places(&kept.text, q).filter(|&at| !spans.iter().any(|&(from, to)| from < at + q.len() && at < to));
+            let (from, to) = said_first(&kept.text, outside.map(|at| (at, at + q.len())))?;
+            Some(Hit { kept, from, to })
         })
         .collect()
 }
@@ -1010,6 +1024,29 @@ mod tests {
     }
 
     #[test]
+    fn a_line_is_found_where_it_s_said_rather_than_where_a_caption_names_the_speaker() {
+        let index = index();
+        // Two speakers in one caption, each named in brackets: タリア is said by the second.
+        let text = "-（タリア）ハァ ハァ…\n-（ウィーク）タリア？";
+        let lines = [line(1.0, 2.0, text)];
+        let at = |nth: usize| text.match_indices("タリア").nth(nth).unwrap().0;
+        let use_at = |from: usize| serde_json::from_value::<SavedUse>(json!({ "line": 0, "from": from, "to": from + "タリア".len(), "headword": "タリア", "reading": "タリア", "rank": null })).unwrap();
+        let said_at = "-（タリア）ハァ ハァ…-（ウィーク）".len();
+        index.replace(8, &entries(&lines, &[use_at(at(0)), use_at(at(1))]).unwrap(), "now", true).unwrap();
+        // Its words not saved: found by its text.
+        index.replace(9, &entries(&lines, &[]).unwrap(), "now", false).unwrap();
+        let hits = hits(&index, "タリア").unwrap();
+        let found: Vec<(i64, usize)> = hits.iter().map(|h| (h.kept.episode_id, h.from)).collect();
+        assert_eq!(found, [(8, said_at), (9, said_at)]);
+        assert!(hits.iter().all(|h| premine::said(&h.kept.text, h.from)));
+        // A line where it's only in brackets is found there.
+        index.replace(10, &entries(&[line(1.0, 2.0, "（ウィーク）ハァ…")], &[]).unwrap(), "now", false).unwrap();
+        let hits = super::hits(&index, "ウィーク").unwrap();
+        let named = "-（タリア）ハァ ハァ…-（".len();
+        assert_eq!(hits.iter().map(|h| (h.kept.episode_id, h.from)).collect::<Vec<_>>(), [(8, named), (9, named), (10, "（".len())]);
+    }
+
+    #[test]
     fn text_is_found_as_it_s_written() {
         let index = index();
         let lines = [line(1.0, 2.0, "全品50%オフ！"), line(3.0, 4.0, "50_50だね"), line(5.0, 6.0, "Abcの歌")];
@@ -1406,8 +1443,16 @@ mod tests {
         forms.extend(premine::dictionary_form(q));
         let honorific = |headword: &str| q.chars().count() >= 2 && headword.strip_prefix(q).is_some_and(|rest| HONORIFIC_SUFFIXES.iter().any(|h| h.0 == rest));
         let is_it = |(headword, reading, _, _): &&(String, String, usize, usize)| forms.contains(headword) || forms.contains(reading) || honorific(headword);
-        let as_word: Vec<(i64, usize, usize, usize)> =
-            plain.iter().filter_map(|p| p.words.iter().find(is_it).map(|w| (p.episode, p.line, w.2, w.3))).collect();
+        // Of several places in a line, the first that's said, else the first.
+        let said_or_first = |text: &str, at: Vec<usize>| at.iter().copied().find(|&at| premine::said(text, at)).or(at.first().copied());
+        let as_word: Vec<(i64, usize, usize, usize)> = plain
+            .iter()
+            .filter_map(|p| {
+                let theirs: Vec<&(String, String, usize, usize)> = p.words.iter().filter(is_it).collect();
+                let at = said_or_first(&p.text, theirs.iter().map(|w| w.2).collect())?;
+                theirs.iter().find(|w| w.2 == at).map(|w| (p.episode, p.line, w.2, w.3))
+            })
+            .collect();
         // Every place it's written, overlapping ones too.
         let places = |text: &str| -> Vec<usize> {
             if !text.contains(q) {
@@ -1415,7 +1460,7 @@ mod tests {
             }
             (0..text.len()).filter(|&at| text.is_char_boundary(at) && text[at..].starts_with(q)).collect()
         };
-        let first = |p: &Plain| places(&p.text).first().map(|&at| (p.episode, p.line, at, at + q.len()));
+        let first = |p: &Plain| said_or_first(&p.text, places(&p.text)).map(|at| (p.episode, p.line, at, at + q.len()));
         // A single kana is looked for only as a word.
         let by_text = q.chars().count() >= 2 || contains_kanji(q);
         let mut found = as_word.clone();
@@ -1428,7 +1473,7 @@ mod tests {
         } else if by_text {
             // One it doesn't keep: also where it's written outside every saved word.
             for p in plain.iter().filter(|p| !as_word.iter().any(|f| (f.0, f.1) == (p.episode, p.line))) {
-                let outside = places(&p.text).into_iter().find(|&at| p.words.iter().all(|w| w.3 <= at || at + q.len() <= w.2));
+                let outside = said_or_first(&p.text, places(&p.text).into_iter().filter(|&at| p.words.iter().all(|w| w.3 <= at || at + q.len() <= w.2)).collect());
                 found.extend(outside.map(|at| (p.episode, p.line, at, at + q.len())));
             }
         }

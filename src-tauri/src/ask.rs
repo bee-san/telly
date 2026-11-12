@@ -408,11 +408,16 @@ pub fn recap_prompt(show_title: &str, number: i64, window: &[(i64, &[Line])], ea
     )
 }
 
-/// Claude's recap, from its answer (the JSON object, wherever it is in it).
+/// Claude's recap, from its answer: the first JSON object in it that's a recap,
+/// whatever is written around it, braces and all.
 pub fn parse_recap(answer: &str) -> Option<Recap> {
-    let start = answer.find('{')?;
-    let end = answer.rfind('}')?;
-    let value: Value = serde_json::from_str(answer.get(start..=end)?).ok()?;
+    answer.match_indices('{').find_map(|(at, _)| {
+        let value = serde_json::Deserializer::from_str(&answer[at..]).into_iter::<Value>().next()?.ok()?;
+        recap_from(&value)
+    })
+}
+
+fn recap_from(value: &Value) -> Option<Recap> {
     let text = |v: &Value| v.as_str().map(str::trim).unwrap_or("").to_string();
     let arcs: Vec<StoryArc> = value["arcs"]
         .as_array()
@@ -741,6 +746,21 @@ mod tests {
         let seven = "{\"last\": \"r\", \"moments\": [{\"episode\": 1, \"line\": 3}, {\"episode\": 1, \"line\": 40}, {\"episode\": 2, \"line\": 90}, {\"episode\": 2, \"line\": 150}, {\"episode\": 3, \"line\": 200}, {\"episode\": 3, \"line\": 260}, {\"episode\": 4, \"line\": 330}]}";
         let kept: Vec<(i64, usize)> = parse_recap(seven).unwrap().moments.iter().map(|m| (m.episode, m.line)).collect();
         assert_eq!(kept, vec![(1, 3), (1, 40), (2, 90), (3, 200), (3, 260), (4, 330)]);
+    }
+
+    #[test]
+    fn a_recap_is_read_from_an_answer_with_braces_in_the_words_around_it() {
+        let json = "{\"arcs\": [{\"title\": \"Roman\", \"from\": 1, \"to\": 1, \"summary\": \"Roman films {everything}.\"}], \"last\": \"Talia runs.\", \"moments\": [{\"episode\": 1, \"line\": 9}]}";
+        for answer in [
+            format!("Sure {{as asked}}, here it is:\n{json}"),
+            format!("{json}\n\nI left out the {{opening}}."),
+            format!("```json\n{json}\n```"),
+            format!("The shape was {{\"a\": 1}}, so: {json}"),
+        ] {
+            let recap = parse_recap(&answer).unwrap_or_else(|| panic!("{answer}"));
+            assert_eq!((recap.arcs[0].summary.as_str(), recap.last.as_str(), recap.moments.len()), ("Roman films {everything}.", "Talia runs.", 1), "{answer}");
+        }
+        assert_eq!(parse_recap("Roman films the city. {I couldn't make it JSON.}"), None);
     }
 
     #[test]

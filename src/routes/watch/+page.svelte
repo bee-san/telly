@@ -583,7 +583,8 @@
     if (!view) return;
     subMenu = false;
     try {
-      const updated = await call<Line[]>("lateFromHere", { id: view.episode.id, from: t - 1, ms });
+      // The player's time: Telly takes the nudge off it for the file's.
+      const updated = await call<Line[]>("lateFromHere", { id: view.episode.id, from: now - 1, ms });
       view.lines = updated;
       flash(`Lines from here on ${(Math.abs(ms) / 1000).toFixed(1)} seconds ${ms > 0 ? "later" : "earlier"}`);
     } catch (e) {

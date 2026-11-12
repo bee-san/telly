@@ -11,7 +11,7 @@
 //! say they're extras.
 
 use crate::media;
-use crate::util::natural_cmp;
+use crate::util::{half_width, natural_cmp};
 use anyhow::{anyhow, Result};
 use regex::Regex;
 use serde::Serialize;
@@ -75,29 +75,32 @@ fn strip_brackets(name: &str) -> String {
     re(&R, r"\[[^\]]*\]|\([^)]*\)|\{[^}]*\}|【[^】]*】|（[^）]*）").replace_all(name, " ").into_owned()
 }
 
-/// The episode number in a file name (without its extension), and the season if it gives one.
+/// The episode number in a file name (without its extension), and the season
+/// if it gives one. Full-width digits count (第１０話).
 pub fn episode_number(stem: &str) -> Option<(Option<i64>, i64)> {
     static SXE: OnceLock<Regex> = OnceLock::new();
     static JA: OnceLock<Regex> = OnceLock::new();
     static EP: OnceLock<Regex> = OnceLock::new();
     static DASH: OnceLock<Regex> = OnceLock::new();
     static NUM: OnceLock<Regex> = OnceLock::new();
-    if let Some(c) = re(&SXE, r"(?i)\bS(\d{1,2})\s*[ ._-]?\s*E(\d{1,4})").captures(stem) {
+    // Digits are ASCII once the name is: \d would match other scripts' digits too, which don't parse.
+    let stem = half_width(stem);
+    if let Some(c) = re(&SXE, r"(?i)\bS([0-9]{1,2})\s*[ ._-]?\s*E([0-9]{1,4})").captures(&stem) {
         return Some((c[1].parse().ok(), c[2].parse().ok()?));
     }
-    if let Some(c) = re(&JA, r"第\s*(\d{1,4})\s*[話话回]").captures(stem) {
+    if let Some(c) = re(&JA, r"第\s*([0-9]{1,4})\s*[話话回]").captures(&stem) {
         return Some((None, c[1].parse().ok()?));
     }
-    let bare = strip_brackets(stem).replace('_', " ");
-    if let Some(c) = re(&EP, r"(?i)\b(?:ep|episode|e)\s*\.?\s*(\d{1,4})(?:v\d)?\b").captures(&bare) {
+    let bare = strip_brackets(&stem).replace('_', " ");
+    if let Some(c) = re(&EP, r"(?i)\b(?:ep|episode|e)\s*\.?\s*([0-9]{1,4})(?:v[0-9])?\b").captures(&bare) {
         return Some((None, c[1].parse().ok()?));
     }
-    if let Some(c) = re(&DASH, r"\s-\s*(\d{1,4})(?:v\d)?(?:\s|$)").captures(&bare) {
+    if let Some(c) = re(&DASH, r"\s-\s*([0-9]{1,4})(?:v[0-9])?(?:\s|$)").captures(&bare) {
         return Some((None, c[1].parse().ok()?));
     }
     // The last number that isn't a resolution, a codec or a year.
     let mut found = None;
-    for c in re(&NUM, r"(?i)(?:^|[\s.#-])(\d{1,4})(?:v\d)?(?:$|[\s.-])").captures_iter(&bare) {
+    for c in re(&NUM, r"(?i)(?:^|[\s.#-])([0-9]{1,4})(?:v[0-9])?(?:$|[\s.-])").captures_iter(&bare) {
         let text = &c[1];
         let n: i64 = text.parse().ok()?;
         let resolution = matches!(n, 480 | 576 | 720 | 1080 | 2160);
@@ -112,7 +115,7 @@ pub fn episode_number(stem: &str) -> Option<(Option<i64>, i64)> {
 /// MakeMKV's title number: "title_t03" or "NARUTO_DISC1_t03" gives 3.
 pub fn makemkv_title(stem: &str) -> Option<i64> {
     static R: OnceLock<Regex> = OnceLock::new();
-    re(&R, r"(?i)(?:^|_)t(\d{2,3})$").captures(stem).and_then(|c| c[1].parse().ok())
+    re(&R, r"(?i)(?:^|_)t([0-9]{2,3})$").captures(stem).and_then(|c| c[1].parse().ok())
 }
 
 /// Names that say a file is an extra, not an episode.
@@ -179,8 +182,8 @@ fn relative(folder: &Path, path: &Path) -> String {
 fn guess_title(folder: &Path, stems: &[String]) -> String {
     static DISC: OnceLock<Regex> = OnceLock::new();
     static SEASON: OnceLock<Regex> = OnceLock::new();
-    let disc = re(&DISC, r"(?i)^(disc|disk|dvd|bd|vol(ume)?|season)\s*\d+$");
-    let season_folder = re(&SEASON, r"(?i)^season\s*(\d+)$");
+    let disc = re(&DISC, r"(?i)^(disc|disk|dvd|bd|vol(ume)?|season)\s*[0-9]+$");
+    let season_folder = re(&SEASON, r"(?i)^season\s*([0-9]+)$");
     let mut season: Option<i64> = None;
     let mut dir = Some(folder);
     while let Some(d) = dir {
@@ -188,7 +191,8 @@ fn guess_title(folder: &Path, stems: &[String]) -> String {
         let cleaned = clean_title(&name);
         let generic = ["anime", "videos", "video", "tv", "shows", "rips", "makemkv", "downloads"]
             .contains(&cleaned.to_lowercase().as_str());
-        if !cleaned.is_empty() && !disc.is_match(name.trim()) && !generic && cleaned.chars().any(char::is_alphabetic) {
+        let plain = half_width(name.trim());
+        if !cleaned.is_empty() && !disc.is_match(&plain) && !generic && cleaned.chars().any(char::is_alphabetic) {
             return match season {
                 Some(n) => format!("{cleaned} Season {n}"),
                 None => cleaned,
@@ -196,7 +200,7 @@ fn guess_title(folder: &Path, stems: &[String]) -> String {
         }
         // Season 0 holds the specials, which AniList keeps apart from the seasons.
         if season.is_none() {
-            season = season_folder.captures(name.trim()).and_then(|c| c[1].parse().ok()).filter(|&n| n > 0);
+            season = season_folder.captures(&plain).and_then(|c| c[1].parse().ok()).filter(|&n| n > 0);
         }
         dir = d.parent();
     }
@@ -208,7 +212,7 @@ fn guess_title(folder: &Path, stems: &[String]) -> String {
             prefix.pop();
         }
     }
-    clean_title(prefix.trim_end_matches(|c: char| c.is_ascii_digit() || c == ' ' || c == '-' || c == '_'))
+    clean_title(prefix.trim_end_matches(|c: char| c.is_ascii_digit() || ('０'..='９').contains(&c) || c == ' ' || c == '-' || c == '_'))
 }
 
 /// Subfolders whose videos number from 1 again: seasons or shows of their own.
@@ -479,6 +483,23 @@ mod tests {
         );
         assert_eq!(path_cmp("Show/01.mkv", "Show/Season 2/01.mkv"), std::cmp::Ordering::Less);
         assert_eq!(path_cmp("Show/Disc 2/a.mkv", "Show/Disc 10/a.mkv"), std::cmp::Ordering::Less);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn full_width_episode_numbers_are_read_and_put_in_order() {
+        let n = |s: &str| episode_number(s).map(|(_, e)| e);
+        assert_eq!(n("ＳＰＹ×ＦＡＭＩＬＹ 第１０話"), Some(10));
+        assert_eq!(n("ぼっち・ざ・ろっく！ ＃０５"), Some(5));
+        assert_eq!(episode_number("Ｓｈｏｗ Ｓ０２Ｅ１１"), Some((Some(2), 11)));
+        let dir = fake_folder("fullwidth", &["番組/番組 第１話.ts", "番組/番組 第２話.ts", "番組/番組 第３話.ts", "番組/番組 第１０話.ts", "番組/番組 第１１話.ts"]);
+        let scan = scan_folder_with(&dir.join("番組"));
+        assert_eq!(scan.numbering, "names");
+        let order: Vec<(Option<i64>, &str)> = scan.files.iter().map(|f| (f.number, f.rel.as_str())).collect();
+        assert_eq!(
+            order,
+            [(Some(1), "番組 第１話.ts"), (Some(2), "番組 第２話.ts"), (Some(3), "番組 第３話.ts"), (Some(10), "番組 第１０話.ts"), (Some(11), "番組 第１１話.ts")]
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

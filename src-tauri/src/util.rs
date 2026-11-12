@@ -23,7 +23,29 @@ pub fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     command
 }
 
-/// Compares names the way Explorer sorts them: "Disc 2" before "Disc 10".
+/// Full-width letters, digits and signs (Ｓ０１Ｅ０５, 第１０話, ＃０５) as
+/// their ASCII selves, and the ideographic space as a space.
+pub fn half_width(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            '！'..='～' => char::from_u32(c as u32 - 0xFEE0).unwrap_or(c),
+            '\u{3000}' => ' ',
+            _ => c,
+        })
+        .collect()
+}
+
+/// A digit, full-width (第１０話) or not, as an ASCII digit.
+fn digit(c: char) -> Option<char> {
+    match c {
+        '0'..='9' => Some(c),
+        '０'..='９' => char::from_u32(c as u32 - 0xFEE0),
+        _ => None,
+    }
+}
+
+/// Compares names the way Explorer sorts them: "Disc 2" before "Disc 10",
+/// 第２話 before 第１０話.
 pub fn natural_cmp(a: &str, b: &str) -> Ordering {
     let (mut a, mut b) = (a.chars().peekable(), b.chars().peekable());
     loop {
@@ -31,14 +53,14 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
             (None, None) => return Ordering::Equal,
             (None, Some(_)) => return Ordering::Less,
             (Some(_), None) => return Ordering::Greater,
-            (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
+            (Some(x), Some(y)) if digit(x).is_some() && digit(y).is_some() => {
                 let mut na = String::new();
-                while let Some(c) = a.peek().copied().filter(char::is_ascii_digit) {
+                while let Some(c) = a.peek().copied().and_then(digit) {
                     na.push(c);
                     a.next();
                 }
                 let mut nb = String::new();
-                while let Some(c) = b.peek().copied().filter(char::is_ascii_digit) {
+                while let Some(c) = b.peek().copied().and_then(digit) {
                     nb.push(c);
                     b.next();
                 }
@@ -93,6 +115,14 @@ mod tests {
         v.sort_by(|a, b| natural_cmp(a, b));
         assert_eq!(v, ["Disc 1/t03", "Disc 2/t00", "Disc 2/t01", "Disc 10/t00"]);
         assert_eq!(natural_cmp("title_t09", "title_t10"), Ordering::Less);
+    }
+
+    #[test]
+    fn full_width_numbers_sort_by_their_value() {
+        let mut v = vec!["第１０話", "第２話", "第１１話", "第１話"];
+        v.sort_by(|a, b| natural_cmp(a, b));
+        assert_eq!(v, ["第１話", "第２話", "第１０話", "第１１話"]);
+        assert_eq!(half_width("ＳＰＹ×ＦＡＭＩＬＹ　＃０５"), "SPY×FAMILY #05");
     }
 
     #[test]

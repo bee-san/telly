@@ -692,6 +692,9 @@ impl Db {
         })
     }
 
+    /// An episode's subtitles, found or not. Your nudge (Z and X) was made
+    /// for the lines it had: it stays only when they're the same file, moved
+    /// the same, as before.
     pub fn set_subs(
         &self,
         id: i64,
@@ -702,7 +705,8 @@ impl Db {
         offset_ms: Option<i64>,
     ) -> Result<()> {
         self.conn()?.execute(
-            "UPDATE episodes SET subs_state = ?2, subs_detail = ?3, subs_file = ?4, subs_score = ?5, subs_offset_ms = ?6
+            "UPDATE episodes SET subs_state = ?2, subs_detail = ?3, subs_file = ?4, subs_score = ?5, subs_offset_ms = ?6,
+                subs_nudge_ms = CASE WHEN subs_file = ?4 AND subs_offset_ms IS ?6 THEN subs_nudge_ms ELSE 0 END
              WHERE id = ?1",
             params![id, state, detail, file, score, offset_ms],
         )?;
@@ -992,6 +996,29 @@ mod tests {
         let settings = db.settings().unwrap();
         assert!(settings.keys().all(|k| !k.contains(&format!(".{show}."))), "{settings:?}");
         assert_eq!(settings.keys().filter(|k| k.contains(&format!(".{other}."))).count(), 3);
+        drop(db);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_nudge_goes_with_the_subtitles_it_was_made_for() {
+        let (db, dir) = temp_db("nudge");
+        let episodes = vec![NewEpisode { number: 1, path: "1.mkv".into(), size: 1, duration: 1400.0 }];
+        let show = db.add_show(&NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let id = db.episodes(show).unwrap()[0].id;
+        let nudge = || db.episode(id).unwrap().unwrap().subs_nudge_ms;
+        // A file synced 3 s off, nudged back by hand.
+        db.set_subs(id, "check", "shifted +4.2 s · matched to the speech", "A.srt", Some(0.3), Some(4200)).unwrap();
+        db.set_nudge(id, -3000).unwrap();
+        // Found again just as it was: the nudge still fits it.
+        db.set_subs(id, "check", "shifted +4.2 s · matched to the speech", "A.srt", Some(0.3), Some(4200)).unwrap();
+        assert_eq!(nudge(), -3000);
+        // Synced right this time, or another file: the nudge would throw it 3 s out.
+        db.set_subs(id, "synced", "shifted +1.2 s · matched to the speech", "A.srt", Some(0.9), Some(1200)).unwrap();
+        assert_eq!(nudge(), 0);
+        db.set_nudge(id, 400).unwrap();
+        db.set_subs(id, "synced", "beside the rip · as it is", "Show - 01.ja.srt", None, Some(0)).unwrap();
+        assert_eq!(nudge(), 0);
         drop(db);
         let _ = std::fs::remove_dir_all(dir);
     }

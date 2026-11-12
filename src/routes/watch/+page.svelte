@@ -615,7 +615,9 @@
       const v = await call<PlayerView>("useSubtitle", { id: view.episode.id, path, name });
       view.lines = v.lines;
       view.episode = v.episode;
-      const how = v.episode.subsScore === null ? "as it is" : `${Math.round(v.episode.subsScore * 100)}%`;
+      // A nudge was made for the old file's lines: the new file comes without it.
+      nudge = v.episode.subsNudgeMs;
+      const how =v.episode.subsScore === null ? "as it is" : `${Math.round(v.episode.subsScore * 100)}%`;
       toast({ key: "resync", state: "done", title: "Subtitles changed", text: `${name} · ${how}` });
     } catch (e) {
       toast({ key: "resync", state: "failed", title: "Couldn’t use that file", text: errorText(e) });

@@ -592,13 +592,13 @@ impl Backend {
             .ok();
     }
 
-    fn card(&self, show: Show, cards_by_show: &std::collections::HashMap<i64, i64>, scores: &std::collections::HashMap<i64, (i64, i64, String)>) -> Result<ShowCard> {
-        let episodes = self.db.episodes(show.id)?;
+    /// A show's card, from its episodes (in order, as `Db::episodes` has them).
+    fn card(&self, show: Show, episodes: &[Episode], cards_by_show: &std::collections::HashMap<i64, i64>, scores: &std::collections::HashMap<i64, (i64, i64, String)>) -> Result<ShowCard> {
         let watched = episodes.iter().filter(|e| e.watched_at.is_some()).count();
         let media_ready = episodes.iter().filter(|e| e.media_state == "ready").count();
         let subs_ready = episodes.iter().filter(|e| settled(&e.subs_state)).count();
         let subs_found = episodes.iter().filter(|e| matches!(e.subs_state.as_str(), "synced" | "check" | "manual")).count();
-        let next = jobs::next_episode(&episodes).map(|e| NextUp {
+        let next = jobs::next_episode(episodes).map(|e| NextUp {
             episode_id: e.id,
             number: e.number,
             resume: e.watched_at.is_none() && e.position >= 20.0 && (e.duration <= 0.0 || e.position < e.duration * 0.9),
@@ -677,9 +677,15 @@ impl Backend {
         let cards_by_show = self.db.cards_per_show().unwrap_or_default();
         let scores = self.db.word_scores().unwrap_or_default();
         let shows = self.db.shows()?;
+        // Every show's episodes in one query, not one each.
+        let mut by_show: std::collections::HashMap<i64, Vec<Episode>> = std::collections::HashMap::new();
+        for e in self.db.all_episodes()? {
+            by_show.entry(e.show_id).or_default().push(e);
+        }
         let mut cards = Vec::with_capacity(shows.len());
         for s in shows {
-            cards.push(self.card(s, &cards_by_show, &scores)?);
+            let episodes = by_show.remove(&s.id).unwrap_or_default();
+            cards.push(self.card(s, &episodes, &cards_by_show, &scores)?);
         }
         Ok(json!({ "shows": cards, "activity": self.activity(), "setup": self.setup() }))
     }
@@ -689,6 +695,7 @@ impl Backend {
         let cards_by_show = self.db.cards_per_show().unwrap_or_default();
         let episodes = self.db.episodes(id)?;
         let next_id = jobs::next_episode(&episodes).map(|e| e.id);
+        let card = self.card(show, &episodes, &cards_by_show, &self.db.word_scores().unwrap_or_default())?;
         let (shares, words_error) = premine::shares(self);
         let rows: Vec<EpisodeRow> = episodes
             .into_iter()
@@ -700,7 +707,6 @@ impl Backend {
                 episode: e,
             })
             .collect();
-        let card = self.card(show, &cards_by_show, &self.db.word_scores().unwrap_or_default())?;
         let tools = self.tools();
         let listener = jobs::listener(self, &tools);
         let whisper = json!({

@@ -287,6 +287,33 @@ async function syncAnki() {
   }
 }
 
+// Set once word highlighting has been turned on, so turning it off in
+// Hachidori's Settings sticks.
+const HIGHLIGHTS_SET_KEY = "tellyWordHighlightsSet";
+
+/** Turns on Hachidori's word highlighting, once, so subtitles mark the words without a mature card. */
+async function enableHighlights() {
+  try {
+    if ((await chrome.storage.local.get(HIGHLIGHTS_SET_KEY))[HIGHLIGHTS_SET_KEY]) return;
+    const client = await status();
+    if (client?.linked) return;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const stored = await storedOptions();
+      const reply = await chrome.runtime.sendMessage({
+        target: WORKER_TARGET, type: "hd_options_write", requestId: crypto.randomUUID(),
+        baseRevision: Number.isInteger(stored?.revision) ? stored.revision : 0,
+        options: { wordHighlightEnabled: true },
+      });
+      if (reply?.conflict) continue;
+      if (!reply?.ok) throw new Error(reply?.error || "Hachidori didn't take the setting");
+      await chrome.storage.local.set({ [HIGHLIGHTS_SET_KEY]: true });
+      return;
+    }
+  } catch (error) {
+    report("error", `Couldn't turn on word highlighting: ${errorText(error)}`);
+  }
+}
+
 /** A request to this Hachidori's engine (relayed by its background) or its Anki renderer. */
 async function engineRequest(target, fields, direct) {
   const reply = await chrome.runtime.sendMessage({ ...fields, target, requestId: `telly-${crypto.randomUUID()}`, ...(direct ? { relayed: true } : {}) });
@@ -347,6 +374,7 @@ async function main() {
   }
   await step(true);
   void syncNames();
+  void enableHighlights();
   void syncAnki();
   void syncDictionaries();
   void serveApi();

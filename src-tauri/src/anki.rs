@@ -9,6 +9,9 @@ pub const DEFAULT_URL: &str = "http://127.0.0.1:8765";
 
 fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
+        // Anki closed answers at once on Linux, but Windows tries a closed
+        // port for about 2 s: Settings asks every 5 s.
+        .timeout_connect(Some(Duration::from_secs(1)))
         .timeout_global(Some(Duration::from_secs(15)))
         .http_status_as_error(false)
         .build()

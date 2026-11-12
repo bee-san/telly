@@ -278,6 +278,15 @@ fn ahead_max() -> u64 {
     })
 }
 
+/// The copies folder's size as last worked out (Backend::space_used): when, of which folder, and the bytes.
+static SPACE_USED: Mutex<Option<(Instant, PathBuf, u64)>> = Mutex::new(None);
+
+fn forget_space_used() {
+    if let Ok(mut kept) = SPACE_USED.lock() {
+        *kept = None;
+    }
+}
+
 /// The reading ahead of the episode in the player (see `Backend::read_ahead`):
 /// the file, where the player last asked from, how far the reading has got,
 /// and which reader it is (a new one takes over when the player jumps).
@@ -415,6 +424,7 @@ impl Backend {
             std::fs::create_dir_all(folder).map_err(|e| anyhow!("Telly can’t use {folder}: {e}. Choose another folder."))?;
         }
         let before = self.media_dir();
+        forget_space_used();
         self.db.set_setting("media.folder", &folder.map(Value::String).unwrap_or(Value::Null))?;
         jobs::move_copies(self.clone(), before);
         Ok(self.status())
@@ -907,6 +917,7 @@ impl Backend {
 
     /// Removes Telly's copies of episodes you've watched (or of a whole finished show).
     fn free_space(&self, show_id: Option<i64>) -> Result<Value> {
+        forget_space_used();
         let mut freed: u64 = 0;
         let mut count = 0;
         let shows: Vec<i64> = match show_id {
@@ -931,7 +942,15 @@ impl Backend {
         Ok(json!({ "episodes": count, "bytes": freed }))
     }
 
+    /// The size of Telly's copies, kept for 30 s: Settings asks every 5 s, and
+    /// the copies folder may be on a hard drive. Freeing space or moving the
+    /// copies works it out again.
     fn space_used(&self) -> u64 {
+        let dir = self.media_dir();
+        let kept = SPACE_USED.lock().ok().and_then(|k| k.as_ref().filter(|(at, of, _)| at.elapsed() < Duration::from_secs(30) && *of == dir).map(|k| k.2));
+        if let Some(bytes) = kept {
+            return bytes;
+        }
         fn size(dir: &Path) -> u64 {
             std::fs::read_dir(dir)
                 .map(|entries| {
@@ -945,7 +964,11 @@ impl Backend {
                 })
                 .unwrap_or(0)
         }
-        size(&self.media_dir())
+        let bytes = size(&dir);
+        if let Ok(mut kept) = SPACE_USED.lock() {
+            *kept = Some((Instant::now(), dir, bytes));
+        }
+        bytes
     }
 
     fn episode_view(&self, id: i64) -> Result<Value> {

@@ -680,13 +680,18 @@ fn picture_events(mut packets: Vec<(f64, f64, f64)>) -> Vec<(f64, f64)> {
     events
 }
 
+/// One audio track to hear in a read of a rip (`read_rip_and`): its place
+/// among the rip's audio tracks, and the rate (Hz) of the mono samples wanted.
+pub type Speech = (usize, u32);
+
 /// ffmpeg's arguments for reading every subtitle track of `path` in one pass
 /// over it, each into its own file in `folder`, named by its place in
 /// `tracks`: a text track as a subtitle file, a picture track as a list of
-/// its packets (nothing decoded). With `sheet` (how long the video is, and
-/// where to), the same pass makes the seek bar's pictures. None when there's
+/// its packets (nothing decoded). With `speech`, the same pass writes that
+/// audio track to its output as samples; with `sheet` (how long the video is,
+/// and where to), it makes the seek bar's pictures. None when there's
 /// nothing for it to write.
-fn rip_args(path: &Path, tracks: &[TrackTiming], folder: &Path, sheet: Option<(f64, &Path)>) -> Option<Vec<String>> {
+fn rip_args(path: &Path, tracks: &[TrackTiming], folder: &Path, speech: Option<Speech>, sheet: Option<(f64, &Path)>) -> Option<Vec<String>> {
     let mut args: Vec<String> = ["-nostdin", "-hide_banner", "-v", "error", "-y"].iter().map(|a| a.to_string()).collect();
     if sheet.is_some() {
         args.extend(SHEET_DECODING.iter().map(|a| a.to_string()));
@@ -707,6 +712,9 @@ fn rip_args(path: &Path, tracks: &[TrackTiming], folder: &Path, sheet: Option<(f
         }
         args.extend(["-f".into(), format.into(), folder.join(i.to_string()).to_string_lossy().into_owned()]);
     }
+    if let Some((audio, rate)) = speech {
+        args.extend(["-map".into(), format!("0:a:{audio}"), "-ac".into(), "1".into(), "-ar".into(), rate.to_string(), "-f".into(), "s16le".into(), "pipe:1".into()]);
+    }
     if let Some((duration, output)) = sheet {
         args.extend(sheet_output(duration, output));
     }
@@ -725,6 +733,13 @@ fn rip_args(path: &Path, tracks: &[TrackTiming], folder: &Path, sheet: Option<(f
 /// With `sheet`, the same pass makes the seek bar's pictures there, as
 /// `make_sheet` would of this rip.
 pub fn read_rip(ffmpeg: &Path, path: &Path, probe: &Probe, sheet: Option<&Path>) -> Result<Vec<TrackTiming>> {
+    read_rip_and(ffmpeg, path, probe, sheet, None).map(|(tracks, _)| tracks)
+}
+
+/// As `read_rip`, and with `speech`, hears that audio track in the same pass
+/// (as `read_audio` would), for a rip to be matched to its speech: a rip
+/// without subtitle tracks is then read once, not a second time for its audio.
+pub fn read_rip_and(ffmpeg: &Path, path: &Path, probe: &Probe, sheet: Option<&Path>, speech: Option<Speech>) -> Result<(Vec<TrackTiming>, Option<Vec<i16>>)> {
     static RUNS: AtomicU64 = AtomicU64::new(0);
     let mut out: Vec<TrackTiming> = probe
         .subtitles
@@ -737,12 +752,13 @@ pub fn read_rip(ffmpeg: &Path, path: &Path, probe: &Probe, sheet: Option<&Path>)
     let making = sheet.and_then(start_making);
     let sheet = sheet.filter(|_| making.is_some());
     let partial = sheet.map(|s| s.with_extension("jpg.reading"));
-    let Some(args) = rip_args(path, &out, &folder, partial.as_deref().map(|p| (probe.duration, p))) else { return Ok(out) };
+    let Some(args) = rip_args(path, &out, &folder, speech, partial.as_deref().map(|p| (probe.duration, p))) else { return Ok((out, None)) };
     std::fs::create_dir_all(&folder)?;
     let ran = command(ffmpeg).args(args).stdin(Stdio::null()).output();
     let written: Vec<Option<Vec<u8>>> = (0..out.len()).map(|i| std::fs::read(folder.join(i.to_string())).ok()).collect();
     let _ = std::fs::remove_dir_all(&folder);
-    if !ran.context("starting ffmpeg")?.status.success() {
+    let ran = ran.context("starting ffmpeg")?;
+    if !ran.status.success() {
         if let Some(partial) = &partial {
             let _ = std::fs::remove_file(partial);
         }
@@ -765,7 +781,13 @@ pub fn read_rip(ffmpeg: &Path, path: &Path, probe: &Probe, sheet: Option<&Path>)
         }
         track.text = text;
     }
-    Ok(out)
+    let heard = speech.map(|_| ran.stdout.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect());
+    Ok((out, heard))
+}
+
+/// Whether the rip has a subtitle track `read_rip` times (text or pictures).
+pub fn timed_subtitles(probe: &Probe) -> bool {
+    probe.subtitles.iter().any(|s| text_codec(&s.codec) || picture_codec(&s.codec))
 }
 
 /// The track whose timing follows the dialogue best: not one only for signs,
@@ -939,21 +961,24 @@ mod tests {
     fn reads_every_subtitle_track_in_one_pass_over_the_rip() {
         let track = |index: i64, codec: &str| TrackTiming { index, codec: codec.into(), ..Default::default() };
         let tracks = [track(2, "ass"), track(3, "subrip"), track(4, "hdmv_pgs_subtitle"), track(5, "eia_608")];
-        let args = rip_args(Path::new("rip.mkv"), &tracks, Path::new("out"), None).unwrap();
+        let args = rip_args(Path::new("rip.mkv"), &tracks, Path::new("out"), None, None).unwrap();
         let file = |n: &str| Path::new("out").join(n).to_string_lossy().into_owned();
         // The rip is opened once. Text comes out as a subtitle file, pictures as a list of their packets.
         let wanted = ["-i", "rip.mkv", "-map", "0:2", "-f", "ass", &file("0"), "-map", "0:3", "-f", "srt", &file("1"), "-map", "0:4", "-c", "copy", "-f", "framecrc", &file("2")];
         assert_eq!(args[args.len() - wanted.len()..], wanted);
         assert_eq!(args.iter().filter(|a| *a == "-i").count(), 1);
         // Captions ffmpeg can't write as text or list are left alone.
-        assert_eq!(rip_args(Path::new("rip.mkv"), &tracks[3..], Path::new("out"), None), None);
+        assert_eq!(rip_args(Path::new("rip.mkv"), &tracks[3..], Path::new("out"), None, None), None);
         // The seek bar's pictures are made in the same pass, as `sheet_args` makes them on their own.
-        let with_sheet = rip_args(Path::new("rip.mkv"), &tracks, Path::new("out"), Some((1437.0, Path::new("ep.jpg")))).unwrap().join(" ");
+        let with_sheet = rip_args(Path::new("rip.mkv"), &tracks, Path::new("out"), None, Some((1437.0, Path::new("ep.jpg")))).unwrap().join(" ");
         let alone = sheet_args(Path::new("rip.mkv"), 1437.0, Path::new("ep.jpg")).join(" ");
         let (decoding, pictures) = alone.split_once(" -i rip.mkv ").unwrap();
         assert!(with_sheet.starts_with(&format!("{decoding} -i rip.mkv -map 0:2 ")) && with_sheet.ends_with(&format!("framecrc {} {pictures}", file("2"))), "{with_sheet}");
         // A rip without subtitles is still read for them.
-        assert!(rip_args(Path::new("rip.mkv"), &[], Path::new("out"), Some((1437.0, Path::new("ep.jpg")))).is_some());
+        assert!(rip_args(Path::new("rip.mkv"), &[], Path::new("out"), None, Some((1437.0, Path::new("ep.jpg")))).is_some());
+        // Its speech is heard in the same pass: its second audio track, as 16 kHz mono samples.
+        let heard = rip_args(Path::new("rip.mkv"), &[], Path::new("out"), Some((1, 16000)), Some((1437.0, Path::new("ep.jpg")))).unwrap().join(" ");
+        assert!(heard.contains("-i rip.mkv -map 0:a:1 -ac 1 -ar 16000 -f s16le pipe:1 -map 0:v:0 ") && heard.matches("-i ").count() == 1, "{heard}");
     }
 
     #[test]

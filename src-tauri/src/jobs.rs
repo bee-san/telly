@@ -1223,13 +1223,21 @@ pub fn translation(backend: &Backend, episode: &Episode) -> Result<Vec<Line>> {
 
 /// Where people speak in an episode, from its Japanese track, and how long it
 /// is: FireRedVAD's view, or WebRTC's detector if FireRedVAD can't run.
-/// The bool says whether it's FireRedVAD's (clean) view.
-fn speech_of(ffmpeg: &Path, probe: &media::Probe, episode: &Episode) -> Result<(Vec<(f64, f64)>, f64, bool)> {
+/// The bool says whether it's FireRedVAD's (clean) view. `heard`: that track
+/// as `media::read_rip_and` heard it already, at `sync::FIRERED_RATE`.
+fn speech_of(ffmpeg: &Path, probe: &media::Probe, episode: &Episode, heard: Option<&[i16]>) -> Result<(Vec<(f64, f64)>, f64, bool)> {
     let source = Path::new(&episode.path);
     let audio = media::japanese_audio(probe);
-    let samples = media::read_audio_filtered(ffmpeg, source, audio, sync::FIRERED_RATE, None, None, None)?;
+    let read;
+    let samples = match heard {
+        Some(samples) => samples,
+        None => {
+            read = media::read_audio_filtered(ffmpeg, source, audio, sync::FIRERED_RATE, None, None, None)?;
+            &read[..]
+        }
+    };
     let length = samples.len() as f64 / sync::FIRERED_RATE as f64;
-    match sync::firered_spans(&samples) {
+    match sync::firered_spans(samples) {
         Ok(spans) if !spans.is_empty() => Ok((spans, length, true)),
         _ => {
             let samples = media::read_audio_filtered(ffmpeg, source, audio, sync::RATE, None, None, Some(sync::VOICE_FILTER))?;
@@ -1297,7 +1305,7 @@ pub fn timing_of(ffmpeg: &Path, probe: &media::Probe, episode: &Episode) -> Resu
     let tracks = media::read_rip(ffmpeg, Path::new(&episode.path), probe, None).unwrap_or_default();
     match subtitle_timing(probe, &tracks) {
         Some(timing) => Ok(timing),
-        None => speech_timing(ffmpeg, probe, episode),
+        None => speech_timing(ffmpeg, probe, episode, None),
     }
 }
 
@@ -1316,8 +1324,8 @@ fn subtitle_timing(probe: &media::Probe, tracks: &[media::TrackTiming]) -> Optio
 }
 
 /// The timing the episode's speech gives, heard in its Japanese audio.
-fn speech_timing(ffmpeg: &Path, probe: &media::Probe, episode: &Episode) -> Result<Timing> {
-    let (spans, length, clean) = speech_of(ffmpeg, probe, episode)?;
+fn speech_timing(ffmpeg: &Path, probe: &media::Probe, episode: &Episode, heard: Option<&[i16]>) -> Result<Timing> {
+    let (spans, length, clean) = speech_of(ffmpeg, probe, episode, heard)?;
     let calibration = if clean { sync::Calibration::CLEAN } else { sync::Calibration::NOISY };
     Ok(Timing { spans, length, against: "the speech".into(), lead: 0.1, calibration })
 }
@@ -1916,19 +1924,23 @@ fn find_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &Path, 
     // is what plays, and its English lines kept: the player then needn't read
     // the rip when the episode first plays.
     let sheet = Some(sheet_path(backend, show.id, episode.id)).filter(|sheet| !sheet.is_file() && plan_for(backend, episode, &probe).0 == Plan::Direct);
-    // The rip's own subtitle tracks, read in one pass over it the first time they're wanted.
-    let tracks = std::cell::OnceCell::new();
-    let rip_tracks = || {
-        tracks.get_or_init(|| {
+    // A rip without subtitle tracks is matched to its speech, when there are
+    // files to match (there's a Jimaku key): heard in the same read.
+    let speech = (!key.trim().is_empty() && !media::timed_subtitles(&probe) && !probe.audio.is_empty()).then(|| (media::japanese_audio(&probe), sync::FIRERED_RATE));
+    // The rip's own subtitle tracks (and its speech), read in one pass over it the first time they're wanted.
+    let read = std::cell::OnceCell::new();
+    let rip_read = || {
+        read.get_or_init(|| {
             let _turn = reading();
             if let Some(folder) = sheet.as_deref().and_then(Path::parent) {
                 let _ = std::fs::create_dir_all(folder);
             }
-            let tracks = media::read_rip(ffmpeg, rip, &probe, sheet.as_deref()).unwrap_or_default();
+            let (tracks, heard) = media::read_rip_and(ffmpeg, rip, &probe, sheet.as_deref(), speech).unwrap_or_default();
             keep_translation(backend, episode.id, &probe, &tracks);
-            tracks
+            (tracks, heard)
         })
     };
+    let rip_tracks = || &rip_read().0;
     if sheet.is_some() || lacks_translation(backend, episode.id, &probe) {
         rip_tracks();
     }
@@ -1938,8 +1950,9 @@ fn find_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &Path, 
     let read_timing = || match subtitle_timing(&probe, rip_tracks()) {
         Some(timing) => Ok(timing),
         None => {
-            let _turn = reading();
-            speech_timing(ffmpeg, &probe, episode).context("reading the episode’s timing")
+            let heard = rip_read().1.as_deref();
+            let _turn = heard.is_none().then(reading);
+            speech_timing(ffmpeg, &probe, episode, heard).context("reading the episode’s timing")
         }
     };
     // A Japanese track inside the rip is kept as it is when it's in sync

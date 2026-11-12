@@ -44,8 +44,21 @@ pub fn decode(bytes: &[u8]) -> String {
     }
     match std::str::from_utf8(bytes) {
         Ok(text) => text.to_string(),
+        Err(_) if mostly_utf8(bytes) => String::from_utf8_lossy(bytes).into_owned(),
         Err(_) => encoding_rs::SHIFT_JIS.decode(bytes).0.into_owned(),
     }
+}
+
+/// Whether bytes that aren't all UTF-8 are UTF-8 apart from a few bad bytes (a
+/// character cut off, a stray byte): more characters past ASCII read as UTF-8
+/// than bytes fail to. Shift_JIS text fails on nearly every character.
+fn mostly_utf8(bytes: &[u8]) -> bool {
+    let (mut read, mut bad) = (0, 0);
+    for chunk in bytes.utf8_chunks() {
+        read += chunk.valid().chars().filter(|c| !c.is_ascii()).count();
+        bad += chunk.invalid().len();
+    }
+    read > bad
 }
 
 fn re(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
@@ -374,6 +387,18 @@ mod tests {
         let (bytes, _, _) = encoding_rs::SHIFT_JIS.encode("1\n00:00:01,000 --> 00:00:02,000\n日本語\n");
         let lines = parse("a.srt", &bytes).unwrap();
         assert_eq!(lines[0].text, "日本語");
+    }
+
+    #[test]
+    fn a_utf8_file_with_a_character_cut_off_is_still_read_as_utf8() {
+        let mut bytes = "1\n00:00:01,000 --> 00:00:02,000\n明日の試験\n".as_bytes().to_vec();
+        bytes.extend([0xE3, 0x81]);
+        let lines = parse("a.srt", &bytes).unwrap();
+        assert_eq!(lines[0].text, "明日の試験\n\u{FFFD}");
+        // Shift_JIS kana and kanji, which read as UTF-8 only now and then, are still Shift_JIS.
+        let text = "1\n00:00:01,000 --> 00:00:02,000\n憂鬱な朝、窓の外には霧雨が降っていた。\n\n2\n00:00:03,000 --> 00:00:04,000\nｱﾆﾒを見ながら日本語を勉強する。\n";
+        let (bytes, _, _) = encoding_rs::SHIFT_JIS.encode(text);
+        assert_eq!(decode(&bytes), text);
     }
 
     #[test]

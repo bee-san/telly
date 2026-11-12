@@ -81,7 +81,12 @@
   let recapAt = $state<number | null>(null);
   /** Goes up with each episode, so a wait for the last one's recap stops. */
   let recapRun = 0;
-  let montage = $state<{ i: number; t: number } | null>(null);
+  /** The recap's moments: the one playing, where in it, and whether its opening title is still up. */
+  let montage = $state<{ i: number; t: number; intro: boolean } | null>(null);
+  /** The card between the moments and the episode: up over black, then fading off the episode as it plays. */
+  let bridge = $state<{ kicker: string; title: string; sub: string; out: boolean } | null>(null);
+  /** Counts the montage's starts and ends, so a timer from one before does nothing. */
+  let montageRun = 0;
   let montageVideo = $state<HTMLVideoElement | null>(null);
   /** The recap card is up: the episode waits for it. */
   let holdPlay = false;
@@ -923,8 +928,29 @@
   /** The episode the moment playing comes from: switching to another loads it. */
   const montageSrc = $derived(montage ? mediaUrl(moments[montage.i]?.src ?? "") : "");
 
+  /** How long the recap's opening title stays up, and the card into the episode comes up, stays and fades. */
+  const INTRO_MS = 2200;
+  const BRIDGE_IN_MS = 500;
+  const BRIDGE_HOLD_MS = 1300;
+  const BRIDGE_OUT_MS = 700;
+
+  /** Runs `then` after `ms`, unless the montage has started or ended since. */
+  function later(ms: number, run: number, then: () => void) {
+    setTimeout(() => {
+      if (run === montageRun) then();
+    }, ms);
+  }
+
+  /** The moments, opening on "Previously on" and the show's title over black. */
   function startMontage() {
-    if (canMontage) montage = { i: 0, t: moments[0].start };
+    if (!canMontage) return;
+    const run = ++montageRun;
+    montage = { i: 0, t: moments[0].start, intro: true };
+    later(INTRO_MS, run, () => {
+      if (!montage) return;
+      montage.intro = false;
+      if (montageVideo && montageVideo.readyState >= 1) montageVideo.play().catch(() => {});
+    });
   }
 
   /** The moment `i`: straight there in the same episode, or once the other episode has loaded. */
@@ -932,7 +958,7 @@
     const m = moments[i];
     if (!m || !montageVideo) return endMontage(true);
     const sameEpisode = montage !== null && moments[montage.i]?.src === m.src && montageVideo.readyState >= 1;
-    montage = { i, t: m.start };
+    montage = { i, t: m.start, intro: false };
     if (sameEpisode) startMoment();
   }
 
@@ -941,7 +967,8 @@
     if (!montage || !montageVideo) return;
     pickAudio(montageVideo, moments[montage.i].listedAudio);
     montageVideo.currentTime = moments[montage.i].start;
-    montageVideo.play().catch(() => {});
+    // Under the opening title it waits, at its first frame, for the title to go.
+    if (!montage.intro) montageVideo.play().catch(() => {});
   }
 
   const startLabel = $derived(ended ? "Close" : `${recapAt === null ? "Start" : "Resume"} Episode ${view?.episode.number ?? ""}`);
@@ -957,7 +984,7 @@
   /** Follows the moment playing, and moves on at its end. Called every frame, and on the video's
    *  time updates too, which carry on when the window is hidden and frames stop. */
   function montageTick() {
-    if (!montage || !montageVideo) return;
+    if (!montage || !montageVideo || montage.intro || bridge) return;
     const m = moments[montage.i];
     montage.t = montageVideo.currentTime;
     if (!m) endMontage(true);
@@ -966,8 +993,33 @@
 
   /** Off the moments: into the episode, or to the recap card. */
   function endMontage(startEpisode: boolean) {
+    // On the end card there's no episode to go into: back to it.
+    if (startEpisode && montage && !ended) return intoEpisode();
+    montageRun++;
     montage = null;
     if (startEpisode) closeRecap(true);
+  }
+
+  /** From the moments into the episode: they fade to black, a card names the
+   *  episode, and it fades off the episode as it starts playing. */
+  function intoEpisode() {
+    if (bridge || !view) return;
+    const run = ++montageRun;
+    const resuming = recapAt !== null;
+    bridge = { kicker: view.show.title, title: `Episode ${view.episode.number}`, sub: resuming ? `From ${clock(recapAt ?? 0)}` : "", out: false };
+    // Once it's black, the moments go; the episode waits behind the card, held (`holdPlay`) till it fades.
+    later(BRIDGE_IN_MS, run, () => (montage = null));
+    later(BRIDGE_IN_MS + BRIDGE_HOLD_MS, run, playFromBridge);
+  }
+
+  /** The card fades off the episode, which plays. Enter, Space, Esc or a click get there at once. */
+  function playFromBridge() {
+    if (!bridge || bridge.out) return;
+    const run = ++montageRun;
+    if (recap || montage) closeRecap(false);
+    bridge.out = true;
+    if (video && !ended) video.play().catch(() => {});
+    later(BRIDGE_OUT_MS, run, () => (bridge = null));
   }
 
   const montageLines = $derived.by(() => {
@@ -1085,6 +1137,14 @@
     wake();
     if (help) {
       if (e.key === "?" || e.key === "Escape") help = false;
+      return;
+    }
+    // The card into the episode: Enter, Space and Esc skip it.
+    if (bridge && !bridge.out) {
+      if (e.key === " " || e.key === "Enter" || e.key === "Escape") {
+        e.preventDefault();
+        playFromBridge();
+      }
       return;
     }
     // The recap card, or its moments, takes Space, Enter, P and Esc.
@@ -1595,6 +1655,8 @@
     <div class="montage">
       <!-- svelte-ignore a11y_media_has_caption -->
       <video bind:this={montageVideo} src={montageSrc} preload="auto" bind:volume bind:muted onloadedmetadata={startMoment} ontimeupdate={montageTick} onerror={() => endMontage(false)}></video>
+      <!-- Each moment comes up out of black. -->
+      {#key montage.i}<div class="montage-dip"></div>{/key}
       <div class="montage-top">
         <span class="montage-label">Previously on {view.show.title} · Episode {moments[montage.i].number} · {montage.i + 1} of {moments.length}</span>
         {#if moments[montage.i].caption}<p class="montage-caption" lang={recapLang} aria-live="polite">{moments[montage.i].caption}</p>{/if}
@@ -1604,10 +1666,24 @@
           <p class="sub-line" lang="ja">{@html lineHtml(l)}</p>
         {/each}
       </div>
+      <div class="montage-title" class:gone={!montage.intro} aria-hidden={!montage.intro}>
+        <span class="kicker">Previously on</span>
+        <h2>{view.show.title}</h2>
+        <span class="rule"></span>
+      </div>
       <div class="montage-actions">
         <button type="button" class="pbtn txt" title="Read the recap (P)" onclick={() => endMontage(false)}>Read recap</button>
         <button type="button" class="pbtn txt" title="{startLabel} (Enter)" onclick={() => endMontage(true)}>{startLabel}</button>
       </div>
+    </div>
+  {/if}
+
+  {#if bridge}
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+    <div class="bridge" class:out={bridge.out} onclick={playFromBridge}>
+      <span class="kicker">{bridge.kicker}</span>
+      <h2>{bridge.title}</h2>
+      {#if bridge.sub}<span class="bridge-sub">{bridge.sub}</span>{/if}
     </div>
   {/if}
 
@@ -1794,6 +1870,21 @@
   .montage-caption { margin: 0; max-width: 60ch; padding: 8px 12px; font: 400 18px/1.4 var(--font-ui); color: var(--vid-ink); background: var(--vid-panel); border: 1px solid var(--vid-edge); border-radius: 8px; }
   .montage-subs { bottom: 72px; }
   .montage-subs .sub-line { pointer-events: none; }
-  .montage-actions { position: absolute; right: 18px; bottom: 18px; display: flex; gap: 10px; }
+  .montage-actions { position: absolute; right: 18px; bottom: 18px; z-index: 3; display: flex; gap: 10px; }
+  /* The moments open on a title over black, and give way to the episode through black. */
+  .montage-dip { position: absolute; inset: 0; background: var(--vid); pointer-events: none; animation: veil-out .45s ease both; }
+  .montage-title, .bridge { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 14px; padding: 24px; text-align: center; background: var(--vid); }
+  .montage-title { z-index: 2; transition: opacity .6s ease; }
+  .montage-title.gone { opacity: 0; pointer-events: none; }
+  .bridge { z-index: 12; animation: veil-in .5s ease both; cursor: pointer; }
+  .bridge.out { animation: veil-out .7s ease both; pointer-events: none; }
+  .montage-title .kicker, .bridge .kicker { max-width: 60ch; font: 600 12px/1.4 var(--font-ui); letter-spacing: .26em; text-transform: uppercase; color: var(--vid-ink-2); animation: rise .7s ease both; }
+  .montage-title h2, .bridge h2 { margin: 0; max-width: 24ch; font: 600 clamp(26px, 4.2vw, 46px)/1.15 var(--font-display); color: var(--vid-ink); text-wrap: balance; animation: rise .7s .15s ease both; }
+  .montage-title .rule { width: 56px; height: 2px; border-radius: 1px; background: var(--vid-ink-2); animation: grow .7s .35s ease both; }
+  .bridge-sub { font: 400 14px/1.4 var(--font-ui); color: var(--vid-ink-2); animation: rise .7s .3s ease both; }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+  @keyframes grow { from { transform: scaleX(0); } }
+  @keyframes veil-in { from { opacity: 0; } }
+  @keyframes veil-out { to { opacity: 0; } }
   .montage-actions .pbtn { background: var(--vid-panel); border: 1px solid var(--vid-edge); }
 </style>

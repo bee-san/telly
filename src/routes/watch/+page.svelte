@@ -881,6 +881,17 @@
     // On the end card: the countdown to the next episode waits for you to read.
     if (ended) stopWaiting();
     recap = { state: "writing", error: "", data: null, full: !back || (view.awayMs ?? 0) >= LONG_AWAY_MS };
+    await loadRecap(back);
+  }
+
+  /** Asks Claude again after the recap failed, keeping the card as it was opened. */
+  async function retryRecap() {
+    if (!recap || recap.state !== "error") return;
+    recap = { ...recap, state: "writing", error: "" };
+    await loadRecap(false);
+  }
+
+  async function loadRecap(back: boolean) {
     try {
       const r = await getRecap();
       if (!r || !recap) return;
@@ -934,7 +945,7 @@
   }
 
   const startLabel = $derived(ended ? "Close" : `${recapAt === null ? "Start" : "Resume"} Episode ${view?.episode.number ?? ""}`);
-  /** The language Claude writes the recap in (Settings → Claude), so Japanese is drawn with Japanese, not Chinese, kanji. */
+  /** The language Claude writes the recap and Explain in (Settings → Claude), so Japanese is drawn with Japanese, not Chinese, kanji. */
   const recapLang = $derived(settings["claude.language"] === "ja" ? "ja" : "en");
 
   /** "Episode 7", or "Episodes 2–7". */
@@ -1492,12 +1503,12 @@
         {:else if !explaining.text}
           <p class="ex-wait">Asking Claude…</p>
         {:else}
-          <p class="ex-tr">{explainRows.translation}</p>
+          <p class="ex-tr" lang={recapLang}>{explainRows.translation}</p>
           {#if explainRows.notes.length}
             <dl class="ex-notes">
               {#each explainRows.notes as n, k (k)}
                 {#if n.term}<dt lang="ja" onpointerenter={hoverText}>{n.term}</dt>{/if}
-                <dd class:solo={!n.term}>{n.text}</dd>
+                <dd class:solo={!n.term} lang={recapLang}>{n.text}</dd>
               {/each}
             </dl>
           {/if}
@@ -1507,7 +1518,7 @@
             {#if item.error}
               <p class="ex-err">{item.error}</p>
             {:else}
-              <p class="ex-a" onpointerenter={hoverText}>{item.a || "Asking Claude…"}</p>
+              <p class="ex-a" lang={recapLang} onpointerenter={hoverText}>{item.a || "Asking Claude…"}</p>
             {/if}
           {/each}
         {/if}
@@ -1570,6 +1581,9 @@
           {/if}
           {#if canMontage}
             <button type="button" class="btn quiet" title="Watch the moments (P)" onclick={startMontage}>Watch the moments</button>
+          {/if}
+          {#if recap.state === "error"}
+            <button type="button" class="btn quiet" onclick={retryRecap}>Try again</button>
           {/if}
           <button type="button" class="btn" title="{startLabel} (Enter)" onclick={() => closeRecap(true)}><Icon name="play" /><span>{startLabel}</span></button>
         </div>

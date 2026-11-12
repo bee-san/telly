@@ -32,7 +32,12 @@ jobs:
           node-version: lts/*
           cache: npm
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned: Rust 1.100's cargo puts build scripts' output a folder deeper,
+      # and ort-sys 2.0.0-rc.12 (FireRedVAD's ONNX Runtime) then fails copying
+      # its DLLs on Windows. Move on once ort is past that.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
 
       - uses: Swatinem/rust-cache@v2
         with:

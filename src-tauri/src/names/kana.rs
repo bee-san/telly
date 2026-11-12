@@ -114,7 +114,19 @@ fn is_syllable_boundary(c: char) -> bool {
 /// For example: "Shin'ichi" → し+ん+い+ち = しんいち (not しにち).
 /// Other non-alphabetic characters (digits, misc punctuation) are silently dropped.
 pub fn alphabet_to_kana(input: &str) -> String {
-    let text = input.to_lowercase();
+    // Telly: long vowels written with a macron or circumflex (Ryōta, Yûki) are
+    // two vowels, ō as ou, which names have far more often than oo.
+    let mut text = String::with_capacity(input.len());
+    for c in input.to_lowercase().chars() {
+        match c {
+            'ā' | 'â' => text.push_str("aa"),
+            'ī' | 'î' => text.push_str("ii"),
+            'ū' | 'û' => text.push_str("uu"),
+            'ē' | 'ê' => text.push_str("ee"),
+            'ō' | 'ô' => text.push_str("ou"),
+            _ => text.push(c),
+        }
+    }
     let chars: Vec<char> = text.chars().collect();
     let mut result = String::new();
     let mut i = 0;
@@ -160,6 +172,19 @@ pub fn alphabet_to_kana(input: &str) -> String {
         if chars[i] == 'n' && chars.get(i + 1) == Some(&'n') {
             result.push('ん');
             i += if chars.get(i + 2).copied().is_some_and(is_vowel_or_y) { 1 } else { 2 };
+            continue;
+        }
+
+        // Telly: m before b, p or m is ん, and tch is っch, as Hepburn writes
+        // them (Namba: なんば, Homma: ほんま, Kotchi: こっち).
+        if chars[i] == 'm' && chars.get(i + 1).is_some_and(|c| matches!(c, 'b' | 'p' | 'm')) {
+            result.push('ん');
+            i += 1;
+            continue;
+        }
+        if chars[i] == 't' && chars.get(i + 1) == Some(&'c') && chars.get(i + 2) == Some(&'h') {
+            result.push('っ');
+            i += 1;
             continue;
         }
 
@@ -422,6 +447,14 @@ mod tests {
         assert_eq!(alphabet_to_kana("Shin'ichi"), "しんいち");
         assert_eq!(alphabet_to_kana("Kenta"), "けんた");
         assert_eq!(alphabet_to_kana("Hattori"), "はっとり");
+    }
+
+    #[test]
+    fn hepburn_s_m_tch_and_long_vowels_read_as_kana() {
+        let read = |names: &[&str]| names.iter().map(|n| alphabet_to_kana(n)).collect::<Vec<_>>();
+        assert_eq!(read(&["Namba", "Homma", "Sempai"]), ["なんば", "ほんま", "せんぱい"]);
+        assert_eq!(read(&["Etchū", "Kotchi"]), ["えっちゅう", "こっち"]);
+        assert_eq!(read(&["Ryōta", "Yûki", "Kōsuke Ōkubo"]), ["りょうた", "ゆうき", "こうすけ おうくぼ"]);
     }
 }
 

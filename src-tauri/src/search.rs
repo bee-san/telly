@@ -12,6 +12,8 @@
 //! - A word finds every form of itself: 食べる, たべる and 食べた all find
 //!   食べた, 食べて and 食べられる, and the whole form is what's marked.
 //!   Anything that isn't a word in the index finds the lines with that text,
+//!   looked up by its trigrams (every three characters in a row) when it has
+//!   three characters or more, and read for in each line when it has fewer;
 //!   and so does a word premining doesn't keep (俺, 君, 二人) where it's
 //!   written outside every saved word.
 //! - Each line found says how many of its other words you don't know, as
@@ -29,11 +31,12 @@ use crate::premine::{self, SavedUse};
 use crate::subs::Line;
 use crate::{jobs, known, media, names};
 use anyhow::{anyhow, Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 const MIGRATIONS: &[&str] = &["
@@ -53,6 +56,21 @@ CREATE TABLE indexed (
   stamp      TEXT NOT NULL,
   words      INTEGER NOT NULL
 );
+", "
+-- Each line's text by its trigrams (every three characters in a row, as
+-- written), so the lines with a phrase in them are found without reading
+-- every line. Only the index is kept, under the line's rowid: the text is in
+-- lines.
+CREATE VIRTUAL TABLE line_text USING fts5(
+  text,
+  content = '',
+  contentless_delete = 1,
+  tokenize = 'trigram case_sensitive 1'
+);
+-- Whether an episode's lines are in line_text. Those put in before it was
+-- there go in in the background as Telly starts (catch_up); until every
+-- episode's are, a text is looked for line by line.
+ALTER TABLE indexed ADD COLUMN text INTEGER NOT NULL DEFAULT 0;
 "];
 
 /// Room for an episode's lines among the rowids.
@@ -128,6 +146,8 @@ struct Entry {
 
 pub struct Index {
     conn: Mutex<Connection>,
+    /// Every episode's lines are in line_text: once they are, they stay so.
+    text_indexed: AtomicBool,
 }
 
 /// A line as put in, read from the ordinary table FTS5 keeps the lines in,
@@ -144,7 +164,7 @@ fn kept(row: &rusqlite::Row) -> rusqlite::Result<Kept> {
 
 impl Index {
     pub fn open(path: &Path) -> Result<Self> {
-        Ok(Self { conn: Mutex::new(open_migrated(path, MIGRATIONS)?) })
+        Ok(Self { conn: Mutex::new(open_migrated(path, MIGRATIONS)?), text_indexed: AtomicBool::new(false) })
     }
 
     fn conn(&self) -> Result<MutexGuard<'_, Connection>> {
@@ -164,15 +184,20 @@ impl Index {
     fn replace(&self, episode_id: i64, entries: &[Entry], stamp: &str, words: bool) -> Result<()> {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
-        tx.execute("DELETE FROM lines WHERE rowid >= ?1 AND rowid < ?2", params![episode_id * PER_EPISODE, (episode_id + 1) * PER_EPISODE])?;
+        let range = params![episode_id * PER_EPISODE, (episode_id + 1) * PER_EPISODE];
+        tx.execute("DELETE FROM lines WHERE rowid >= ?1 AND rowid < ?2", range)?;
+        // A rowid put in line_text again would be there twice.
+        tx.execute("DELETE FROM line_text WHERE rowid >= ?1 AND rowid < ?2", range)?;
         {
             let mut insert = tx.prepare("INSERT INTO lines (rowid, words, text, start_s, end_s) VALUES (?1, ?2, ?3, ?4, ?5)")?;
+            let mut text = tx.prepare("INSERT INTO line_text (rowid, text) VALUES (?1, ?2)")?;
             for (i, e) in entries.iter().enumerate() {
                 insert.execute(params![episode_id * PER_EPISODE + i as i64, e.words, e.text, e.start, e.end])?;
+                text.execute(params![episode_id * PER_EPISODE + i as i64, e.text])?;
             }
         }
         tx.execute(
-            "INSERT INTO indexed (episode_id, stamp, words) VALUES (?1, ?2, ?3) ON CONFLICT (episode_id) DO UPDATE SET stamp = excluded.stamp, words = excluded.words",
+            "INSERT INTO indexed (episode_id, stamp, words, text) VALUES (?1, ?2, ?3, 1) ON CONFLICT (episode_id) DO UPDATE SET stamp = excluded.stamp, words = excluded.words, text = 1",
             params![episode_id, stamp, words],
         )?;
         Ok(tx.commit()?)
@@ -182,9 +207,40 @@ impl Index {
     pub(crate) fn forget(&self, episode_id: i64) -> Result<()> {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
-        tx.execute("DELETE FROM lines WHERE rowid >= ?1 AND rowid < ?2", params![episode_id * PER_EPISODE, (episode_id + 1) * PER_EPISODE])?;
+        let range = params![episode_id * PER_EPISODE, (episode_id + 1) * PER_EPISODE];
+        tx.execute("DELETE FROM lines WHERE rowid >= ?1 AND rowid < ?2", range)?;
+        tx.execute("DELETE FROM line_text WHERE rowid >= ?1 AND rowid < ?2", range)?;
         tx.execute("DELETE FROM indexed WHERE episode_id = ?1", params![episode_id])?;
         Ok(tx.commit()?)
+    }
+
+    /// The episodes whose lines aren't in line_text yet: those put in before it was there.
+    fn without_text(&self) -> Result<Vec<i64>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare("SELECT episode_id FROM indexed WHERE NOT text")?;
+        let ids = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
+        Ok(ids)
+    }
+
+    /// Puts an episode's lines, as they are, in line_text.
+    fn index_text(&self, episode_id: i64) -> Result<()> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        let range = params![episode_id * PER_EPISODE, (episode_id + 1) * PER_EPISODE];
+        tx.execute("DELETE FROM line_text WHERE rowid >= ?1 AND rowid < ?2", range)?;
+        tx.execute("INSERT INTO line_text (rowid, text) SELECT id, c1 FROM lines_content WHERE id >= ?1 AND id < ?2", range)?;
+        tx.execute("UPDATE indexed SET text = 1 WHERE episode_id = ?1", params![episode_id])?;
+        Ok(tx.commit()?)
+    }
+
+    /// Whether every episode's lines are in line_text, to look a text up there.
+    fn all_text_indexed(&self, conn: &Connection) -> Result<bool> {
+        if self.text_indexed.load(Ordering::Relaxed) {
+            return Ok(true);
+        }
+        let all: bool = conn.query_row("SELECT NOT EXISTS (SELECT 1 FROM indexed WHERE NOT text)", [], |r| r.get(0))?;
+        self.text_indexed.store(all, Ordering::Relaxed);
+        Ok(all)
     }
 
     fn episodes(&self) -> Result<Vec<i64>> {
@@ -215,11 +271,22 @@ impl Index {
         Ok(found)
     }
 
-    /// The lines with `text` in them, of every episode or only of `episodes`.
-    /// Every episode's lines take about a sixth of a second for 850,000 lines,
-    /// where a word takes a fiftieth of one: each line is read.
-    fn with_text(&self, text: &str, episodes: Option<&[i64]>) -> Result<Vec<Kept>> {
+    /// The lines with `text` in them, of every episode or only of `episodes`,
+    /// in that order and each episode's in order. Three characters or more are
+    /// looked up by their trigrams; fewer have none, and each line is read for
+    /// them (a sixth of a second for 850,000 lines, where a word takes a
+    /// fiftieth of one).
+    fn with_text(&self, text: &str, episodes: Option<&[i64]>, elsewhere: usize) -> Result<Vec<Kept>> {
         let conn = self.conn()?;
+        if text.chars().count() >= 3 && self.all_text_indexed(&conn)? {
+            // Its trigrams are read for every line it's in, here or `elsewhere`:
+            // for a common word, more than the lines of a few episodes.
+            match episodes {
+                None => return by_trigrams(&conn, text, None),
+                Some(episodes) if (elsewhere as i64) < lines_of(&conn, episodes)? => return by_trigrams(&conn, text, Some(episodes)),
+                Some(_) => {}
+            }
+        }
         // As it's written: what text_hits keeps of the lines found.
         let Some(episodes) = episodes else {
             let mut stmt = conn.prepare_cached(&format!("{KEPT} FROM lines_content AS content WHERE instr(content.c1, ?1) > 0 ORDER BY content.id"))?;
@@ -247,6 +314,43 @@ impl Index {
         let found = stmt.query_map(params![first, at + 1], kept)?.collect::<rusqlite::Result<Vec<Kept>>>()?;
         Ok(found)
     }
+}
+
+/// The lines with `text` in them, found by its trigrams in line_text: a
+/// phrase of them, so the trigrams follow one another as in `text`, and every
+/// one is as written. The same lines, in the same order, as reading each line.
+fn by_trigrams(conn: &Connection, text: &str, episodes: Option<&[i64]>) -> Result<Vec<Kept>> {
+    let phrase = format!("\"{}\"", text.replace('"', "\"\""));
+    let Some(episodes) = episodes else {
+        let mut stmt = conn.prepare_cached(&format!(
+            "{KEPT} FROM line_text CROSS JOIN lines_content AS content ON content.id = line_text.rowid WHERE line_text MATCH ?1 ORDER BY line_text.rowid"
+        ))?;
+        let found = stmt.query_map(params![phrase], kept)?.collect::<rusqlite::Result<Vec<Kept>>>()?;
+        return Ok(found);
+    };
+    let mut stmt = conn.prepare_cached("SELECT rowid FROM line_text WHERE line_text MATCH ?1 ORDER BY rowid")?;
+    let mut ids = stmt.query_map(params![phrase], |r| r.get::<_, i64>(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
+    let place: HashMap<i64, usize> = episodes.iter().enumerate().map(|(i, e)| (*e, i)).collect();
+    ids.retain(|id| place.contains_key(&(id / PER_EPISODE)));
+    ids.sort_by_key(|id| (place[&(id / PER_EPISODE)], *id));
+    let mut line = conn.prepare_cached(&format!("{KEPT} FROM lines_content AS content WHERE content.id = ?1"))?;
+    let mut found = Vec::with_capacity(ids.len());
+    for id in ids {
+        found.extend(line.query_row(params![id], kept).optional()?);
+    }
+    Ok(found)
+}
+
+/// How many lines `episodes` have.
+fn lines_of(conn: &Connection, episodes: &[i64]) -> Result<i64> {
+    // The last line's rowid, found where max(id) would read every line before it.
+    let mut last = conn.prepare_cached("SELECT id FROM lines_content WHERE id >= ?1 AND id < ?2 ORDER BY id DESC LIMIT 1")?;
+    let mut lines = 0;
+    for id in episodes {
+        let at: Option<i64> = last.query_row(params![id * PER_EPISODE, (id + 1) * PER_EPISODE], |r| r.get(0)).optional()?;
+        lines += at.map_or(0, |at| at - id * PER_EPISODE + 1);
+    }
+    Ok(lines)
 }
 
 // ---- Putting lines in ----
@@ -332,6 +436,13 @@ fn catch_up(backend: &Backend) -> Result<()> {
     for id in here {
         index(backend, id);
     }
+    // Lines put in before line_text was there, an episode at a time so a
+    // search meanwhile waits for one at most: about 30 s for 850,000 lines.
+    for id in backend.lines.without_text()? {
+        if let Err(e) = backend.lines.index_text(id) {
+            eprintln!("line search: episode {id}'s text not indexed: {e:#}");
+        }
+    }
     Ok(())
 }
 
@@ -397,7 +508,7 @@ fn hits(index: &Index, q: &str) -> Result<Vec<Hit>> {
         return Ok(hits);
     }
     if hits.is_empty() {
-        return Ok(text_hits(index.with_text(q, None)?, q));
+        return Ok(text_hits(index.with_text(q, None, 0)?, q));
     }
     let with_words = index.with_words()?;
     // A word premining keeps is a saved word wherever it's said, so only
@@ -407,10 +518,10 @@ fn hits(index: &Index, q: &str) -> Result<Vec<Hit>> {
     // 俺 finds only オラ and おれ, which Hachidori reads as 俺.
     let more = if crate::premine::dictionary_form(q).is_some() {
         let without: Vec<i64> = index.episodes()?.into_iter().filter(|e| !with_words.contains(e)).collect();
-        if without.is_empty() { Vec::new() } else { text_hits(index.with_text(q, Some(&without))?, q) }
+        if without.is_empty() { Vec::new() } else { text_hits(index.with_text(q, Some(&without), hits.len())?, q) }
     } else {
         let found: HashSet<(i64, usize)> = hits.iter().map(|h| (h.kept.episode_id, h.kept.line)).collect();
-        outside_words(index.with_text(q, None)?, q).into_iter().filter(|h| !found.contains(&(h.kept.episode_id, h.kept.line))).collect()
+        outside_words(index.with_text(q, None, 0)?, q).into_iter().filter(|h| !found.contains(&(h.kept.episode_id, h.kept.line))).collect()
     };
     hits.extend(more);
     Ok(hits)
@@ -868,6 +979,58 @@ mod tests {
         index.replace(9, &entries(&lines, &[]).unwrap(), "now", false).unwrap();
         let hits = hits(&index, "走って").unwrap();
         assert_eq!(hits.iter().map(|h| (h.kept.episode_id, h.from)).collect::<Vec<_>>(), [(9, 0)]);
+    }
+
+    #[test]
+    fn lines_put_in_before_the_trigram_index_are_read_for_a_text_until_they_re_in_it() {
+        let dir = std::env::temp_dir().join(format!("telly-lines-before-trigrams-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("telly-lines.sqlite");
+        // Two episodes, put in by the first version of the index.
+        {
+            let conn = open_migrated(&path, &MIGRATIONS[..1]).unwrap();
+            let lines = [
+                [line(1.0, 2.0, "彼は\"本物\"だと言った"), line(3.0, 4.0, "本物の魔法使いだ"), line(5.0, 6.0, "ほんものじゃない")],
+                [line(1.0, 2.0, "本物の魔法"), line(3.0, 4.0, "ＡＢＣの本物"), line(5.0, 6.0, "abcの偽物")],
+            ];
+            for (episode, lines) in [5, 6].into_iter().zip(lines) {
+                for (i, e) in entries(&lines, &[]).unwrap().iter().enumerate() {
+                    let insert = "INSERT INTO lines (rowid, words, text, start_s, end_s) VALUES (?1, ?2, ?3, ?4, ?5)";
+                    conn.execute(insert, params![episode * PER_EPISODE + i as i64, e.words, e.text, e.start, e.end]).unwrap();
+                }
+                conn.execute("INSERT INTO indexed (episode_id, stamp, words) VALUES (?1, 'then', 0)", params![episode]).unwrap();
+            }
+        }
+        let index = Index::open(&path).unwrap();
+        let asked = ["\"本物\"", "本物の魔", "は\"本", "ほんもの", "本物", "の本物", "ＡＢＣの", "abcの", "ABCの", "魔法使いだ", "雪合戦"];
+        let lines_of = |episodes: Option<&[i64]>, elsewhere: usize| -> Vec<Vec<(i64, usize)>> {
+            asked.iter().map(|q| index.with_text(q, episodes, elsewhere).unwrap().iter().map(|k| (k.episode_id, k.line)).collect()).collect()
+        };
+        assert!(!index.all_text_indexed(&index.conn().unwrap()).unwrap());
+        assert_eq!(index.without_text().unwrap(), [5, 6]);
+        let (every, backwards) = (lines_of(None, 0), lines_of(Some(&[6, 5]), 0));
+        assert_eq!(every[1], [(5, 1), (6, 0)]);
+        assert_eq!(backwards[1], [(6, 0), (5, 1)]);
+        for id in index.without_text().unwrap() {
+            index.index_text(id).unwrap();
+        }
+        assert!(index.all_text_indexed(&index.conn().unwrap()).unwrap());
+        // Now by their trigrams, with what's found the same and in the same order.
+        assert_eq!(by_trigrams(&index.conn().unwrap(), "本物の魔", None).unwrap().len(), 2);
+        assert_eq!(lines_of(None, 0), every);
+        assert_eq!(lines_of(Some(&[6, 5]), 0), backwards);
+        // A word in more lines elsewhere than these episodes have: they're read instead, alike.
+        assert_eq!(super::lines_of(&index.conn().unwrap(), &[6, 5]).unwrap(), 6);
+        assert_eq!(lines_of(Some(&[6, 5]), 6), backwards);
+        assert_eq!(found(&index, "\"本物\""), [(0, "\"本物\"".to_string())]);
+        // Lines put in again, or taken out, are in line_text as they are.
+        index.replace(5, &entries(&[line(1.0, 2.0, "偽物の魔法使い")], &[]).unwrap(), "now", false).unwrap();
+        assert_eq!(found(&index, "物の魔"), [(0, "物の魔".to_string()), (0, "物の魔".to_string())]);
+        assert_eq!(found(&index, "魔法使いだ"), []);
+        index.forget(6).unwrap();
+        assert_eq!(found(&index, "本物の"), []);
+        assert_eq!(found(&index, "偽物の"), [(0, "偽物の".to_string())]);
     }
 
     #[test]

@@ -157,7 +157,8 @@ pub fn installing(backend: &Backend) -> bool {
 /// A dictionary file for the page to upload.
 pub fn dictionary_file(backend: &Backend, name: &str) -> Result<PathBuf> {
     let dir = folder(backend).ok_or_else(|| anyhow!("no dictionaries folder"))?;
-    if name.contains(['/', '\\']) || name.contains("..") {
+    // A file's name alone: on Windows "C:…" joined to the folder would be anywhere on C:.
+    if name.contains(['/', '\\', ':']) || name.contains("..") {
         return Err(anyhow!("not a dictionary"));
     }
     let path = dir.join(name);
@@ -360,6 +361,26 @@ mod tests {
                 "Japanese Proper Nouns Mk II.zip"
             ]
         );
+    }
+
+    #[test]
+    fn only_a_dictionary_in_the_folder_is_served() {
+        let dir = std::env::temp_dir().join(format!("telly-dictionary-file-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let folder = dir.join("dictionaries");
+        std::fs::create_dir_all(&folder).unwrap();
+        backend.db.set_setting(FOLDER, &json!(folder.to_string_lossy())).unwrap();
+        // "C:x.zip" names a file on drive C on Windows, wherever the folder is (a file of that name here stands in for it).
+        for name in ["Jitendex.zip", "C:x.zip"] {
+            std::fs::write(folder.join(name), b"zip").unwrap();
+        }
+        assert!(dictionary_file(&backend, "Jitendex.zip").is_ok());
+        for name in ["C:x.zip", "../telly.sqlite", "a/b.zip"] {
+            assert!(dictionary_file(&backend, name).is_err(), "{name}");
+        }
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

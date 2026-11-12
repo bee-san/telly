@@ -105,6 +105,10 @@ CREATE TABLE openings (
   start       REAL,
   end         REAL
 );
+", "
+-- When AniSkip was asked (unix ms). An answer of none is asked again a week
+-- on: people mark an episode's opening in the days after it airs.
+ALTER TABLE openings ADD COLUMN asked_at INTEGER NOT NULL DEFAULT 0;
 "];
 
 /// Something Claude said, kept so it's there instantly next time.
@@ -769,23 +773,24 @@ impl Db {
         Ok(found.and_then(|(start, end)| Some((start?, end?))))
     }
 
-    /// A show's episodes, as (id, number), that ffprobe has read and AniSkip
-    /// hasn't been asked about.
-    pub fn unasked_openings(&self, show_id: i64) -> Result<Vec<(i64, i64)>> {
+    /// A show's episodes that ffprobe has read and AniSkip is to be asked
+    /// about: never asked, or it had none for them when asked before `again` (unix ms).
+    pub fn unasked_openings(&self, show_id: i64, again: i64) -> Result<Vec<i64>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT id, number FROM episodes e WHERE show_id = ?1 AND probe != ''
-               AND NOT EXISTS (SELECT 1 FROM openings o WHERE o.episode_id = e.id) ORDER BY number",
+            "SELECT id FROM episodes e WHERE show_id = ?1 AND probe != ''
+               AND NOT EXISTS (SELECT 1 FROM openings o WHERE o.episode_id = e.id AND (o.start IS NOT NULL OR o.asked_at >= ?2))
+             ORDER BY number",
         )?;
-        let rows = stmt.query_map(params![show_id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let rows = stmt.query_map(params![show_id, again], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
-    /// What AniSkip said about an episode's opening; None: it has none.
+    /// What AniSkip said about an episode's opening just now; None: it has none.
     pub fn set_opening(&self, episode_id: i64, opening: Option<(f64, f64)>) -> Result<()> {
         self.conn()?.execute(
-            "INSERT OR REPLACE INTO openings (episode_id, start, end) VALUES (?1, ?2, ?3)",
-            params![episode_id, opening.map(|o| o.0), opening.map(|o| o.1)],
+            "INSERT OR REPLACE INTO openings (episode_id, start, end, asked_at) VALUES (?1, ?2, ?3, ?4)",
+            params![episode_id, opening.map(|o| o.0), opening.map(|o| o.1), now_ms()],
         )?;
         Ok(())
     }
@@ -846,7 +851,7 @@ mod tests {
     }
 
     #[test]
-    fn asks_aniskip_again_after_a_renumber_or_rematch() {
+    fn asks_aniskip_again_after_a_renumber_or_rematch_and_a_week_after_none() {
         let (db, dir) = temp_db("openings");
         let id = db
             .add_show(&NewShow {
@@ -857,20 +862,25 @@ mod tests {
             })
             .unwrap();
         let ep = db.episodes(id).unwrap()[0].id;
+        let week_ago = now_ms() - 7 * 86_400_000;
         // Not read by ffprobe yet.
-        assert!(db.unasked_openings(id).unwrap().is_empty());
+        assert!(db.unasked_openings(id, week_ago).unwrap().is_empty());
         db.set_probe(ep, "{}", 1500.0, None, "direct").unwrap();
-        assert_eq!(db.unasked_openings(id).unwrap(), [(ep, 1)]);
+        assert_eq!(db.unasked_openings(id, week_ago).unwrap(), [ep]);
         db.set_opening(ep, Some((116.7, 206.7))).unwrap();
         assert_eq!(db.opening(ep).unwrap(), Some((116.7, 206.7)));
-        assert!(db.unasked_openings(id).unwrap().is_empty());
+        assert!(db.unasked_openings(id, week_ago).unwrap().is_empty());
+        // An opening found stands, however long ago it was asked.
+        assert!(db.unasked_openings(id, now_ms() + 1).unwrap().is_empty());
         db.renumber(id, &[(ep, 2)]).unwrap();
         assert_eq!(db.opening(ep).unwrap(), None);
-        assert_eq!(db.unasked_openings(id).unwrap(), [(ep, 2)]);
+        assert_eq!(db.unasked_openings(id, week_ago).unwrap(), [ep]);
         db.set_opening(ep, None).unwrap();
-        assert!(db.unasked_openings(id).unwrap().is_empty());
+        assert!(db.unasked_openings(id, week_ago).unwrap().is_empty());
+        // None is asked about again once it's older than `again`.
+        assert_eq!(db.unasked_openings(id, now_ms() + 1).unwrap(), [ep]);
         db.set_show_anilist(id, &NewShow { title: "Frieren".into(), ..Default::default() }).unwrap();
-        assert_eq!(db.unasked_openings(id).unwrap(), [(ep, 2)]);
+        assert_eq!(db.unasked_openings(id, week_ago).unwrap(), [ep]);
         drop(db);
         let _ = std::fs::remove_dir_all(dir);
     }

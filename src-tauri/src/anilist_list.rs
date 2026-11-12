@@ -127,7 +127,7 @@ fn update(backend: &Backend, token: &str) -> Result<bool> {
 
 /// The AniList entry an episode is of, and its number there.
 /// `group_entry` finds a later season folder's entry from its name and episode count.
-fn place(show: &Show, episodes: &[Episode], episode: &Episode, group_entry: impl FnOnce(&str, usize) -> Result<Option<i64>>) -> Result<Option<(i64, i64)>> {
+pub(crate) fn place(show: &Show, episodes: &[Episode], episode: &Episode, group_entry: impl FnOnce(&str, usize) -> Result<Option<i64>>) -> Result<Option<(i64, i64)>> {
     let Some(own) = show.anilist_id else { return Ok(None) };
     let listing: Vec<(i64, String)> = episodes.iter().map(|e| (e.number, e.path.clone())).collect();
     let groups = matching::groups(&show.folder, &listing);
@@ -145,7 +145,7 @@ fn place(show: &Show, episodes: &[Episode], episode: &Episode, group_entry: impl
 }
 
 /// A later season folder's own AniList entry, worked out once and kept.
-fn group_entry(backend: &Backend, show: &Show, group: &str, count: usize) -> Result<Option<i64>> {
+pub(crate) fn group_entry(backend: &Backend, show: &Show, group: &str, count: usize) -> Result<Option<i64>> {
     let setting = format!("anilist.group.{}.{group}", show.id);
     let id = match backend.db.setting(&setting)?.and_then(|v| v.as_i64()) {
         Some(id) => id,

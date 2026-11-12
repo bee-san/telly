@@ -1244,44 +1244,84 @@ fn words_worker(backend: &Backend) {
     }
 }
 
+/// How long AniSkip's answer of none for an episode stands before it's asked
+/// again: people mark an episode's opening in the days after it airs.
+const OPENING_AGAIN_MS: i64 = 7 * 24 * 3_600_000;
+/// How long to wait after AniList or AniSkip couldn't be reached.
+const OPENING_RETRY: Duration = Duration::from_secs(600);
+
 /// Asks AniSkip where the opening is in episodes whose rips' chapters don't
 /// say, so Skip opening shows for them too. Its answer is kept, none
-/// included. An episode it couldn't be asked about is asked again when Telly
-/// next starts.
+/// included. When AniList or AniSkip can't be reached, it tries again 10
+/// minutes later.
 fn openings_worker(backend: &Backend) {
-    // Episodes whose chapters show the opening, or that couldn't be asked about.
-    let mut looked: HashSet<i64> = HashSet::new();
-    // MyAnimeList's ID for each AniList ID, which AniSkip knows anime by.
-    let mut mal: HashMap<i64, Option<i64>> = HashMap::new();
+    let mut asking = Openings::default();
     let mut seen = 0;
+    let mut retry_at: Option<Instant> = None;
     loop {
         backend.jobs.wait(&mut seen, Duration::from_secs(5));
+        if retry_at.is_some_and(|at| Instant::now() < at) {
+            continue;
+        }
+        retry_at = match asking.ask(backend) {
+            Ok(()) => None,
+            Err(e) => {
+                eprintln!("openings: {e:#}; trying again in 10 minutes");
+                Some(Instant::now() + OPENING_RETRY)
+            }
+        };
+    }
+}
+
+#[derive(Default)]
+struct Openings {
+    /// Episodes AniSkip isn't asked about this run: their chapters show the
+    /// opening, or no AniList entry with a MyAnimeList ID is sure to be theirs.
+    passed: HashSet<i64>,
+    /// MyAnimeList's ID for each AniList ID, which AniSkip knows anime by (None: AniList has none).
+    mal: HashMap<i64, Option<i64>>,
+}
+
+impl Openings {
+    /// Asks AniSkip about each episode that's due, show by show; stops at the first that fails.
+    fn ask(&mut self, backend: &Backend) -> Result<()> {
+        let again = crate::util::now_ms() - OPENING_AGAIN_MS;
         for show in shows_in_order(backend) {
-            let Some(anilist_id) = show.anilist_id else { continue };
-            for (id, number) in backend.db.unasked_openings(show.id).unwrap_or_default() {
-                if looked.contains(&id) {
-                    continue;
-                }
+            if show.anilist_id.is_none() {
+                continue;
+            }
+            let due: Vec<i64> = backend.db.unasked_openings(show.id, again)?.into_iter().filter(|id| !self.passed.contains(id)).collect();
+            if due.is_empty() {
+                continue;
+            }
+            let episodes = backend.db.episodes(show.id)?;
+            for id in due {
+                let Some(episode) = episodes.iter().find(|e| e.id == id) else { continue };
                 let probe = stored_probe(backend, id).unwrap_or_default();
                 if probe.duration <= 0.0 || media::opening(&probe).is_some() {
-                    looked.insert(id);
+                    self.passed.insert(id);
                     continue;
                 }
-                let Some(mal_id) = *mal.entry(anilist_id).or_insert_with(|| aniskip::mal_id(anilist_id).ok().flatten()) else {
-                    looked.insert(id);
+                // AniSkip numbers each AniList entry's episodes from 1: a
+                // later season folder is an entry of its own (as on your AniList list).
+                let place = crate::anilist_list::place(&show, &episodes, episode, |group, count| crate::anilist_list::group_entry(backend, &show, group, count))?;
+                let Some((entry, number)) = place else {
+                    self.passed.insert(id);
                     continue;
                 };
-                match aniskip::opening(mal_id, number, probe.duration) {
-                    Ok(opening) => {
-                        let _ = backend.db.set_opening(id, opening);
-                    }
-                    Err(_) => {
-                        looked.insert(id);
-                    }
-                }
+                let mal_id = match self.mal.get(&entry) {
+                    Some(known) => *known,
+                    None => *self.mal.entry(entry).or_insert(aniskip::mal_id(entry)?),
+                };
+                let Some(mal_id) = mal_id else {
+                    self.passed.insert(id);
+                    continue;
+                };
+                backend.db.set_opening(id, aniskip::opening(mal_id, number, probe.duration)?)?;
                 std::thread::sleep(aniskip::PACE);
             }
         }
+        Ok(())
     }
 }
 

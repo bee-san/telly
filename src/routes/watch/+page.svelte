@@ -81,13 +81,24 @@
   let recapAt = $state<number | null>(null);
   /** Goes up with each episode, so a wait for the last one's recap stops. */
   let recapRun = 0;
-  /** The recap's moments: the one playing, where in it, and whether its opening title is still up. */
-  let montage = $state<{ i: number; t: number; intro: boolean } | null>(null);
+  /** The recap's moments: the one showing, where in it, whether its opening title is still up, and
+   *  whether the first has started playing under it. */
+  let montage = $state<{ i: number; t: number; intro: boolean; rolling: boolean } | null>(null);
   /** The card between the moments and the episode: up over black, then fading off the episode as it plays. */
   let bridge = $state<{ kicker: string; title: string; sub: string; out: boolean } | null>(null);
   /** Counts the montage's starts and ends, so a timer from one before does nothing. */
   let montageRun = 0;
-  let montageVideo = $state<HTMLVideoElement | null>(null);
+  /** The two players the moments take turns on: one plays the moment showing while the other
+   *  waits at the first frame of the next, so a cut never waits for an episode to load. */
+  let decks = $state<(HTMLVideoElement | null)[]>([null, null]);
+  let deckSrc = $state(["", ""]);
+  /** The deck showing, and the one dissolving off it (-1 for none). */
+  let front = $state(0);
+  let leaving = $state(-1);
+  /** The moment each deck holds (-1 for none), and whether it's waiting at that moment's first frame or playing it. */
+  let held = [{ i: -1, ready: false }, { i: -1, ready: false }];
+  /** When the moments started fading to black, into the episode. */
+  let exitAt = 0;
   /** The recap card is up: the episode waits for it. */
   let holdPlay = false;
   /** Whether closing the recap with Esc (or P) plays the episode: it was playing, or waiting for the recap. */
@@ -925,14 +936,24 @@
   const moments = $derived((recap?.data?.moments ?? []).filter((m) => m.playable && (recap?.full || m.number === recap?.data?.lastNumber)));
   const canRecap = $derived(!!(view?.recap?.possible || view?.resume?.possible));
   const canMontage = $derived(recap?.state === "ready" && moments.length > 0);
-  /** The episode the moment playing comes from: switching to another loads it. */
-  const montageSrc = $derived(montage ? mediaUrl(moments[montage.i]?.src ?? "") : "");
 
   /** How long the recap's opening title stays up, and the card into the episode comes up, stays and fades. */
   const INTRO_MS = 2200;
   const BRIDGE_IN_MS = 500;
   const BRIDGE_HOLD_MS = 1300;
   const BRIDGE_OUT_MS = 700;
+  /** The moments are cut as a TV recap is, where the picture moves on quickly but the sound never
+   *  cuts. A moment's sound comes up over its first FADE_S and goes down over its last, and the next
+   *  starts FADE_S before this one ends, so the two crossfade between the lines. The next is heard
+   *  before it's seen: its picture dissolves in over this one (in DISSOLVE_MS, as `.leaving` does)
+   *  LEAD_S after its sound starts. A moment less than JOIN_S on from the one before, in the same
+   *  episode, plays straight on from it. The first moment's sound starts under the opening title,
+   *  INTRO_LEAD_MS before it goes. */
+  const FADE_S = 0.4;
+  const LEAD_S = 0.2;
+  const DISSOLVE_MS = 300;
+  const JOIN_S = 1;
+  const INTRO_LEAD_MS = 400;
 
   /** Runs `then` after `ms`, unless the montage has started or ended since. */
   function later(ms: number, run: number, then: () => void) {
@@ -945,30 +966,96 @@
   function startMontage() {
     if (!canMontage) return;
     const run = ++montageRun;
-    montage = { i: 0, t: moments[0].start, intro: true };
-    later(INTRO_MS, run, () => {
-      if (!montage) return;
-      montage.intro = false;
-      if (montageVideo && montageVideo.readyState >= 1) montageVideo.play().catch(() => {});
-    });
+    front = 0;
+    leaving = -1;
+    deckSrc = ["", ""];
+    montage = { i: 0, t: moments[0].start, intro: true, rolling: false };
+    // The first waits at its first frame under the title, and the one after it on the other deck.
+    cue(0, 0);
+    cue(1, nextCut(0));
+    later(INTRO_MS - INTRO_LEAD_MS, run, () => montage && (montage.rolling = true));
+    later(INTRO_MS, run, () => montage && (montage.intro = false));
   }
 
-  /** The moment `i`: straight there in the same episode, or once the other episode has loaded. */
-  function playMoment(i: number) {
+  /** Whether moment `i + 1` carries straight on from moment `i`, in the same episode. */
+  function joins(i: number): boolean {
+    const a = moments[i];
+    const b = moments[i + 1];
+    return !!a && !!b && a.src === b.src && b.start >= a.end && b.start - a.end < JOIN_S;
+  }
+
+  /** The moment after the stretch that moment `i` plays straight on in: where the next cut is. */
+  function nextCut(i: number): number {
+    while (joins(i)) i++;
+    return i + 1;
+  }
+
+  /** Puts moment `i` on deck `k`, to wait at its first frame (none, past the last). */
+  function cue(k: number, i: number) {
     const m = moments[i];
-    if (!m || !montageVideo) return endMontage(true);
-    const sameEpisode = montage !== null && moments[montage.i]?.src === m.src && montageVideo.readyState >= 1;
-    montage = { i, t: m.start, intro: false };
-    if (sameEpisode) startMoment();
+    held[k] = { i: m ? i : -1, ready: false };
+    if (!m) return;
+    const src = mediaUrl(m.src);
+    const el = decks[k];
+    // Another episode loads first, and seeks once it has (`seekDeck` on its metadata).
+    if (deckSrc[k] !== src) deckSrc[k] = src;
+    else if (el && el.readyState >= 1) seekDeck(k);
   }
 
-  /** Seeks to the moment playing and plays it (on load, for another episode). */
-  function startMoment() {
-    if (!montage || !montageVideo) return;
-    pickAudio(montageVideo, moments[montage.i].listedAudio);
-    montageVideo.currentTime = moments[montage.i].start;
-    // Under the opening title it waits, at its first frame, for the title to go.
-    if (!montage.intro) montageVideo.play().catch(() => {});
+  /** Deck `k` to its moment's first frame, in the audio track the episode plays in. */
+  function seekDeck(k: number) {
+    const el = decks[k];
+    const m = moments[held[k].i];
+    if (!el || !m) return;
+    pickAudio(el, m.listedAudio);
+    el.currentTime = m.start;
+  }
+
+  /** Deck `k` is at its moment's first frame. */
+  function seeked(k: number) {
+    if (held[k].i < 0) return;
+    held[k].ready = true;
+    montageTick();
+  }
+
+  /** How loud deck `k` plays where it is, of the volume: its moment's sound comes up from its
+   *  start and goes down to its end, except where it runs straight on from or into the next. */
+  function gain(k: number): number {
+    const el = decks[k];
+    const i = held[k].i;
+    const m = moments[i];
+    if (!el || !m) return 0;
+    const t = el.currentTime;
+    const x = Math.min(joins(i - 1) ? 1 : (t - m.start) / FADE_S, joins(i) ? 1 : (m.end - t) / FADE_S);
+    // Equal power: two moments crossfading are as loud between them as either is alone.
+    return Math.sin((Math.min(1, Math.max(0, x)) * Math.PI) / 2);
+  }
+
+  /** Sets each deck's volume for where it is, fading both out with the picture into the episode. */
+  function sound() {
+    const exit = bridge ? Math.max(0, 1 - (performance.now() - exitAt) / BRIDGE_IN_MS) : 1;
+    for (const k of [0, 1]) {
+      const el = decks[k];
+      if (!el) continue;
+      const level = muted ? 0 : volume * gain(k) * exit;
+      if (Math.abs(el.volume - level) > 0.001) el.volume = level;
+    }
+  }
+
+  /** The next moment comes up over the one showing, which dissolves off it, and then waits at the
+   *  first frame of the next cut. */
+  function swap() {
+    if (!montage) return;
+    const old = front;
+    leaving = old;
+    front = 1 - old;
+    montage.i = held[front].i;
+    montage.t = decks[front]?.currentTime ?? montage.t;
+    later(DISSOLVE_MS, montageRun, () => {
+      decks[old]?.pause();
+      leaving = -1;
+      if (montage) cue(old, nextCut(montage.i));
+    });
   }
 
   const startLabel = $derived(ended ? "Close" : `${recapAt === null ? "Start" : "Resume"} Episode ${view?.episode.number ?? ""}`);
@@ -981,14 +1068,33 @@
     return !from || from === to ? `Episode ${to}` : `Episodes ${from}–${to}`;
   }
 
-  /** Follows the moment playing, and moves on at its end. Called every frame, and on the video's
+  /** Follows the moment playing, and moves on to the next. Called every frame, and on the decks'
    *  time updates too, which carry on when the window is hidden and frames stop. */
   function montageTick() {
-    if (!montage || !montageVideo || montage.intro || bridge) return;
+    if (!montage) return;
+    sound();
+    const el = decks[front];
     const m = moments[montage.i];
-    montage.t = montageVideo.currentTime;
-    if (!m) endMontage(true);
-    else if (montageVideo.currentTime >= m.end) playMoment(montage.i + 1);
+    if (!el || !m || bridge) return;
+    const t = el.currentTime;
+    montage.t = t;
+    if (montage.rolling && el.paused && held[front].ready && t < m.end) el.play().catch(() => {});
+    if (joins(montage.i)) {
+      if (t >= m.end) held[front].i = ++montage.i;
+      return;
+    }
+    const n = montage.i + 1;
+    if (!moments[n]) {
+      // The last fades to black over its end, into the episode (on the end card, back to it).
+      if (t >= m.end - (ended ? 0 : BRIDGE_IN_MS / 1000)) endMontage(true);
+      return;
+    }
+    const back = decks[1 - front];
+    // The next isn't ready yet: this one holds its last frame, its sound faded, till it is.
+    if (t >= m.end && !el.paused) el.pause();
+    if (!back || held[1 - front].i !== n || !held[1 - front].ready) return;
+    if (back.paused && t >= m.end - FADE_S) back.play().catch(() => {});
+    if (!back.paused && back.currentTime >= moments[n].start + LEAD_S) swap();
   }
 
   /** Off the moments: into the episode, or to the recap card. */
@@ -1007,7 +1113,8 @@
     const run = ++montageRun;
     const resuming = recapAt !== null;
     bridge = { kicker: view.show.title, title: `Episode ${view.episode.number}`, sub: resuming ? `From ${clock(recapAt ?? 0)}` : "", out: false };
-    // Once it's black, the moments go; the episode waits behind the card, held (`holdPlay`) till it fades.
+    exitAt = performance.now();
+    // Once it's black and silent, the moments go; the episode waits behind the card, held (`holdPlay`) till it fades.
     later(BRIDGE_IN_MS, run, () => (montage = null));
     later(BRIDGE_IN_MS + BRIDGE_HOLD_MS, run, playFromBridge);
   }
@@ -1653,10 +1760,14 @@
 
   {#if montage && moments[montage.i] && view}
     <div class="montage">
-      <!-- svelte-ignore a11y_media_has_caption -->
-      <video bind:this={montageVideo} src={montageSrc} preload="auto" bind:volume bind:muted onloadedmetadata={startMoment} ontimeupdate={montageTick} onerror={() => endMontage(false)}></video>
-      <!-- Each moment comes up out of black. -->
-      {#key montage.i}<div class="montage-dip"></div>{/key}
+      <!-- The deck showing plays the moment; the other waits at the next, and dissolves in over it. Their volume is the player's, faded (`sound`). -->
+      <div class="decks">
+        {#each [0, 1] as k (k)}
+          <!-- svelte-ignore a11y_media_has_caption -->
+          <video bind:this={decks[k]} src={deckSrc[k] || undefined} preload="auto" class:front={front === k} class:leaving={leaving === k}
+            onloadedmetadata={() => seekDeck(k)} onseeked={() => seeked(k)} ontimeupdate={montageTick} onerror={() => endMontage(false)}></video>
+        {/each}
+      </div>
       <div class="montage-top">
         <span class="montage-label">Previously on {view.show.title} · Episode {moments[montage.i].number} · {montage.i + 1} of {moments.length}</span>
         {#if moments[montage.i].caption}<p class="montage-caption" lang={recapLang} aria-live="polite">{moments[montage.i].caption}</p>{/if}
@@ -1863,7 +1974,11 @@
   .arc-head b { font: 600 15px/1.3 var(--font-ui); }
   .arc-head span { font-size: 12.5px; color: var(--vid-ink-2); white-space: nowrap; }
   .montage { position: absolute; inset: 0; z-index: 9; background: var(--vid); }
-  .montage video { width: 100%; height: 100%; object-fit: contain; display: block; }
+  /* The deck showing is on top of the other, and the one going dissolves off over it. */
+  .decks { position: absolute; inset: 0; z-index: 0; }
+  .decks video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; opacity: 0; }
+  .decks video.front { opacity: 1; z-index: 1; }
+  .decks video.leaving { z-index: 2; transition: opacity .3s ease; }
   /* Across the top, in the middle, where the eye is already. */
   .montage-top { position: absolute; top: 0; left: 0; right: 0; padding: 18px 20px 40px; display: grid; gap: 10px; justify-items: center; text-align: center; background: linear-gradient(180deg, rgba(0, 0, 0, .6), transparent); pointer-events: none; }
   .montage-label { font: 600 13px/1.35 var(--font-ui); letter-spacing: .02em; color: var(--vid-ink); text-shadow: 0 1px 3px rgba(0, 0, 0, .9); }
@@ -1872,7 +1987,6 @@
   .montage-subs .sub-line { pointer-events: none; }
   .montage-actions { position: absolute; right: 18px; bottom: 18px; z-index: 3; display: flex; gap: 10px; }
   /* The moments open on a title over black, and give way to the episode through black. */
-  .montage-dip { position: absolute; inset: 0; background: var(--vid); pointer-events: none; animation: veil-out .45s ease both; }
   .montage-title, .bridge { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 14px; padding: 24px; text-align: center; background: var(--vid); }
   .montage-title { z-index: 2; transition: opacity .6s ease; }
   .montage-title.gone { opacity: 0; pointer-events: none; }

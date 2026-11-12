@@ -1,6 +1,6 @@
 [package]
 name = "telly"
-version = "0.3.0"
+version = "0.3.1"
 description = "Telly: an anime player for learning Japanese"
 authors = ["bee-san"]
 license = "GPL-3.0-or-later"

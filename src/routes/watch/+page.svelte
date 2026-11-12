@@ -928,6 +928,8 @@
   }
 
   const startLabel = $derived(`${recapAt === null ? "Start" : "Resume"} Episode ${view?.episode.number ?? ""}`);
+  /** The language Claude writes the recap in (Settings → Claude), so Japanese is drawn with Japanese, not Chinese, kanji. */
+  const recapLang = $derived(settings["claude.language"] === "ja" ? "ja" : "en");
 
   /** "Episode 7", or "Episodes 2–7". */
   function spanLabel(from: number | undefined, to: number | undefined): string {
@@ -1533,15 +1535,15 @@
             {#if recap.full}
               {#each recap.data.arcs ?? [] as arc, k (k)}
                 <section class="arc">
-                  <div class="arc-head"><b>{arc.title}</b><span>{spanLabel(arc.from, arc.to)}</span></div>
-                  <p class="recap-text">{arc.summary}</p>
+                  <div class="arc-head"><b lang={recapLang}>{arc.title}</b><span>{spanLabel(arc.from, arc.to)}</span></div>
+                  <p class="recap-text" lang={recapLang}>{arc.summary}</p>
                 </section>
               {/each}
             {/if}
             {#if recap.data.last}
               <section class="arc">
                 <div class="arc-head"><b>{recapAt === null ? "Last time" : "So far"}</b>{#if recap.data.lastNumber}<span>Episode {recap.data.lastNumber}</span>{/if}</div>
-                <p class="recap-text">{recap.data.last}</p>
+                <p class="recap-text" lang={recapLang}>{recap.data.last}</p>
               </section>
             {/if}
           </div>
@@ -1565,7 +1567,7 @@
       <video bind:this={montageVideo} src={montageSrc} preload="auto" bind:volume bind:muted onloadedmetadata={startMoment} ontimeupdate={montageTick} onerror={() => endMontage(false)}></video>
       <div class="montage-top">
         <span class="montage-label">Previously on {view.show.title} · Episode {moments[montage.i].number} · {montage.i + 1} of {moments.length}</span>
-        {#if moments[montage.i].caption}<p class="montage-caption" aria-live="polite">{moments[montage.i].caption}</p>{/if}
+        {#if moments[montage.i].caption}<p class="montage-caption" lang={recapLang} aria-live="polite">{moments[montage.i].caption}</p>{/if}
       </div>
       <div class="subs montage-subs" style:--sub-size="{subSize}px">
         {#each montageLines as l (l.start + l.text)}

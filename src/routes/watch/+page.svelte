@@ -7,7 +7,7 @@
   import { arrange, createRenderer, drawTiles, filters, toggle } from "$lib/filters";
   import { clock } from "$lib/format";
   import { app } from "$lib/state.svelte";
-  import { toast } from "$lib/toast-store.svelte";
+  import { toast, toasts } from "$lib/toast-store.svelte";
   import { pickAudio } from "$lib/video";
 
   const epId = $derived(Number(page.url.searchParams.get("ep")));
@@ -239,7 +239,12 @@
     try {
       settings = await call<Record<string, unknown>>("settings");
       const v = await call<PlayerView>("openPlayer", { id });
-      // Cards finished before this episode opened aren't news here.
+      // Cards finished before this episode opened aren't news here, but one
+      // still shown as being finished (mined just before) gets its outcome.
+      const missed = await call<CardEvent[]>("events", { since: lastEvent }).catch((): CardEvent[] => []);
+      for (const ev of missed) {
+        if (ev.id <= (v.lastEvent ?? 0) && toasts.list.some((t) => t.key === cardKey(ev) && t.state === "working")) cardToast(ev);
+      }
       lastEvent = Math.max(lastEvent, v.lastEvent ?? 0);
       recapRun++;
       recapAt = v.resume?.possible ? v.episode.position : null;
@@ -401,8 +406,15 @@
 
   function handleEvent(ev: CardEvent) {
     lastEvent = Math.max(lastEvent, ev.id);
-    const key = ev.jobId ? `card-${ev.jobId}` : `card-n${ev.noteId}-${ev.id}`;
     if (ev.state === "done") sat.cards += 1;
+    cardToast(ev);
+  }
+
+  /** A card's toast: its job's events take each other's place. */
+  const cardKey = (ev: CardEvent) => (ev.jobId ? `card-${ev.jobId}` : `card-n${ev.noteId}-${ev.id}`);
+
+  function cardToast(ev: CardEvent) {
+    const key = cardKey(ev);
     toast({
       key,
       state: ev.state,

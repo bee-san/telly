@@ -154,6 +154,15 @@ pub fn alphabet_to_kana(input: &str) -> String {
             continue;
         }
 
+        // Telly: a doubled n is ん, not っ (Konno: こんの, Shinnosuke: しんのすけ).
+        // The second n starts the next syllable when a vowel or y follows it;
+        // otherwise "nn" is ん on its own, as typed (Kenn: けん).
+        if chars[i] == 'n' && chars.get(i + 1) == Some(&'n') {
+            result.push('ん');
+            i += if chars.get(i + 2).copied().is_some_and(is_vowel_or_y) { 1 } else { 2 };
+            continue;
+        }
+
         // 1. Double consonant check: if chars[i] == chars[i+1] and both are consonants → っ
         if i + 1 < chars.len() && chars[i] == chars[i + 1] && is_consonant(chars[i]) {
             result.push('っ');
@@ -395,6 +404,24 @@ fn lookup_romaji(key: &str) -> Option<&'static str> {
         "o" => Some("お"),
 
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_doubled_n_is_one_n_and_the_next_syllable() {
+        assert_eq!(alphabet_to_kana("Konno"), "こんの");
+        assert_eq!(alphabet_to_kana("Shinnosuke"), "しんのすけ");
+        assert_eq!(alphabet_to_kana("Kanna"), "かんな");
+        assert_eq!(alphabet_to_kana("Konnyaku"), "こんにゃく");
+        assert_eq!(alphabet_to_kana("Kenn"), "けん");
+        // n before a consonant or a mark, and other doubled consonants, are as they were.
+        assert_eq!(alphabet_to_kana("Shin'ichi"), "しんいち");
+        assert_eq!(alphabet_to_kana("Kenta"), "けんた");
+        assert_eq!(alphabet_to_kana("Hattori"), "はっとり");
     }
 }
 

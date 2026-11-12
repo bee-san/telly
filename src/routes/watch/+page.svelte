@@ -4,7 +4,7 @@
   import { onDestroy, onMount, tick as nextTick } from "svelte";
   import Icon from "$lib/Icon.svelte";
   import { call, errorText, mediaUrl, setFullscreen, setWindowTitle, type AskProgress, type CardEvent, type CastName, type ClaudeStatus, type Line, type PlayerView, type Recap, type SeekSheet } from "$lib/api";
-  import { createRenderer, drawTiles, filters } from "$lib/filters";
+  import { arrange, createRenderer, drawTiles, filters, toggle } from "$lib/filters";
   import { clock } from "$lib/format";
   import { app } from "$lib/state.svelte";
   import { toast } from "$lib/toast-store.svelte";
@@ -52,8 +52,8 @@
   let reloadAt: { t: number; paused: boolean } | null = null;
   let videoError = $state("");
   let settings = $state<Record<string, unknown>>({});
-  // Filters (V): the picture drawn through one, on a canvas over the video. Kept for each show.
-  let filter = $state("none");
+  // Filters (V): the picture drawn through them, one after another, on a canvas over the video. Kept for each show.
+  let chain = $state.raw<string[]>([]);
   let filterPanel = $state(false);
   let filtered = $state<HTMLCanvasElement | null>(null);
   /** Whether the filter has drawn the frame showing: until its shaders are compiled, the plain picture shows. */
@@ -280,7 +280,9 @@
           })
           .catch(() => {});
       }
-      filter = filters.find((f) => f.id === settings[`player.filter.${v.show.id}`])?.id ?? "none";
+      // A show kept with one filter, from before they could be chained, starts with that one.
+      const kept = settings[`player.filters.${v.show.id}`];
+      chain = arrange(Array.isArray(kept) ? kept : [settings[`player.filter.${v.show.id}`]]);
       await setWindowTitle(`${v.show.title} · Episode ${v.episode.number} — Telly`);
       if (v.episode.mediaState !== "ready") {
         error = v.episode.mediaState === "failed" ? `This episode couldn’t be converted: ${v.episode.mediaError}` : "This episode isn’t ready to play yet.";
@@ -626,27 +628,33 @@
 
   // ---- filters (V) ------------------------------------------------------------------
 
-  /** Keeps the show's filter. "none" is kept too: a show with one kept isn't offered Anime4K. */
-  function keepFilter(id: string) {
+  /** Keeps the show's filters, in order. None is kept too, as an empty list: a show with its filters kept isn't offered Anime4K. */
+  function keepFilters(ids: string[]) {
     if (!view) return;
-    const key = `player.filter.${view.show.id}`;
-    settings[key] = id;
-    call("setSetting", { key, value: id }).catch(() => {});
+    const key = `player.filters.${view.show.id}`;
+    settings[key] = ids;
+    call("setSetting", { key, value: ids }).catch(() => {});
   }
 
+  /** A tile clicked: None clears the chain, a filter in it comes out, any other goes on the end. */
   function pickFilter(id: string) {
-    filter = id;
-    keepFilter(id);
+    chain = toggle(chain, id);
+    keepFilters(chain);
   }
+
+  /** A filter's place in the chain, as its tile's badge is read out. */
+  const ordinal = (n: number) => n + ((n % 100 > 10 && n % 100 < 14 ? "" : ["", "st", "nd", "rd"][n % 10]) || "th");
 
   /** Anime4K is for a picture shown at well over its own size: says so, once, for a show with no filter picked. */
   function suggestFilter() {
-    if (!view || !video?.videoHeight || recap || settings[`player.filter.${view.show.id}`] !== undefined) return;
+    if (!view || !video?.videoHeight || recap) return;
+    // The show's single filter, from before they could be chained, counts as picked.
+    if (settings[`player.filters.${view.show.id}`] !== undefined || settings[`player.filter.${view.show.id}`] !== undefined) return;
     const box = video.parentElement as HTMLElement;
     const stretch = Math.min(box.clientWidth / video.videoWidth, box.clientHeight / video.videoHeight) * devicePixelRatio;
     if (stretch < 1.5) return;
     flash("Low-resolution picture: try Anime4K (V)", 6000);
-    keepFilter("none");
+    keepFilters([]);
   }
 
   // The filtered picture: drawn again for each frame of the video, and when the window's size changes.
@@ -665,7 +673,7 @@
         canvas.width = w;
         canvas.height = h;
       }
-      filterShown = renderer.draw(v, v.videoWidth, v.videoHeight, filter);
+      filterShown = renderer.draw(v, v.videoWidth, v.videoHeight, chain);
       // Paused, no new frame comes to try again on.
       if (!filterShown && !retry) {
         retry = requestAnimationFrame(() => {
@@ -692,9 +700,9 @@
     };
   });
 
-  // Another filter shows at once, paused or not.
+  // Another chain shows at once, paused or not.
   $effect(() => {
-    if (filter !== "none") repaint?.();
+    if (chain.length) repaint?.();
   });
 
   // The panel's tiles show each filter on the frame that was playing when it opened.
@@ -1250,7 +1258,7 @@
       <!-- svelte-ignore a11y_media_has_caption -->
       <video
         bind:this={video}
-        class:filtered={filter !== "none" && filterShown}
+        class:filtered={chain.length > 0 && filterShown}
         crossorigin="anonymous"
         src={mediaUrl(view.src)}
         preload="auto"
@@ -1264,7 +1272,7 @@
         ondurationchange={() => video && (duration = video.duration)}
         onerror={() => (videoError = video?.error?.message || "The video couldn’t play.")}
       ></video>
-      {#if filter !== "none"}<canvas class="filtered-pic" class:waiting={!filterShown} bind:this={filtered}></canvas>{/if}
+      {#if chain.length}<canvas class="filtered-pic" class:waiting={!filterShown} bind:this={filtered}></canvas>{/if}
     {/if}
   </div>
 
@@ -1401,10 +1409,13 @@
       <div class="tx-head"><b>Filters</b><button type="button" class="ex-close" title="Close (V)" onclick={() => (filterPanel = false)}>Close</button></div>
       <div class="fx-grid scroll">
         {#each filters as f (f.id)}
-          <button type="button" class="fx" aria-pressed={filter === f.id} onclick={() => pickFilter(f.id)}>
+          {@const place = chain.indexOf(f.id) + 1}
+          <button type="button" class="fx" aria-pressed={f.id === "none" ? chain.length === 0 : place > 0} onclick={() => pickFilter(f.id)}>
             <canvas bind:this={tiles[f.id]} width="160" height="160"></canvas>
             <b>{f.name}</b>
             {#if f.note}<span>{f.note}</span>{/if}
+            <!-- With more than one, each says where it comes in the chain. -->
+            {#if place && chain.length > 1}<span class="fx-n" role="img" aria-label={ordinal(place)}>{place}</span>{/if}
           </button>
         {/each}
       </div>
@@ -1701,12 +1712,13 @@
   .ex-err { margin: 0; font: 500 13.5px/1.5 var(--font-ui); color: #ffb4a8; }
   .ex-foot { padding: 9px 14px; border-top: 1px solid var(--vid-edge); font-size: 11.5px; color: var(--vid-ink-2); }
   .fx-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-content: start; gap: 16px 10px; padding: 14px 12px; overflow: auto; flex: 1; }
-  .fx { all: unset; cursor: pointer; display: grid; align-content: start; gap: 2px; border-radius: 6px; }
+  .fx { all: unset; position: relative; cursor: pointer; display: grid; align-content: start; gap: 2px; border-radius: 6px; }
   .fx canvas { display: block; width: 100%; aspect-ratio: 1; margin-bottom: 5px; border-radius: 6px; background: var(--vid); }
   .fx[aria-pressed="true"] canvas { outline: 2px solid var(--vid-ink); outline-offset: 2px; }
   .fx:focus-visible { outline: 2px solid var(--vid-ink); outline-offset: 5px; }
   .fx b { font: 600 12.5px/1.25 var(--font-ui); }
   .fx span { font-size: 11.5px; line-height: 1.25; color: var(--vid-ink-2); }
+  .fx .fx-n { position: absolute; top: 6px; right: 6px; min-width: 20px; height: 20px; padding: 0 6px; box-sizing: border-box; display: grid; place-items: center; border-radius: 10px; font: 700 11.5px/1 var(--font-ui); color: var(--vid); background: var(--vid-ink); box-shadow: 0 1px 4px rgba(0, 0, 0, .5); }
   .recapov { z-index: 8; background: rgba(0, 0, 0, .72); }
   .recap-card h3 { padding-right: 0; }
   .recap-text { margin: 0; font: 400 16px/1.6 var(--font-ui); white-space: pre-line; }

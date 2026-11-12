@@ -1,6 +1,7 @@
 // Picture filters for the player. Each is a chain of WebGL passes over the
-// video's frame, drawn to a canvas that covers the video. The subtitles are
-// HTML above both, so no filter touches them.
+// video's frame, drawn to a canvas that covers the video; several picked run
+// one after another, each on the picture the one before left. The subtitles
+// are HTML above both, so no filter touches them.
 // The shaders, and where they come from, are in ./shaders.
 
 const sources = import.meta.glob("./shaders/*.glsl", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
@@ -52,7 +53,7 @@ interface Pass {
 
 /** Whether the picture already fills the canvas, give or take the pixel the canvas's size is rounded to. */
 const fills = (s: Sizes) => s.main[0] + 1 >= s.out[0] && s.main[1] + 1 >= s.out[1];
-/** An upscaler runs only while the picture is smaller than the canvas. */
+/** An upscaler runs only while the picture is smaller than the canvas, so a second one isn't doubling it to throw away. */
 const grows = (s: Sizes) => !fills(s);
 
 /** One shader over the picture, at its own size. */
@@ -68,7 +69,7 @@ function anime4k(model: string, lastConv: number): Pass[] {
     const binds: Record<string, string> = {};
     for (const [, tex] of shader.matchAll(/^\/\/!BIND (\w+)/gm)) binds[tex === "MAIN" ? "input_tex" : tex] = tex;
     const save = /^\/\/!SAVE (\w+)/m.exec(shader)![1];
-    return { shader, binds, save, size: (s) => (name === "out" ? [s.main[0] * 2, s.main[1] * 2] : s.main) };
+    return { shader, binds, save, size: (s) => (name === "out" ? [s.main[0] * 2, s.main[1] * 2] : s.main), when: grows };
   });
 }
 
@@ -114,7 +115,8 @@ function fsr(upscale: boolean): Pass[] {
   return [{ shader: glsl("fsr_easu"), binds: { input_tex: "MAIN" }, save: "MAIN", size: (s) => s.out, when: grows }, rcas];
 }
 
-/** Lanczos to the canvas's size, across and then down: bigger or smaller. */
+/** Lanczos to the canvas's size, across and then down. It shrinks a picture too, so after an upscaler
+ *  that left it bigger than the canvas, it does the fitting. */
 function lanczos(): Pass[] {
   const shader = glsl("lanczos");
   const differs = (s: Sizes) => Math.abs(s.main[0] - s.out[0]) > 1 || Math.abs(s.main[1] - s.out[1]) > 1;
@@ -128,7 +130,8 @@ function lanczos(): Pass[] {
 /** michadame gives its televisions a picture of at least 1080 lines. */
 const work = (s: Sizes): Size => (s.preview || s.main[1] >= 1080 ? s.main : [Math.round((s.main[0] * 1080) / s.main[1]), 1080]);
 
-/** michadame's Halo television, with one of its presets. Its last three passes are at the canvas's size. */
+/** michadame's Halo television, with one of its presets. Its last three passes are at the canvas's size,
+ *  and the last draws the canvas, so a television comes last in a chain. */
 function halo(preset: Record<string, number>): Pass[] {
   const view = (s: Sizes) => ({
     outputResolution: s.out,
@@ -192,6 +195,23 @@ const chains: Record<string, () => Pass[]> = {
   "crt-dorm": () => halo({ brightboost: 1.38, brightboost1: 1.6, beam_min: 1.35, beam_max: 0.85, beam_size: 1.65, h_sharp: 1.45, vibrance: 0.96, glow: 0.52, bloom: 0.65, halation: 0.28, shadow_mask: 6, masksize: 1, maskstr: 0.48, mcut: 0.78, slotmask: 0.32, slotmask1: 0.45, double_slot: 3, smoothmask: 1.15, halo_intensity: 1.05, corner_size: 0.045, curvature: 1 }),
 };
 
+const television = (id: string) => id.startsWith("crt-");
+
+/** A chain as it can be drawn: filters there are, each once, and at most one television, last.
+ *  Anything else (None, a filter since taken out of Telly) is left out. */
+export function arrange(ids: unknown[]): string[] {
+  const known = ids.filter((id, i): id is string => typeof id === "string" && Object.hasOwn(chains, id) && ids.indexOf(id) === i);
+  const tv = known.filter(television).pop();
+  return tv ? [...known.filter((id) => !television(id)), tv] : known;
+}
+
+/** The chain after a filter's tile is clicked: None clears it, a filter in it comes out, and any
+ *  other goes on the end, before a television (and a television takes another's place). */
+export function toggle(chain: string[], id: string): string[] {
+  if (id === "none") return [];
+  return chain.includes(id) ? chain.filter((f) => f !== id) : arrange([...chain, id]);
+}
+
 const VERTEX = `#version 300 es
 layout(location = 0) in vec2 a_pos;
 out vec2 v_tc;
@@ -216,10 +236,10 @@ void main() {
 };
 
 export interface Renderer {
-  /** Draws a frame through a filter, to fill the canvas. `preview` is for the panel's small tiles.
-   *  False, with nothing drawn, while the filter's shaders are still being compiled: that takes
-   *  up to a second the first time, and goes on in the background. */
-  draw(frame: TexImageSource, width: number, height: number, filter: string, preview?: boolean): boolean;
+  /** Draws a frame through a chain of filters, one after another, to fill the canvas. `preview` is
+   *  for the panel's small tiles. False, with nothing drawn, while any of the chain's shaders are
+   *  still being compiled: that takes up to a second the first time, and goes on in the background. */
+  draw(frame: TexImageSource, width: number, height: number, chain: string[], preview?: boolean): boolean;
   dispose(): void;
 }
 
@@ -313,12 +333,14 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
   const built = new Map<string, Pass[]>();
 
   return {
-    draw(frame, width, height, filter, preview = false) {
-      let passes = built.get(filter);
+    draw(frame, width, height, chain, preview = false) {
+      const key = chain.join(" ");
+      let passes = built.get(key);
       if (!passes) {
-        passes = chains[filter]();
-        if (passes[passes.length - 1].save !== null) passes.push(present);
-        built.set(filter, passes);
+        // Each filter's passes after the last's: each starts from the picture (MAIN) the last left.
+        passes = chain.flatMap((id) => chains[id]());
+        if (passes[passes.length - 1]?.save !== null) passes.push(present);
+        built.set(key, passes);
       }
       // Every pass is asked for, so they all compile at once.
       const ready = passes.map((pass) => program(pass.shader));
@@ -388,7 +410,7 @@ export function drawTiles(video: HTMLVideoElement, tiles: Record<string, HTMLCan
     small.drawImage(video, (video.videoWidth - side) / 2, (video.videoHeight - side) / 2, side, side, 0, 0, lines, lines);
     const tile = tiles[filter.id].getContext("2d")!;
     if (filter.id === "none") tile.drawImage(middle, 0, 0, TILE, TILE);
-    else if (renderer.draw(middle, lines, lines, filter.id, true)) tile.drawImage(filtered, 0, 0);
+    else if (renderer.draw(middle, lines, lines, [filter.id], true)) tile.drawImage(filtered, 0, 0);
     // A filter still compiling is tried again next frame.
     else next--;
     next++;

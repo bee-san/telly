@@ -4,11 +4,13 @@
 //!
 //!   POST /api/v1/audio/transcriptions
 //!     {"model": "elevenlabs/scribe-v2", "language": "ja",
-//!      "input_audio": {"data": "<base64>", "format": "flac"},
+//!      "input_audio": {"data": "<base64>", "format": "wav"},
 //!      "response_format": "verbose_json", "timestamp_granularities": ["word", "segment"]}
 //!   →  {"text": "…", "segments": [{"start", "end", "text"}], "words": [{"word", "start", "end"}]}
 //!
 //! Which of `segments` and `words` come back depends on the model's provider.
+//! WAV is the audio all three models take: MAI-Transcribe 2 refuses FLAC
+//! (502), and Whisper large v3 heard nothing in it.
 //! Providers give a request 60 seconds, so an episode goes in pieces.
 
 use crate::backend::Backend;
@@ -83,13 +85,13 @@ struct Word {
     end: f64,
 }
 
-/// The lines `model` hears in a piece of audio (a FLAC file's bytes), timed from the piece's start.
-pub fn transcribe(api: &str, key: &str, model: &str, flac: &[u8]) -> Result<Vec<Line>> {
+/// The lines `model` hears in a piece of audio (a WAV file's bytes), timed from the piece's start.
+pub fn transcribe(api: &str, key: &str, model: &str, wav: &[u8]) -> Result<Vec<Line>> {
     let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(180))).http_status_as_error(false).build().into();
     let body = json!({
         "model": model,
         "language": "ja",
-        "input_audio": { "data": base64::engine::general_purpose::STANDARD.encode(flac), "format": "flac" },
+        "input_audio": { "data": base64::engine::general_purpose::STANDARD.encode(wav), "format": "wav" },
         "response_format": "verbose_json",
         "timestamp_granularities": ["word", "segment"],
     });
@@ -272,14 +274,14 @@ mod tests {
     #[test]
     fn asks_openrouter_for_timed_japanese() {
         let (api, asked) = stand_in(200, json!({ "text": "こんにちは。", "segments": [{ "start": 0.5, "end": 1.5, "text": "こんにちは。" }] }));
-        let lines = transcribe(&api, "a-key", "openai/whisper-large-v3", b"fLaC").unwrap();
+        let lines = transcribe(&api, "a-key", "openai/whisper-large-v3", b"RIFF").unwrap();
         assert_eq!(lines.iter().map(|l| (l.start, l.end, l.text.as_str())).collect::<Vec<_>>(), [(0.5, 1.5, "こんにちは。")]);
         let (key, body) = asked.join().unwrap();
         assert_eq!(key, "Bearer a-key");
         assert_eq!(body["model"], "openai/whisper-large-v3");
         assert_eq!(body["language"], "ja");
         assert_eq!(body["response_format"], "verbose_json");
-        assert_eq!(body["input_audio"], json!({ "data": "ZkxhQw==", "format": "flac" }));
+        assert_eq!(body["input_audio"], json!({ "data": "UklGRg==", "format": "wav" }));
     }
 
     #[test]

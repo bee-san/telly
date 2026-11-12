@@ -705,14 +705,14 @@ fn openrouter_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &
     let track = media::japanese_audio(&media::probe(ffprobe, source)?);
     let cuts = openrouter::cuts(&media::read_audio(ffmpeg, source, track, RATE, None, None)?, RATE as usize);
     std::fs::create_dir_all(backend.dirs.subs())?;
-    let piece = backend.dirs.subs().join(format!("{}.piece.flac", episode.id));
+    let piece = backend.dirs.subs().join(format!("{}.piece.wav", episode.id));
     let api = openrouter::api_address();
     let mut lines: Vec<Line> = Vec::new();
     for (i, cut) in cuts.windows(2).enumerate() {
-        media::write_flac(ffmpeg, source, track, cut[0], cut[1] - cut[0], &piece)?;
-        let flac = std::fs::read(&piece);
+        media::write_wav(ffmpeg, source, track, cut[0], cut[1] - cut[0], &piece)?;
+        let wav = std::fs::read(&piece);
         let _ = std::fs::remove_file(&piece);
-        let heard = openrouter::transcribe(&api, key, model, &flac.context("reading a piece of the audio")?)?;
+        let heard = openrouter::transcribe(&api, key, model, &wav.context("reading a piece of the audio")?)?;
         lines.extend(heard.into_iter().map(|mut line| {
             line.start += cut[0];
             line.end += cut[0];
@@ -1467,15 +1467,15 @@ fn listen(backend: &Backend, ffmpeg: &Path, probe: &media::Probe, key: &str, mod
     let source = Path::new(&episode.path);
     let track = media::japanese_audio(probe);
     std::fs::create_dir_all(backend.dirs.subs())?;
-    let piece = backend.dirs.subs().join(format!("{}.stretch.flac", episode.id));
+    let piece = backend.dirs.subs().join(format!("{}.stretch.wav", episode.id));
     let api = openrouter::api_address();
     heard::stretches(probe.duration)
         .into_iter()
         .map(|(start, length)| {
-            media::write_flac(ffmpeg, source, track, start, length, &piece)?;
-            let flac = std::fs::read(&piece);
+            media::write_wav(ffmpeg, source, track, start, length, &piece)?;
+            let wav = std::fs::read(&piece);
             let _ = std::fs::remove_file(&piece);
-            let mut lines = openrouter::transcribe(&api, key, model, &flac.context("reading a piece of the audio")?)?;
+            let mut lines = openrouter::transcribe(&api, key, model, &wav.context("reading a piece of the audio")?)?;
             for line in &mut lines {
                 line.start += start;
                 line.end += start;

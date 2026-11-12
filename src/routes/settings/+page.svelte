@@ -492,7 +492,7 @@
         <select class="input" value={str("openrouter.model", ROUTER_MODELS[0][0])} onchange={(e) => set("openrouter.model", e.currentTarget.value)}>
           {#each ROUTER_MODELS as [id, label]}<option value={id}>{label}</option>{/each}
         </select>
-        <small>An episode costs about $0.09 with ElevenLabs, and $0.01 to $0.04 with Whisper. OpenRouter lists MAI-Transcribe’s price.</small>
+        <small>A 24-minute episode costs about $0.04 with MAI-Transcribe, $0.09 with ElevenLabs and $0.01 with Whisper.</small>
       </label>
     {:else if status?.tools.whisper}
       <label class="field narrow"><span>Model</span>

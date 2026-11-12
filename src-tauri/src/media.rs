@@ -536,12 +536,12 @@ pub fn read_audio_filtered(
     Ok(out.stdout.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect())
 }
 
-/// Writes `length` seconds of one audio track from `start` as FLAC, mono at 16 kHz (what speech models hear).
-pub fn write_flac(ffmpeg: &Path, path: &Path, audio: usize, start: f64, length: f64, output: &Path) -> Result<()> {
+/// Writes `length` seconds of one audio track from `start` as WAV, mono at 16 kHz (what speech models hear).
+pub fn write_wav(ffmpeg: &Path, path: &Path, audio: usize, start: f64, length: f64, output: &Path) -> Result<()> {
     let out = command(ffmpeg)
         .args(["-nostdin", "-hide_banner", "-v", "error", "-y", "-ss", &format!("{start:.3}"), "-i"])
         .arg(path)
-        .args(["-t", &format!("{length:.3}"), "-map", &format!("0:a:{audio}"), "-vn", "-sn", "-ac", "1", "-ar", "16000", "-c:a", "flac"])
+        .args(["-t", &format!("{length:.3}"), "-map", &format!("0:a:{audio}"), "-vn", "-sn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le"])
         .arg(output)
         .stdin(Stdio::null())
         .output()

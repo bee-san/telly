@@ -124,10 +124,28 @@ struct Moved {
     when: Instant,
 }
 
-/// One line that just played, for the log.
+/// One line that just played, for the log: as the player had it.
 #[derive(Deserialize, Debug)]
 struct Played {
     chars: i64,
+    /// When it played (unix ms), and the video's time then.
+    #[serde(default)]
+    at: Option<i64>,
+    #[serde(default)]
+    position: Option<f64>,
+    /// Its place among the episode's lines, its times in the file and what it said.
+    #[serde(default)]
+    line: Option<i64>,
+    #[serde(default)]
+    start: f64,
+    #[serde(default)]
+    end: f64,
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    speaker: String,
+    #[serde(default)]
+    ruby: Value,
 }
 
 #[derive(Deserialize, Debug)]
@@ -142,6 +160,8 @@ struct TickArgs {
     lines: Vec<Played>,
     #[serde(default)]
     since: u64,
+    #[serde(default)]
+    rate: Option<f64>,
 }
 
 /// What the library shows for a show.
@@ -1178,11 +1198,38 @@ impl Backend {
             let seconds = if a.playing && p.playing { gap.as_secs_f64().min(3.0) } else { 0.0 };
             // A new sitting after a long pause, so the log's times are real.
             if (a.playing || !a.lines.is_empty()) && (p.session.is_none() || gap > Duration::from_secs(600)) {
-                let sitting = Sitting { show_id: show.id, title: &show.title, native: &show.title_native, anilist_id: show.anilist_id, episode: episode.number };
+                let sitting = Sitting {
+                    show_id: show.id,
+                    title: &show.title,
+                    native: &show.title_native,
+                    anilist_id: show.anilist_id,
+                    episode: episode.number,
+                    episode_id: episode.id,
+                    subs_file: &episode.subs_file,
+                    subs_detail: &episode.subs_detail,
+                };
                 p.session = self.log.start(&sitting, now_ms(), a.subtitles).ok();
             }
             if let Some(session) = p.session {
-                let lines: Vec<(i64, i64)> = a.lines.iter().map(|l| (now_ms(), l.chars)).collect();
+                let lines: Vec<crate::log::Seen> = a
+                    .lines
+                    .iter()
+                    .map(|l| crate::log::Seen {
+                        at: l.at.unwrap_or_else(now_ms),
+                        chars: l.chars,
+                        episode_id: episode.id,
+                        line: l.line,
+                        start: l.start,
+                        end: l.end,
+                        nudge_ms: episode.subs_nudge_ms,
+                        position: l.position,
+                        rate: a.rate,
+                        text: l.text.clone(),
+                        speaker: l.speaker.clone(),
+                        ruby: if l.ruby.is_null() { "[]".into() } else { l.ruby.to_string() },
+                        subtitles: a.subtitles,
+                    })
+                    .collect();
                 if seconds > 0.0 || !lines.is_empty() {
                     let _ = self.log.extend(session, now_ms(), seconds, &lines, a.subtitles);
                 }

@@ -103,7 +103,8 @@
   let lastEvent = 0;
   let lastT = 0;
   let endingFired = false;
-  let pendingLines: { chars: number }[] = [];
+  /** The lines that played since the last tick, whole, for Telly's log. */
+  let pendingLines: { chars: number; at: number; position: number; line: number; start: number; end: number; text: string; speaker: string; ruby: [number, number, string][] }[] = [];
   const counted = new Set<number>();
   let closed = false;
 
@@ -354,7 +355,7 @@
         if (mid > from && mid <= to && !counted.has(i)) {
           counted.add(i);
           const chars = countChars(l.text);
-          pendingLines.push({ chars });
+          pendingLines.push({ chars, at: Date.now(), position: cur, line: lines.indexOf(l), start: l.start, end: l.end, text: l.text, speaker: l.speaker ?? "", ruby: l.ruby ?? [] });
           sat.lines += 1;
           sat.chars += chars;
         }

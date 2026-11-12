@@ -349,9 +349,10 @@
 
   // ---- talking to the backend every second -------------------------------------
 
-  async function sendTick() {
-    if (!view || !video || closed) return;
-    suggestFilter();
+  /** `last` is the tick sent on closing, for what was watched since the one before. */
+  async function sendTick(last = false) {
+    if (!view || !video || (closed && !last)) return;
+    if (!last) suggestFilter();
     const batch = pendingLines.splice(0);
     try {
       const r = await call<{ events: CardEvent[]; watched: boolean }>("tick", {
@@ -953,7 +954,7 @@
   async function close() {
     if (!view || closed) return;
     closed = true;
-    await sendTick();
+    await sendTick(true);
     await call("closePlayer", { id: view.episode.id, position: video?.currentTime ?? null }).catch(() => {});
   }
 

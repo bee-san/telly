@@ -21,7 +21,8 @@
 
 use crate::backend::{Backend, Served};
 use crate::db::{open_migrated, Episode};
-use crate::names::kana::{contains_japanese, kata_to_hira};
+use crate::names::kana::{contains_japanese, contains_kanji, kata_to_hira};
+use crate::names::name_parser::HONORIFIC_SUFFIXES;
 use crate::premine::{self, SavedUse};
 use crate::subs::Line;
 use crate::{jobs, known, media, names};
@@ -54,6 +55,11 @@ CREATE TABLE indexed (
 
 /// Room for an episode's lines among the rowids.
 const PER_EPISODE: i64 = 1_000_000;
+
+/// The most lines a search sends for one show: those you can read soonest. A
+/// common word is said in tens of thousands of lines, which take seconds to
+/// send and to list, and nobody reads past the first hundred.
+const PER_SHOW: usize = 100;
 
 /// How long before or after a line another is still part of its scene, in seconds.
 const NEAR: f64 = 5.0;
@@ -190,23 +196,38 @@ impl Index {
         Ok(ids)
     }
 
-    /// The lines with a word whose headword or reading is one of `forms`.
-    fn with_word(&self, forms: &[String]) -> Result<Vec<Kept>> {
-        let asked: Vec<String> = forms.iter().map(|f| format!("\"{}\"", f.replace('"', "\"\""))).collect();
+    /// The lines with a word whose headword or reading is one of `forms`, or,
+    /// with `prefix`, starts with it (a name with an honorific after it).
+    fn with_word(&self, forms: &[String], prefix: Option<&str>) -> Result<Vec<Kept>> {
+        let quoted = |f: &str| format!("\"{}\"", f.replace('"', "\"\""));
+        let mut asked: Vec<String> = forms.iter().map(|f| quoted(f)).collect();
+        asked.extend(prefix.map(|p| format!("{}*", quoted(p))));
         let conn = self.conn()?;
         let mut stmt = conn.prepare_cached(&format!("{KEPT} WHERE lines MATCH ?1"))?;
         let found = stmt.query_map(params![asked.join(" OR ")], kept)?.collect::<rusqlite::Result<Vec<Kept>>>()?;
         Ok(found)
     }
 
-    /// The lines with `text` in them. It reads every line, so it's slow: about half a
-    /// second for 850,000 lines, where a word takes a twentieth of one. To be made quick
-    /// with an index of the text (FTS5's trigram tokenizer).
-    fn with_text(&self, text: &str) -> Result<Vec<Kept>> {
+    /// The lines with `text` in them, of every episode or only of `episodes`.
+    /// Every episode's lines take about half a second for 850,000 lines, where
+    /// a word takes a twentieth of one: each line is read.
+    fn with_text(&self, text: &str, episodes: Option<&[i64]>) -> Result<Vec<Kept>> {
         let like = format!("%{}%", text.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
         let conn = self.conn()?;
-        let mut stmt = conn.prepare_cached(&format!("{KEPT} WHERE text LIKE ?1 ESCAPE '\\'"))?;
-        let found = stmt.query_map(params![like], kept)?.collect::<rusqlite::Result<Vec<Kept>>>()?;
+        let Some(episodes) = episodes else {
+            let mut stmt = conn.prepare_cached(&format!("{KEPT} WHERE text LIKE ?1 ESCAPE '\\'"))?;
+            let found = stmt.query_map(params![like], kept)?.collect::<rusqlite::Result<Vec<Kept>>>()?;
+            return Ok(found);
+        };
+        // Each episode's lines are a run of rowids, which FTS5 reads on their own.
+        let mut stmt = conn.prepare_cached(&format!("{KEPT} WHERE rowid >= ?1 AND rowid < ?2 AND text LIKE ?3 ESCAPE '\\'"))?;
+        let mut found = Vec::new();
+        for id in episodes {
+            let rows = stmt.query_map(params![id * PER_EPISODE, (id + 1) * PER_EPISODE, like], kept)?;
+            for row in rows {
+                found.push(row?);
+            }
+        }
         Ok(found)
     }
 
@@ -327,15 +348,57 @@ struct Hit {
     to: usize,
 }
 
-/// The lines among `kept` that have one of `forms` as a word: the first such word is what's found.
-fn word_hits(kept: Vec<Kept>, forms: &[String]) -> Vec<Hit> {
+/// The start of a word that's also looked for as a name with an honorific
+/// after it (フリーレン in フリーレン様), which Telly's character dictionary
+/// makes one word. A single character would start too many other words.
+fn name_prefix(q: &str) -> Option<&str> {
+    (q.chars().count() >= 2).then_some(q)
+}
+
+/// Whether `headword` is `name` with an honorific after it: フリーレン様, ナツさん.
+fn with_honorific(headword: &str, name: &str) -> bool {
+    headword.strip_prefix(name).is_some_and(|rest| HONORIFIC_SUFFIXES.iter().any(|(term, _, _)| *term == rest))
+}
+
+/// Whether `q` is worth looking for in the lines' text. A single kana is in
+/// nearly every line, and is never a word of its own.
+fn by_text(q: &str) -> bool {
+    q.chars().count() >= 2 || contains_kanji(q)
+}
+
+/// The lines among `kept` that have one of `forms` as a word, or `name` with an
+/// honorific after it: the first such word is what's found.
+fn word_hits(kept: Vec<Kept>, forms: &[String], name: Option<&str>) -> Vec<Hit> {
     kept.into_iter()
         .filter_map(|kept| {
             let words = unpack(&kept.words);
-            let (from, to) = words.iter().find(|w| w.is_one_of(forms)).map(|w| (w.from, w.to))?;
+            let is_it = |w: &Word| w.is_one_of(forms) || name.is_some_and(|n| with_honorific(&w.headword, n));
+            let (from, to) = words.iter().find(|w| is_it(w)).map(|w| (w.from, w.to))?;
             Some(Hit { kept, words, from, to })
         })
         .collect()
+}
+
+/// The lines a search for `q` finds: those with `q` as a word, in any of its
+/// forms or as a name with an honorific, and those of episodes whose words
+/// aren't saved yet with `q` in their text. When no line has it as a word,
+/// every line with `q` in its text (a phrase).
+fn hits(index: &Index, q: &str) -> Result<Vec<Hit>> {
+    let forms = forms(q);
+    let name = name_prefix(q);
+    let mut hits = word_hits(index.with_word(&forms, name)?, &forms, name);
+    if !by_text(q) {
+        return Ok(hits);
+    }
+    if hits.is_empty() {
+        return Ok(text_hits(index.with_text(q, None)?, q));
+    }
+    let with_words = index.with_words()?;
+    let without: Vec<i64> = index.episodes()?.into_iter().filter(|e| !with_words.contains(e)).collect();
+    if !without.is_empty() {
+        hits.extend(text_hits(index.with_text(q, Some(&without))?, q));
+    }
+    Ok(hits)
 }
 
 fn text_hits(kept: Vec<Kept>, q: &str) -> Vec<Hit> {
@@ -397,10 +460,7 @@ pub fn find(backend: &Backend, q: &str) -> Result<Value> {
         return Ok(json!({ "lines": [] }));
     }
     let forms = forms(q);
-    let mut hits = word_hits(backend.lines.with_word(&forms)?, &forms);
-    if hits.is_empty() {
-        hits = text_hits(backend.lines.with_text(q)?, q);
-    }
+    let hits = hits(&backend.lines, q)?;
     let episodes: HashMap<i64, Episode> = backend.db.all_episodes()?.into_iter().map(|e| (e.id, e)).collect();
     let known = known::words(backend).known;
     let with_words = backend.lines.with_words()?;
@@ -430,7 +490,28 @@ pub fn find(backend: &Backend, q: &str) -> Result<Value> {
             picture: ((hit.kept.start + nudge).max(0.0) / media::SHEET_EVERY).round() as usize,
         });
     }
-    Ok(json!({ "lines": found }))
+    let shows = best_of_each_show(&mut found);
+    Ok(json!({ "lines": found, "shows": shows }))
+}
+
+/// How soon you can read a line, as the Library ranks them: one that's said,
+/// then the fewest other words you don't know (none: i+1), then one whose
+/// episode's words aren't saved yet.
+fn reach(f: &Found) -> usize {
+    (if f.said { 0 } else { 2_000_000 }) + f.unknown.unwrap_or(1_000_000)
+}
+
+/// Keeps the `PER_SHOW` lines of each show you can read soonest, in the order
+/// the Library lists them; returns how many each show had.
+fn best_of_each_show(found: &mut Vec<Found>) -> HashMap<i64, usize> {
+    found.sort_by(|a, b| reach(a).cmp(&reach(b)).then(a.number.cmp(&b.number)).then(a.start.total_cmp(&b.start)));
+    let mut totals: HashMap<i64, usize> = HashMap::new();
+    found.retain(|f| {
+        let n = totals.entry(f.show_id).or_insert(0);
+        *n += 1;
+        *n <= PER_SHOW
+    });
+    totals
 }
 
 // ---- A line's scene ----
@@ -523,12 +604,7 @@ mod tests {
     }
 
     fn found(index: &Index, q: &str) -> Vec<(usize, String)> {
-        let forms = forms(q);
-        let mut hits = word_hits(index.with_word(&forms).unwrap(), &forms);
-        if hits.is_empty() {
-            hits = text_hits(index.with_text(q).unwrap(), q);
-        }
-        hits.iter().map(|h| (h.kept.line, h.kept.text[h.from..h.to].to_string())).collect()
+        hits(index, q).unwrap().iter().map(|h| (h.kept.line, h.kept.text[h.from..h.to].to_string())).collect()
     }
 
     #[test]
@@ -553,10 +629,77 @@ mod tests {
     }
 
     #[test]
+    fn a_name_finds_itself_with_an_honorific_and_a_word_not_the_longer_words_it_starts() {
+        let index = index();
+        let lines = [line(1.0, 2.0, "フリーレン、何を食べる？"), line(3.0, 4.0, "フリーレン様が来た。"), line(5.0, 6.0, "旅行に行く。"), line(7.0, 8.0, "旅に出る。")];
+        let uses = [
+            word(0, &lines[0].text, "フリーレン", "フリーレン", "ふりーれん"),
+            word(1, &lines[1].text, "フリーレン様", "フリーレン様", "ふりーれんさま"),
+            word(2, &lines[2].text, "旅行", "旅行", "りょこう"),
+            word(3, &lines[3].text, "旅", "旅", "たび"),
+        ];
+        index.replace(8, &entries(&lines, &uses).unwrap(), "now", true).unwrap();
+        // Episode 7's フリーレン様 isn't a word there, and its words are saved: it goes by them.
+        let mut names = found(&index, "フリーレン");
+        names.sort();
+        assert_eq!(names, [(0, "フリーレン".to_string()), (1, "フリーレン様".to_string())]);
+        // 旅 finds 旅 alone: 旅行 is another word, not 旅 with an honorific.
+        assert_eq!(found(&index, "旅"), [(3, "旅".to_string())]);
+    }
+
+    #[test]
+    fn an_episode_whose_words_aren_t_saved_is_found_by_its_text_beside_the_words() {
+        let index = index();
+        index.replace(9, &entries(&[line(1.0, 2.0, "パンを食べる。"), line(3.0, 4.0, "もう食べた。")], &[]).unwrap(), "now", false).unwrap();
+        let hits = hits(&index, "食べる").unwrap();
+        let found: Vec<(i64, usize, &str)> = hits.iter().map(|h| (h.kept.episode_id, h.kept.line, &h.kept.text[h.from..h.to])).collect();
+        // Its text has only the form asked for.
+        assert_eq!(found, [(7, 1, "食べない"), (9, 0, "食べる")]);
+    }
+
+    #[test]
+    fn a_single_kana_isn_t_looked_for_in_the_text() {
+        let index = index();
+        assert_eq!(found(&index, "の"), []);
+        assert_eq!(found(&index, "研"), [(0, "研".to_string())]);
+        assert_eq!(found(&index, "ばかり"), [(0, "ばかり".to_string())]);
+    }
+
+    #[test]
+    fn keeps_the_lines_of_each_show_you_can_read_soonest() {
+        let f = |show_id: i64, number: i64, unknown: Option<usize>, said: bool| Found {
+            episode_id: number,
+            show_id,
+            number,
+            line: 0,
+            start: 0.0,
+            end: 1.0,
+            before: String::new(),
+            word: String::new(),
+            after: String::new(),
+            unknown,
+            said,
+            picture: 0,
+        };
+        let mut found: Vec<Found> = (0..PER_SHOW as i64 + 20).map(|n| f(1, n, Some(3), true)).collect();
+        found.push(f(1, 500, Some(0), true));
+        found.push(f(1, 501, None, true));
+        found.push(f(1, 502, Some(0), false));
+        found.push(f(2, 1, Some(1), true));
+        let totals = best_of_each_show(&mut found);
+        assert_eq!(totals, HashMap::from([(1, PER_SHOW + 23), (2, 1)]));
+        let one: Vec<&Found> = found.iter().filter(|l| l.show_id == 1).collect();
+        assert_eq!(one.len(), PER_SHOW);
+        // The i+1 line first; the rest by episode; one not yet scored and one sung don't make it.
+        assert_eq!((one[0].number, one[1].number, one[PER_SHOW - 1].number), (500, 0, PER_SHOW as i64 - 2));
+        assert!(found.iter().any(|l| l.show_id == 2));
+    }
+
+    #[test]
     fn counts_the_other_words_you_don_t_know() {
         let index = index();
         let forms = forms("食べる");
-        let hits = word_hits(index.with_word(&forms).unwrap(), &forms);
+        let hits = word_hits(index.with_word(&forms, None).unwrap(), &forms, None);
         let none = HashSet::new();
         // ちゃんと and 倒れる are the others.
         assert_eq!(unknown(&hits[0], &forms, &none, &none), 2);

@@ -283,6 +283,13 @@ export interface FoundLine {
   picture: number;
 }
 
+/** What a line search answers: the lines each show can be read soonest in (up to 100 a show), and
+ *  how many lines each show has, by its ID. */
+export interface LineSearch {
+  lines: FoundLine[];
+  shows: Record<number, number>;
+}
+
 /** The scene around a line: the stretch of its episode to play, and what's said in it. */
 export interface SceneView {
   episodeId: number;

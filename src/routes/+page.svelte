@@ -6,7 +6,7 @@
   import Cover from "$lib/Cover.svelte";
   import Icon from "$lib/Icon.svelte";
   import Scene from "$lib/Scene.svelte";
-  import { call, callKept, errorText, kept, mediaUrl, pickFolder, setWindowTitle, type FoundLine, type Library, type Settings, type ShowCard } from "$lib/api";
+  import { call, callKept, errorText, kept, mediaUrl, pickFolder, setWindowTitle, type FoundLine, type LineSearch, type Library, type Settings, type ShowCard } from "$lib/api";
   import { clock, plural, statusOf } from "$lib/format";
   import { app } from "$lib/state.svelte";
 
@@ -101,6 +101,8 @@
 
   const searching = $derived(q.trim() !== "");
   let found = $state.raw<FoundLine[]>([]);
+  /** How many lines each show has, by its ID: `found` has only the best of them (search.rs). */
+  let totals = $state.raw<Record<number, number>>({});
   /** The search `found` is the answer to. */
   let foundFor = $state("");
   /** A word is half-typed in Japanese: it's looked for once it's chosen. */
@@ -115,13 +117,15 @@
     if (composing) return;
     if (!text) {
       found = [];
+      totals = {};
       foundFor = "";
       return;
     }
     const timer = setTimeout(async () => {
-      const lines = await call<{ lines: FoundLine[] }>("searchLines", { q: text }).then((r) => r.lines, () => []);
+      const answer = await call<LineSearch>("searchLines", { q: text }).catch((): LineSearch => ({ lines: [], shows: {} }));
       if (q.trim() !== text) return;
-      found = lines;
+      found = answer.lines;
+      totals = answer.shows;
       foundFor = text;
       opened = {};
       scene = null;
@@ -146,10 +150,14 @@
     }
     return [...now, ...sorted(all.filter((s) => !now.includes(s)))]
       .filter((show) => of.has(show.id))
-      .map((show) => ({ show, lines: of.get(show.id)!.sort((a, b) => reach(a) - reach(b) || a.number - b.number || a.start - b.start) }))
+      .map((show) => {
+        const lines = of.get(show.id)!.sort((a, b) => reach(a) - reach(b) || a.number - b.number || a.start - b.start);
+        return { show, lines, total: Math.max(totals[show.id] ?? 0, lines.length) };
+      })
       .sort((a, b) => reach(a.lines[0]) - reach(b.lines[0]));
   });
   const lines = $derived(groups.flatMap((g) => g.lines));
+  const linesFound = $derived(groups.reduce((n, g) => n + g.total, 0));
   /** A show with many lines lists a few until it's opened. */
   const listedOf = (g: { show: ShowCard; lines: FoundLine[] }) => (g.lines.length > 8 && !opened[g.show.id] ? g.lines.slice(0, 6) : g.lines);
 
@@ -312,14 +320,14 @@
 
     {#if groups.length}
       <div class="shelf-head">
-        <h2>Lines</h2><span>{plural(lines.length, "line")} in {count(groups.length)}</span>
+        <h2>Lines</h2><span>{plural(linesFound, "line")} in {count(groups.length)}</span>
       </div>
       {#each groups as g (g.show.id)}
         <section class="lgroup">
           <div class="lg-head">
             <span class="lg-cv"><Cover cover={g.show.cover} color={g.show.coverColor} native={g.show.titleNative} title={g.show.title} /></span>
             <a class="lg-title" lang={g.show.titleNative ? "ja" : undefined} href="/show?id={g.show.id}">{g.show.titleNative || g.show.title}</a>
-            <span class="lg-sub">{g.show.titleNative ? `${g.show.title} · ` : ""}{plural(g.lines.length, "line")}</span>
+            <span class="lg-sub">{g.show.titleNative ? `${g.show.title} · ` : ""}{plural(g.total, "line")}</span>
           </div>
           <div class="lrows">
             {#each listedOf(g) as l (`${l.episodeId} ${l.line}`)}
@@ -338,6 +346,8 @@
           </div>
           {#if listedOf(g).length < g.lines.length}
             <button type="button" class="link-btn more" onclick={() => (opened = { ...opened, [g.show.id]: true })}>Show {g.lines.length - listedOf(g).length} more</button>
+          {:else if g.total > g.lines.length}
+            <p class="more lnote">These are the {g.lines.length} lines you can read soonest, of {g.total}.</p>
           {/if}
         </section>
       {/each}
@@ -444,6 +454,7 @@
   .lq mark { font-weight: 700; color: inherit; background: linear-gradient(transparent 58%, var(--mark-soft) 58%); }
   .lmeta { font-size: 12.5px; color: var(--ink-3); }
   .more { margin: 6px 0 0 8px; }
+  .lnote { font-size: 12.5px; color: var(--ink-3); }
   .menu { position: fixed; z-index: 80; min-width: 190px; display: grid; padding: 5px; background: var(--surface); border: 1px solid var(--rule-2); border-radius: 8px; box-shadow: var(--shadow-lg); }
   .menu button { all: unset; padding: 8px 10px; border-radius: 5px; font-size: 13.5px; cursor: pointer; }
   .menu button:hover, .menu button:focus-visible { background: var(--sunk); }

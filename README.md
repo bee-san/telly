@@ -8,12 +8,13 @@ An anime player for learning Japanese, for Windows. Point it at a folder of rips
 - plays each episode straight from the rip when WebView2 can (H.264, HEVC and AV1, 8-bit or 10-bit, in MKV or MP4), and converts what it can't (MPEG-2 DVD rips, DTS audio) in the background, next episode first
 - finds Japanese subtitles on [Jimaku](https://jimaku.cc) and syncs them to your rip: to the rip's own subtitles when it has any (in any language, pictures included), or to its speech, heard by [FireRedVAD](https://github.com/FireRedTeam/FireRedVAD)
 - shows them as lines you can look up with [Hachidori](https://github.com/bee-san/hachidori), pausing while you read and carrying on when you move back to the picture
-- plays the Japanese audio track unless you pick another for the show (**Audio ▾**, on rips with more than one), offers **Skip opening** from the rip's chapters, and marks the chapters on the seek bar
+- plays the Japanese audio track unless you pick another for the show (**Audio ▾**, on rips with more than one), offers **Skip opening** from the rip's chapters, or from where [AniSkip](https://aniskip.com)'s users marked it when the chapters don't say, and marks the chapters on the seek bar
 - shows the rip's own English subtitles for the line while you hold **Tab**, when the rip has them as text (**?** lists every key)
 - finishes the cards you mine with an animated AVIF of the line and its audio as Opus
 - explains the line on screen when you press **E**, and when you come back to a show, opens on **Previously on**: the story so far in its arcs, the episode you left, and key moments to watch again, each with a caption (both by Claude, through the Claude Code on your computer)
 - premines: before you watch, it lists the words in the next episodes that you don't know yet and makes them into cards in your Hachidori card format
 - makes a dictionary of the characters in what you're watching, the way [characterdictionary.tokyo](https://characterdictionary.tokyo) does, adds it to Hachidori and colours their names in the subtitles
+- finds a word in every line it's said in across your library, the lines you can read first, and plays the scene around each
 - recommends anime to watch next, from what AniList's users recommend to people who liked the shows in your library
 - logs what you watch for [Tidepool](https://github.com/bee-san/tidepool), and on your AniList list once you've signed in
 
@@ -21,7 +22,7 @@ The design, plans and build order are in the [design artifact](https://claude.ai
 
 ## Installing
 
-`npm run release` builds `src-tauri/target/release/bundle/nsis/Telly_<version>_x64-setup.exe`, an installer for your Windows user. Run it as `Telly_<version>_x64-setup.exe /P /D=%LOCALAPPDATA%\Programs\Telly` to keep the app apart from Telly's data: without `/D` it installs to `%LOCALAPPDATA%\Telly`, the folder that also holds your library. Later installs reuse the folder the first one used.
+Each [release](https://github.com/bee-san/telly/releases) has the installer, `Telly_<version>_x64-setup.exe`, an installer for your Windows user. Publishing a release tagged `v<version>` (the version in `src-tauri/tauri.conf.json`) builds it on GitHub Actions and adds it to the release (`.github/workflows/release.yml`); run the workflow by hand to build one without a release. `npm run release` builds the same installer locally, in `src-tauri/target/release/bundle/nsis/`. Run it as `Telly_<version>_x64-setup.exe /P /D=%LOCALAPPDATA%\Programs\Telly` to keep the app apart from Telly's data: without `/D` it installs to `%LOCALAPPDATA%\Telly`, the folder that also holds your library. Later installs reuse the folder the first one used.
 
 ## Running it
 
@@ -84,6 +85,17 @@ A show's page has **Premine**: the words in the next episode (or the next 3 or 1
 - **Cards** are made in your Hachidori card format (the first Template in its Settings → Anki), word audio included, in a **Premined** subdeck of that deck (`例文マイニング::Premined`), so you can set how many new ones you see a day. The sentence, its furigana and the cloze come from the word's line. Telly then adds the moving picture, the line's audio and MiscInfo as it does for the cards you mine while watching, and tags them `telly::premine`.
 
 A show's page also shows, for each episode with subtitles, the share of its words that are known, counted the same way, and the Library shows each show's. Telly keeps the shares, and a copy of the words Anki says you have, so both are there at once and with Anki closed. With Anki open they're brought up to date when the Library or a show's page opens: two searches for note ids, then only the notes Telly hasn't read.
+
+## Searching lines
+
+Text typed in the Library's search that has Japanese in it is also looked for in the subtitles. Lines are listed under their shows, each with its picture and episode; pressing one plays its scene over the Library (the line with the one before and after it), and **Watch from here** opens the player there.
+
+- **A word** finds every form of itself: 食べる, たべる and 食べた all find 食べた, 食べて and 食べられる, and the whole form is marked. It goes by the words premining saves for each episode. A name finds itself with an honorific after it too (フリーレン finds フリーレン様), which Telly's character dictionary makes one word.
+- **Anything else** (a phrase, a name no episode has as a word) is looked for in the lines' text. So are the lines of episodes whose words aren't saved yet, listed after the rest. A single kana isn't: it's in nearly every line.
+- **The lines you can read first** lead: those that are said (not sung, not a caption's note), then those with the fewest other words you don't know. A show lists up to 100 of its lines, with how many it has.
+- The lines are kept in `telly-lines.sqlite`, made from the files in `subtitles` when they sync and in a pass as Telly starts (about three minutes for 2,700 episodes the first time).
+
+On 850,000 lines in 2,700 episodes (made up, a tenth of them without their words saved), a word said in 42,000 lines took 0.27 s to answer, and 0.95 s to be listed on the page. Before the 100 a show, the same word sent 7.6 MB in 0.77 s, and a single kana 64 MB in 6.3 s.
 
 ## Recommended
 
@@ -157,6 +169,7 @@ Measured on a 4 TB USB hard drive (Seagate Expansion, exFAT) nothing else was re
 | `%LOCALAPPDATA%\Telly\subtitles` | synced subtitles, one file per episode |
 | `%LOCALAPPDATA%\Telly\names` | casts from AniList, their portraits, and the character dictionary |
 | `%LOCALAPPDATA%\Telly\known-words.json` | Telly's copy of the words Anki says you have a studied card for |
+| `%LOCALAPPDATA%\Telly\telly-lines.sqlite` | every spoken line and its words, for searching lines; made again from `subtitles` if it's deleted |
 | `%LOCALAPPDATA%\Telly\recommended.json` | what AniList's users recommend for each of your shows, kept for a week |
 | `%LOCALAPPDATA%\Telly\anilist-list.json` | which anime are on your AniList list, once you've signed in |
 | `%APPDATA%\Telly\telly-log.sqlite` | what you watched, for Tidepool (counts only, never the text) |

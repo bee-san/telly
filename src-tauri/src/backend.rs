@@ -986,8 +986,8 @@ impl Backend {
     }
 
     /// Removes everything kept in subtitles by these episodes' ids: their
-    /// lines, translation, words, the files tried, a rip's text tracks and
-    /// Whisper's transcripts.
+    /// lines, translation, words, the files tried, the rip's timing, its text
+    /// tracks and Whisper's transcripts.
     fn forget_episode_files(&self, ids: &[i64]) {
         let prefixes: Vec<String> = ids.iter().map(|id| format!("{id}.")).collect();
         for entry in std::fs::read_dir(self.dirs.subs()).into_iter().flatten().flatten() {

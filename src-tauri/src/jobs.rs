@@ -1383,6 +1383,76 @@ pub fn timing_of(ffmpeg: &Path, probe: &media::Probe, episode: &Episode) -> Resu
     }
 }
 
+/// `timing_of`, kept from when the episode's subtitles were found: matching
+/// a file you picked then needn't read the rip again, which takes minutes
+/// from a hard drive.
+fn timing_for(backend: &Backend, ffmpeg: &Path, probe: &media::Probe, episode: &Episode) -> Result<Timing> {
+    if let Some(timing) = kept_timing(backend, episode) {
+        return Ok(timing);
+    }
+    let timing = timing_of(ffmpeg, probe, episode)?;
+    keep_timing(backend, episode, &timing);
+    Ok(timing)
+}
+
+fn timing_path(backend: &Backend, episode_id: i64) -> PathBuf {
+    backend.dirs.subs().join(format!("{episode_id}.timing.json"))
+}
+
+/// A `Timing` as kept, with the rip it was read from.
+#[derive(Serialize, serde::Deserialize)]
+struct KeptTiming {
+    rip: String,
+    size: u64,
+    spans: Vec<(f64, f64)>,
+    length: f64,
+    against: String,
+    lead: f64,
+    calibration: (f64, f64, f64),
+}
+
+fn rip_size(episode: &Episode) -> Option<u64> {
+    std::fs::metadata(&episode.path).ok().map(|m| m.len())
+}
+
+/// Keeps an episode's timing for `kept_timing`. Not WebRTC's (`NOISY`),
+/// read only when FireRedVAD couldn't run, which it may next time.
+fn keep_timing(backend: &Backend, episode: &Episode, timing: &Timing) {
+    let Some(size) = rip_size(episode) else { return };
+    if timing.calibration == sync::Calibration::NOISY || std::fs::create_dir_all(backend.dirs.subs()).is_err() {
+        return;
+    }
+    let c = timing.calibration;
+    let kept = KeptTiming {
+        rip: episode.path.clone(),
+        size,
+        spans: timing.spans.clone(),
+        length: timing.length,
+        against: timing.against.clone(),
+        lead: timing.lead,
+        calibration: (c.zero, c.full, c.cuts_from),
+    };
+    if let Ok(json) = serde_json::to_vec(&kept) {
+        let _ = crate::util::write_whole(&timing_path(backend, episode.id), json);
+    }
+}
+
+/// The timing kept for an episode, if it was read from the rip it has now.
+fn kept_timing(backend: &Backend, episode: &Episode) -> Option<Timing> {
+    let kept: KeptTiming = serde_json::from_slice(&std::fs::read(timing_path(backend, episode.id)).ok()?).ok()?;
+    if kept.rip != episode.path || Some(kept.size) != rip_size(episode) {
+        return None;
+    }
+    let (zero, full, cuts_from) = kept.calibration;
+    Some(Timing {
+        spans: kept.spans,
+        length: kept.length,
+        against: kept.against,
+        lead: kept.lead,
+        calibration: sync::Calibration { zero, full, cuts_from },
+    })
+}
+
 /// The timing the rip's own dialogue subtitles give, from its subtitle tracks
 /// as `media::read_rip` read them. None when it has no such track.
 fn subtitle_timing(probe: &media::Probe, tracks: &[media::TrackTiming]) -> Option<Timing> {
@@ -2029,13 +2099,18 @@ fn find_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &Path, 
     let mut files = if probe.subtitles.iter().any(|s| japanese_text(&s.language, &s.codec)) { embedded(backend, rip_tracks(), episode) } else { Vec::new() };
     drop(queued.take());
     let video = rip.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let read_timing = || match subtitle_timing(&probe, rip_tracks()) {
-        Some(timing) => Ok(timing),
-        None => {
-            let heard = rip_read().1.as_deref();
-            let _turn = heard.is_none().then(reading);
-            speech_timing(ffmpeg, &probe, episode, heard).context("reading the episode’s timing")
-        }
+    let read_timing = || -> Result<Timing> {
+        let timing = match subtitle_timing(&probe, rip_tracks()) {
+            Some(timing) => timing,
+            None => {
+                let heard = rip_read().1.as_deref();
+                let _turn = heard.is_none().then(reading);
+                speech_timing(ffmpeg, &probe, episode, heard).context("reading the episode’s timing")?
+            }
+        };
+        // For a file you pick for it later (`use_file`).
+        keep_timing(backend, episode, &timing);
+        Ok(timing)
     };
     // A Japanese track inside the rip is kept as it is when it's in sync
     // already, and Jimaku isn't asked.
@@ -2171,8 +2246,8 @@ pub fn use_file(backend: &Backend, episode: &Episode, path: &Path, name: &str) -
     let (Some(ffmpeg), Some(ffprobe)) = (tools.ffmpeg, tools.ffprobe) else {
         return Err(anyhow!("Telly needs ffmpeg for this. Choose it in Settings."));
     };
-    let probe = media::probe(&ffprobe, Path::new(&episode.path))?;
-    let timing = timing_of(&ffmpeg, &probe, episode)?;
+    let probe = stored_probe(backend, episode.id).map(Ok).unwrap_or_else(|| media::probe(&ffprobe, Path::new(&episode.path)))?;
+    let timing = timing_for(backend, &ffmpeg, &probe, episode)?;
     let mut synced = sync_to(&lines, &timing);
     if synced.score < GOOD_SYNC {
         if let Some(cut) = sync_to_in_pieces(&lines, synced.ratio, &timing) {
@@ -2267,6 +2342,32 @@ mod tests {
         // One that never had a copy still waits until it's near.
         backend.db.media_reset(after[21].id).unwrap();
         assert_eq!(take(&backend, "media").map(|(_, e, _)| e.number), None);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_episode_s_timing_is_kept_for_the_rip_it_was_read_from() {
+        let dir = std::env::temp_dir().join(format!("telly-timing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let rip = dir.join("1.mkv");
+        std::fs::write(&rip, b"rip").unwrap();
+        let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let episodes = vec![crate::db::NewEpisode { number: 1, path: rip.to_string_lossy().into_owned(), size: 3, duration: 1400.0 }];
+        let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let episode = backend.db.episodes(show).unwrap().remove(0);
+        let timing = |calibration| Timing { spans: vec![(1.0, 2.5), (4.0, 6.0)], length: 1400.0, against: "the speech".into(), lead: 0.1, calibration };
+        keep_timing(&backend, &episode, &timing(sync::Calibration::CLEAN));
+        let kept = kept_timing(&backend, &episode).expect("kept");
+        assert_eq!((kept.spans, kept.length, kept.against.as_str(), kept.lead, kept.calibration), (vec![(1.0, 2.5), (4.0, 6.0)], 1400.0, "the speech", 0.1, sync::Calibration::CLEAN));
+        // Another rip in its place (another size) is read again.
+        std::fs::write(&rip, b"another rip").unwrap();
+        assert!(kept_timing(&backend, &episode).is_none());
+        // WebRTC's isn't kept.
+        let _ = std::fs::remove_file(timing_path(&backend, episode.id));
+        keep_timing(&backend, &episode, &timing(sync::Calibration::NOISY));
+        assert!(kept_timing(&backend, &episode).is_none());
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

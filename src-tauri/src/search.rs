@@ -465,6 +465,8 @@ struct Hit {
     kept: Kept,
     from: usize,
     to: usize,
+    /// Whether what's found there is said: not sung, and not a caption's note in brackets.
+    said: bool,
 }
 
 /// The start of a word that's also looked for as a name with an honorific
@@ -491,22 +493,32 @@ fn word_hits(kept: Vec<Kept>, forms: &[String], name: Option<&str>) -> Vec<Hit> 
     kept.into_iter()
         .filter_map(|kept| {
             let is_it = |w: &Word| w.is_one_of(forms) || name.is_some_and(|n| with_honorific(w.headword, n));
-            let (from, to) = said_first(&kept.text, unpack(&kept.words).filter(is_it).map(|w| (w.from, w.to)))?;
-            Some(Hit { kept, from, to })
+            let (from, to, said) = said_first(&kept.text, unpack(&kept.words).filter(is_it).map(|w| (w.from, w.to)))?;
+            Some(Hit { kept, from, to, said })
         })
         .collect()
 }
 
 /// The first of `found` (places in `text`, in order) that's said, or the first
 /// when none is: タリア where it's said in -（タリア）ハァ -（ウィーク）タリア？, not
-/// where the caption names who's speaking.
-fn said_first(text: &str, mut found: impl Iterator<Item = (usize, usize)>) -> Option<(usize, usize)> {
-    let first = found.next()?;
+/// where the caption names who's speaking. And whether it's said.
+fn said_first(text: &str, mut found: impl Iterator<Item = (usize, usize)>) -> Option<(usize, usize, bool)> {
+    let (from, to) = found.next()?;
     // Only brackets make one place said and another not: a song's line (♪) is sung all through.
-    if !text.contains(['（', '(']) || premine::said(text, first.0) {
-        return Some(first);
+    if !has_brackets(text) {
+        return Some((from, to, !text.contains('♪')));
     }
-    Some(found.find(|f| premine::said(text, f.0)).unwrap_or(first))
+    if premine::said(text, from) {
+        return Some((from, to, true));
+    }
+    Some(found.find(|f| premine::said(text, f.0)).map_or((from, to, false), |(from, to)| (from, to, true)))
+}
+
+/// Whether a line has brackets, as a caption's note or who's speaking: each
+/// line found is asked. One character at a time is looked for quickly, where
+/// looking for either of two reads every character.
+fn has_brackets(text: &str) -> bool {
+    text.contains('（') || text.contains('(')
 }
 
 /// The lines a search for `q` finds: those with `q` as a word, in any of its
@@ -545,8 +557,8 @@ fn hits(index: &Index, q: &str) -> Result<Vec<Hit>> {
 fn text_hits(kept: Vec<Kept>, q: &str) -> Vec<Hit> {
     kept.into_iter()
         .filter_map(|kept| {
-            let (from, to) = said_first(&kept.text, places(&kept.text, q).map(|at| (at, at + q.len())))?;
-            Some(Hit { kept, from, to })
+            let (from, to, said) = said_first(&kept.text, places(&kept.text, q).map(|at| (at, at + q.len())))?;
+            Some(Hit { kept, from, to, said })
         })
         .collect()
 }
@@ -558,8 +570,8 @@ fn outside_words(kept: Vec<Kept>, q: &str) -> Vec<Hit> {
         .filter_map(|kept| {
             let spans: Vec<(usize, usize)> = unpack(&kept.words).map(|w| (w.from, w.to)).collect();
             let outside = places(&kept.text, q).filter(|&at| !spans.iter().any(|&(from, to)| from < at + q.len() && at < to));
-            let (from, to) = said_first(&kept.text, outside.map(|at| (at, at + q.len())))?;
-            Some(Hit { kept, from, to })
+            let (from, to, said) = said_first(&kept.text, outside.map(|at| (at, at + q.len())))?;
+            Some(Hit { kept, from, to, said })
         })
         .collect()
 }
@@ -582,7 +594,7 @@ fn unknown(hit: &Hit, forms: &[String], known: &HashSet<String>, cast: &HashSet<
     let text = &hit.kept.text;
     // Each line found is asked, so the cheaper questions go first: a line has
     // ten words or so, and seldom brackets.
-    let brackets = text.contains(['（', '(']);
+    let brackets = has_brackets(text);
     let mut others: Vec<&str> = Vec::new();
     for w in unpack(&hit.kept.words) {
         let Some(written) = text.get(w.from..w.to) else { continue };
@@ -655,7 +667,7 @@ pub fn find(backend: &Backend, q: &str) -> Result<Value> {
             number: e.number,
             start: hit.kept.start + e.subs_nudge_ms as f64 / 1000.0,
             unknown: with_words.contains(&e.id).then(|| unknown(hit, &forms, &known, &casts[&e.show_id])),
-            said: premine::said(text, hit.from),
+            said: hit.said,
         });
     }
     let (best, shows) = best_of_each_show(ranked);
@@ -1038,7 +1050,7 @@ mod tests {
         let hits = hits(&index, "タリア").unwrap();
         let found: Vec<(i64, usize)> = hits.iter().map(|h| (h.kept.episode_id, h.from)).collect();
         assert_eq!(found, [(8, said_at), (9, said_at)]);
-        assert!(hits.iter().all(|h| premine::said(&h.kept.text, h.from)));
+        assert!(hits.iter().all(|h| h.said && premine::said(&h.kept.text, h.from)));
         // A line where it's only in brackets is found there.
         index.replace(10, &entries(&[line(1.0, 2.0, "（ウィーク）ハァ…")], &[]).unwrap(), "now", false).unwrap();
         let hits = super::hits(&index, "ウィーク").unwrap();
@@ -1195,7 +1207,7 @@ mod tests {
         let w = |surface: &'static str, nth: usize, headword: &'static str| Word { headword, reading: headword, from: at(surface, nth), to: at(surface, nth) + surface.len() };
         let words = [w("ため息", 0, "ため息"), w("ちゃんと", 0, "ちゃんと"), w("食べ", 0, "食べる"), w("ちゃんと", 1, "ちゃんと"), w("寝", 0, "寝る")];
         let kept = Kept { episode_id: 7, line: 0, words: pack(&words), text: text.to_string(), start: 0.0, end: 1.0 };
-        let hit = Hit { kept, from: at("食べ", 0), to: at("食べ", 0) + "食べ".len() };
+        let hit = Hit { kept, from: at("食べ", 0), to: at("食べ", 0) + "食べ".len(), said: true };
         let none = HashSet::new();
         // ちゃんと and 寝る: ため息 is a caption's note.
         assert_eq!(unknown(&hit, &forms("食べる"), &none, &none), 2);
@@ -1645,7 +1657,9 @@ mod tests {
             let qs = queries(&mut rng, &plain);
             for round in 0..2 {
                 for q in &qs {
-                    let mut got: Vec<(i64, usize, usize, usize)> = hits(&index, q).unwrap().iter().map(|h| (h.kept.episode_id, h.kept.line, h.from, h.to)).collect();
+                    let found = hits(&index, q).unwrap();
+                    assert!(found.iter().all(|h| h.said == premine::said(&h.kept.text, h.from)), "said wrongly for {q:?}");
+                    let mut got: Vec<(i64, usize, usize, usize)> = found.iter().map(|h| (h.kept.episode_id, h.kept.line, h.from, h.to)).collect();
                     let lines: HashSet<(i64, usize)> = got.iter().map(|g| (g.0, g.1)).collect();
                     assert_eq!(lines.len(), got.len(), "a line found twice for {q:?}");
                     got.sort();

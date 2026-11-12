@@ -1719,7 +1719,8 @@
   .arc-head span { font-size: 12.5px; color: var(--vid-ink-2); white-space: nowrap; }
   .montage { position: absolute; inset: 0; z-index: 9; background: var(--vid); }
   .montage video { width: 100%; height: 100%; object-fit: contain; display: block; }
-  .montage-top { position: absolute; top: 18px; left: 20px; right: 20px; display: grid; gap: 10px; justify-items: start; }
+  /* Across the top, in the middle, where the eye is already. */
+  .montage-top { position: absolute; top: 18px; left: 20px; right: 20px; display: grid; gap: 10px; justify-items: center; text-align: center; }
   .montage-label { font: 600 13px/1 var(--font-ui); letter-spacing: .02em; color: var(--vid-ink); text-shadow: 0 1px 3px rgba(0, 0, 0, .9); }
   .montage-caption { margin: 0; max-width: 60ch; padding: 8px 12px; font: 400 18px/1.4 var(--font-ui); color: var(--vid-ink); background: var(--vid-panel); border: 1px solid var(--vid-edge); border-radius: 8px; }
   .montage-subs { bottom: 72px; }

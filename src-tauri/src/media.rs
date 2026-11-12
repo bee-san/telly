@@ -8,7 +8,8 @@
 //!
 //!   direct  it plays as it is: the player loads the rip itself
 //!   remux   right codecs, wrong container (AVI): copied into MP4, in seconds
-//!   audio   the audio (DTS, TrueHD) is converted to AAC and the video copied
+//!   audio   the audio (DTS, TrueHD) is converted to FLAC, losing nothing, and
+//!           the video copied
 //!   video   converted to H.264, on the GPU's encoder when there is one, with
 //!           the DVD's telecine undone or the picture deinterlaced, square
 //!           pixels, and a keyframe every 2 seconds so seeking is instant
@@ -231,7 +232,8 @@ fn video_plays(v: &VideoInfo) -> bool {
     }
 }
 
-/// Audio that goes into Telly's MP4 copy as it is; the rest is converted to AAC.
+/// Audio that goes into Telly's MP4 copy as it is; the rest is converted to
+/// FLAC with all its channels, which loses nothing of what's decoded.
 fn audio_plays_in_mp4(a: &AudioInfo) -> bool {
     matches!(a.codec.as_str(), "aac" | "mp3" | "opus")
 }
@@ -362,7 +364,7 @@ pub fn convert_args(probe: &Probe, plan: Plan, encoder: &str, input: &Path, outp
     if audio_ok {
         args.extend(["-c:a".into(), "copy".into()]);
     } else {
-        args.extend(["-c:a", "aac", "-b:a", "192k", "-ac", "2"].iter().map(|a| a.to_string()));
+        args.extend(["-c:a".into(), "flac".into()]);
     }
     args.extend(["-movflags".into(), "+faststart".into(), "-f".into(), "mp4".into()]);
     args.push(output.to_string_lossy().into_owned());
@@ -385,7 +387,7 @@ pub fn swap_audio_args(probe: &Probe, video: &Path, rip: &Path, audio: usize, ou
     if probe.audio.get(audio).is_some_and(audio_plays_in_mp4) {
         args.extend(["-c:a".into(), "copy".into()]);
     } else {
-        args.extend(["-c:a", "aac", "-b:a", "192k", "-ac", "2"].iter().map(|a| a.to_string()));
+        args.extend(["-c:a".into(), "flac".into()]);
     }
     args.extend(["-movflags".into(), "+faststart".into(), "-f".into(), "mp4".into()]);
     args.push(output.to_string_lossy().into_owned());
@@ -794,7 +796,8 @@ mod tests {
         assert!(filter.contains("setsar=1") && filter.ends_with("format=nv12"), "{filter}");
         let args = convert_args(&p, Plan::Video, "h264_amf", Path::new("in.mkv"), Path::new("out.mp4"), 1);
         let joined = args.join(" ");
-        assert!(joined.contains("-map 0:a:1") && joined.contains("-c:a aac") && joined.contains("h264_amf"), "{joined}");
+        // The DVD's AC-3 is converted losslessly, keeping all its channels.
+        assert!(joined.contains("-map 0:a:1") && joined.contains("-c:a flac") && !joined.contains("-ac ") && joined.contains("h264_amf"), "{joined}");
     }
 
     #[test]
@@ -860,7 +863,7 @@ mod tests {
     fn changes_the_audio_track_without_converting() {
         let p = parse_probe(&dvd());
         let joined = swap_audio_args(&p, Path::new("copy.mp4"), Path::new("in.mkv"), 0, Path::new("out.part")).join(" ");
-        assert!(joined.contains("-i copy.mp4 -i in.mkv -map 0:v:0 -map 1:a:0") && joined.contains("-c:v copy -c:a aac"), "{joined}");
+        assert!(joined.contains("-i copy.mp4 -i in.mkv -map 0:v:0 -map 1:a:0") && joined.contains("-c:v copy -c:a flac") && !joined.contains("-ac "), "{joined}");
     }
 
     #[test]

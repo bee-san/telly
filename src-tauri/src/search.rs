@@ -130,7 +130,12 @@ pub struct Index {
     conn: Mutex<Connection>,
 }
 
-const KEPT: &str = "SELECT rowid, words, text, start_s, end_s FROM lines";
+/// A line as put in, read from the ordinary table FTS5 keeps the lines in,
+/// `lines_content AS content` (`lines`' rowid is its id, and words, text,
+/// start_s and end_s its c0 to c3). Read through `lines`, each line found is
+/// looked up there by a statement of FTS5's own, and each line scanned goes
+/// through FTS5 as well: twice the work.
+const KEPT: &str = "SELECT content.id, content.c0, content.c1, content.c2, content.c3";
 
 fn kept(row: &rusqlite::Row) -> rusqlite::Result<Kept> {
     let id: i64 = row.get(0)?;
@@ -204,27 +209,28 @@ impl Index {
         let mut asked: Vec<String> = forms.iter().map(|f| quoted(f)).collect();
         asked.extend(prefix.map(|p| format!("{}*", quoted(p))));
         let conn = self.conn()?;
-        let mut stmt = conn.prepare_cached(&format!("{KEPT} WHERE lines MATCH ?1"))?;
+        // FTS5 finds them, in rowid order, and the lines are read from their own table.
+        let mut stmt = conn.prepare_cached(&format!("{KEPT} FROM lines CROSS JOIN lines_content AS content ON content.id = lines.rowid WHERE lines MATCH ?1 ORDER BY lines.rowid"))?;
         let found = stmt.query_map(params![asked.join(" OR ")], kept)?.collect::<rusqlite::Result<Vec<Kept>>>()?;
         Ok(found)
     }
 
     /// The lines with `text` in them, of every episode or only of `episodes`.
-    /// Every episode's lines take about half a second for 850,000 lines, where
-    /// a word takes a twentieth of one: each line is read.
+    /// Every episode's lines take about a sixth of a second for 850,000 lines,
+    /// where a word takes a fiftieth of one: each line is read.
     fn with_text(&self, text: &str, episodes: Option<&[i64]>) -> Result<Vec<Kept>> {
-        let like = format!("%{}%", text.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
         let conn = self.conn()?;
+        // As it's written: what text_hits keeps of the lines found.
         let Some(episodes) = episodes else {
-            let mut stmt = conn.prepare_cached(&format!("{KEPT} WHERE text LIKE ?1 ESCAPE '\\'"))?;
-            let found = stmt.query_map(params![like], kept)?.collect::<rusqlite::Result<Vec<Kept>>>()?;
+            let mut stmt = conn.prepare_cached(&format!("{KEPT} FROM lines_content AS content WHERE instr(content.c1, ?1) > 0 ORDER BY content.id"))?;
+            let found = stmt.query_map(params![text], kept)?.collect::<rusqlite::Result<Vec<Kept>>>()?;
             return Ok(found);
         };
-        // Each episode's lines are a run of rowids, which FTS5 reads on their own.
-        let mut stmt = conn.prepare_cached(&format!("{KEPT} WHERE rowid >= ?1 AND rowid < ?2 AND text LIKE ?3 ESCAPE '\\'"))?;
+        // Each episode's lines are a run of rowids, read on their own.
+        let mut stmt = conn.prepare_cached(&format!("{KEPT} FROM lines_content AS content WHERE content.id >= ?1 AND content.id < ?2 AND instr(content.c1, ?3) > 0 ORDER BY content.id"))?;
         let mut found = Vec::new();
         for id in episodes {
-            let rows = stmt.query_map(params![id * PER_EPISODE, (id + 1) * PER_EPISODE, like], kept)?;
+            let rows = stmt.query_map(params![id * PER_EPISODE, (id + 1) * PER_EPISODE, text], kept)?;
             for row in rows {
                 found.push(row?);
             }
@@ -237,7 +243,7 @@ impl Index {
         let at = episode_id * PER_EPISODE + line as i64;
         let first = (at - 1).max(episode_id * PER_EPISODE);
         let conn = self.conn()?;
-        let mut stmt = conn.prepare_cached(&format!("{KEPT} WHERE rowid >= ?1 AND rowid <= ?2 ORDER BY rowid"))?;
+        let mut stmt = conn.prepare_cached(&format!("{KEPT} FROM lines_content AS content WHERE content.id >= ?1 AND content.id <= ?2 ORDER BY content.id"))?;
         let found = stmt.query_map(params![first, at + 1], kept)?.collect::<rusqlite::Result<Vec<Kept>>>()?;
         Ok(found)
     }
@@ -424,9 +430,9 @@ fn text_hits(kept: Vec<Kept>, q: &str) -> Vec<Hit> {
 fn outside_words(kept: Vec<Kept>, q: &str) -> Vec<Hit> {
     kept.into_iter()
         .filter_map(|kept| {
-            let words = unpack(&kept.words);
-            let from = kept.text.match_indices(q).map(|(at, _)| at).find(|&at| !words.iter().any(|w| w.from < at + q.len() && at < w.to))?;
-            Some(Hit { words, from, to: from + q.len(), kept })
+            let spans: Vec<(usize, usize)> = unpack(&kept.words).map(|w| (w.from, w.to)).collect();
+            let from = kept.text.match_indices(q).map(|(at, _)| at).find(|&at| !spans.iter().any(|&(from, to)| from < at + q.len() && at < to))?;
+            Some(Hit { from, to: from + q.len(), kept })
         })
         .collect()
 }
@@ -751,6 +757,26 @@ mod tests {
 
     fn found_in(index: &Index, q: &str) -> Vec<(i64, usize, String)> {
         hits(index, q).unwrap().iter().map(|h| (h.kept.episode_id, h.kept.line, h.kept.text[h.from..h.to].to_string())).collect()
+    }
+
+    #[test]
+    fn text_is_found_as_it_s_written() {
+        let index = index();
+        let lines = [line(1.0, 2.0, "全品50%オフ！"), line(3.0, 4.0, "50_50だね"), line(5.0, 6.0, "Abcの歌")];
+        index.replace(8, &entries(&lines, &[]).unwrap(), "now", false).unwrap();
+        // What LIKE takes for any characters, and other letter cases, are only themselves.
+        assert_eq!(found(&index, "0%オフ"), [(0, "0%オフ".to_string())]);
+        assert_eq!(found(&index, "%オ"), [(0, "%オ".to_string())]);
+        assert_eq!(found(&index, "_50だ"), [(1, "_50だ".to_string())]);
+        assert_eq!(found(&index, "0_5"), [(1, "0_5".to_string())]);
+        assert_eq!(found(&index, "abcの"), []);
+        assert_eq!(found(&index, "Abcの"), [(2, "Abcの".to_string())]);
+        // Each line once, at the first place it's said.
+        assert_eq!(found(&index, "べ"), []);
+        let lines = [line(1.0, 2.0, "走って走って")];
+        index.replace(9, &entries(&lines, &[]).unwrap(), "now", false).unwrap();
+        let hits = hits(&index, "走って").unwrap();
+        assert_eq!(hits.iter().map(|h| (h.kept.episode_id, h.from)).collect::<Vec<_>>(), [(9, 0)]);
     }
 
     #[test]

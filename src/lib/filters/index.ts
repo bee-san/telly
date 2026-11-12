@@ -243,8 +243,12 @@ export interface Renderer {
   dispose(): void;
 }
 
-export function createRenderer(canvas: HTMLCanvasElement): Renderer {
-  const gl = canvas.getContext("webgl2", { alpha: false, antialias: false, depth: false })!;
+/** Null when there's no WebGL 2 to draw with (the GPU's driver is blocked, or its process went down):
+ *  the video then plays as it is. */
+export function createRenderer(canvas: HTMLCanvasElement): Renderer | null {
+  const context = canvas.getContext("webgl2", { alpha: false, antialias: false, depth: false });
+  if (!context) return null;
+  const gl: WebGL2RenderingContext = context;
   // The passes between keep half-float textures: Anime4K's hold negative numbers.
   gl.getExtension("EXT_color_buffer_float");
   // Lets shaders compile off the page's thread, so the player doesn't stop while they do.
@@ -395,6 +399,7 @@ export function drawTiles(video: HTMLVideoElement, tiles: Record<string, HTMLCan
   const filtered = document.createElement("canvas");
   filtered.width = filtered.height = TILE;
   const renderer = createRenderer(filtered);
+  if (!renderer) return () => {};
   const middle = document.createElement("canvas");
   const side = Math.min(video.videoWidth, video.videoHeight);
   let next = 0;

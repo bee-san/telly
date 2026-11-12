@@ -474,7 +474,7 @@ impl Db {
         let tx = conn.transaction()?;
         // Settings kept by the show's id, and by its episodes' (backend.rs,
         // jobs.rs, anilist_list.rs, the player's picture filter).
-        for key in ["audio.track.{id}", "cover.frame.{id}", "player.filter.{id}"] {
+        for key in ["audio.track.{id}", "cover.frame.{id}", "player.filter.{id}", "player.filters.{id}"] {
             tx.execute("DELETE FROM settings WHERE key = ?1", params![key.replace("{id}", &id.to_string())])?;
         }
         for prefix in ["anilist.group", "jimaku.group", "subs.numbering"] {

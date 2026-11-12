@@ -663,6 +663,11 @@
     const canvas = filtered;
     if (!v || !canvas) return;
     const renderer = createRenderer(canvas);
+    if (!renderer) {
+      filterShown = false;
+      flash("Picture filters need WebGL 2, which isn’t working here", 6000);
+      return;
+    }
     const box = canvas.parentElement as HTMLElement;
     const paint = () => {
       if (!v.videoWidth) return;

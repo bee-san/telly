@@ -1051,13 +1051,10 @@ fn make_cards(backend: &Backend, words: &[Word], step: &dyn Fn(&str, f64)) -> Re
         match make_card(backend, &url, &format, &deck, word) {
             Ok(note) => {
                 added += 1;
-                // The moving picture and the audio, by the card finisher.
-                let episode_lines = lines.entry(word.episode_id).or_insert_with(|| jobs::read_lines(backend, word.episode_id));
-                let line = episode_lines
-                    .iter()
-                    .find(|l| (l.start - word.start).abs() < 0.01)
-                    .cloned()
-                    .unwrap_or(Line { start: word.start, end: word.end, text: format!("{}{}{}", word.before, word.word, word.after), ruby: vec![], speaker: String::new(), sign: false });
+                // The moving picture and the audio, by the card finisher, from the line as it plays.
+                let nudge = cards::nudge(backend, word.episode_id);
+                let episode_lines = lines.entry(word.episode_id).or_insert_with(|| cards::played_lines(backend, word.episode_id));
+                let line = word_line(episode_lines, word, nudge);
                 let (start, end) = cards::clip_bounds(episode_lines, &line, &padding);
                 backend.db.add_mine_job(note, word.episode_id, start, end, &line.text)?;
             }
@@ -1066,6 +1063,18 @@ fn make_cards(backend: &Backend, words: &[Word], step: &dyn Fn(&str, f64)) -> Re
     }
     backend.cards.poke();
     Ok((added, skipped))
+}
+
+/// The line a word was found in, among an episode's lines as they play
+/// (`nudge` after the file's times): the spoken one with its times, not a
+/// sign that starts with it.
+fn word_line(lines: &[Line], word: &Word, nudge: f64) -> Line {
+    let (start, end) = (word.start + nudge, word.end + nudge);
+    lines
+        .iter()
+        .find(|l| !l.sign && (l.start - start).abs() < 0.01 && (l.end - end).abs() < 0.01)
+        .cloned()
+        .unwrap_or(Line { start, end, text: format!("{}{}{}", word.before, word.word, word.after), ruby: vec![], speaker: String::new(), sign: false })
 }
 
 // ---- What the page calls ----
@@ -1145,6 +1154,29 @@ pub fn start_cards(backend: &Arc<Backend>, words: Vec<Word>) -> Result<Status> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_premined_card_is_cut_from_the_spoken_line_not_a_sign_starting_with_it() {
+        let at = |start: f64, end: f64, text: &str, sign: bool| Line { start, end, text: text.into(), ruby: vec![], speaker: String::new(), sign };
+        // A sign 10.0–11.0 sorts before the line said 10.0–13.5; the nudge moves both 0.5 s later.
+        let lines = vec![at(10.5, 11.5, "看板", true), at(10.5, 14.0, "腹が減った", false)];
+        let word = Word {
+            headword: "減る".into(),
+            reading: "へる".into(),
+            rank: None,
+            count: 1,
+            episode_id: 1,
+            number: 1,
+            start: 10.0,
+            end: 13.5,
+            before: "腹が".into(),
+            word: "減っ".into(),
+            after: "た".into(),
+        };
+        let line = word_line(&lines, &word, 0.5);
+        assert_eq!((line.start, line.end, line.text.as_str()), (10.5, 14.0, "腹が減った"));
+        assert_eq!(cards::clip_bounds(&lines, &line, "250"), (10.25, 14.25));
+    }
 
     #[test]
     fn words_that_waited_for_telly_s_hachidori_are_worked_out_once_it_answers() {

@@ -155,20 +155,43 @@ pub fn match_line<'a>(lines: &'a [Line], sentence: &str, position: f64) -> Optio
         .map(|(_, l)| l)
 }
 
-/// The clip around a line: with 250 ms or 500 ms either side, or the line before it too.
+/// Your nudge to an episode's subtitles (Z and X), in seconds.
+pub fn nudge(backend: &Backend, episode_id: i64) -> f64 {
+    backend.db.episode(episode_id).ok().flatten().map_or(0.0, |e| e.subs_nudge_ms as f64 / 1000.0)
+}
+
+/// An episode's lines as they play: at the file's times plus your nudge,
+/// which is when the video says them, so where a clip is cut.
+pub fn played_lines(backend: &Backend, episode_id: i64) -> Vec<Line> {
+    let nudge = nudge(backend, episode_id);
+    let mut lines = jobs::read_lines(backend, episode_id);
+    for line in &mut lines {
+        line.start += nudge;
+        line.end += nudge;
+    }
+    lines
+}
+
+/// The clip around a line: with 250 ms or 500 ms either side, or the line
+/// before it too. A clip is 12 seconds at most: when the line before would
+/// make it longer, it's left out, so the line itself is never cut short.
 pub fn clip_bounds(lines: &[Line], line: &Line, padding: &str) -> (f64, f64) {
     let (pad, with_previous) = match padding {
         "500" => (0.5, false),
         "prev" => (0.25, true),
         _ => (0.25, false),
     };
-    let mut start = line.start;
+    let own = (line.start - pad).max(0.0);
+    let end = line.end + pad;
+    let mut start = own;
     if with_previous {
         if let Some(prev) = lines.iter().filter(|l| !l.sign && l.end <= line.start + 0.01 && line.start - l.end < 8.0).next_back() {
-            start = prev.start;
+            start = (prev.start - pad).max(0.0);
         }
     }
-    let (start, end) = ((start - pad).max(0.0), line.end + pad);
+    if end - start > clip::MAX_SECONDS {
+        start = own;
+    }
     (start, end.min(start + clip::MAX_SECONDS))
 }
 
@@ -184,7 +207,8 @@ fn take_notes(backend: &Backend, ids: &[i64]) -> Result<()> {
     let url = anki_url(backend);
     let f = fields(backend);
     let notes = anki::notes_info(&url, ids)?;
-    let lines = jobs::read_lines(backend, now.episode_id);
+    // As played: the player's position is the video's time.
+    let lines = played_lines(backend, now.episode_id);
     let padding = backend.db.setting_str("clip.padding");
     for note in notes {
         if backend.db.has_mine_job_for(note.id)? {
@@ -221,15 +245,17 @@ fn take_notes(backend: &Backend, ids: &[i64]) -> Result<()> {
 }
 
 /// M: puts the line on screen on your newest card (one made somewhere else).
+/// `start` and `end` are the line's own times in the file.
 pub fn add_line_to_last_card(backend: &Backend, episode_id: i64, start: f64, end: f64, text: &str) -> Result<i64> {
     let url = anki_url(backend);
     let newest = anki::notes_added_today(&url)?
         .into_iter()
         .max()
         .ok_or_else(|| anyhow!("No card was added to Anki today. Add one with Hachidori first."))?;
-    let lines = jobs::read_lines(backend, episode_id);
+    let lines = played_lines(backend, episode_id);
     let padding = backend.db.setting_str("clip.padding");
-    let line = Line { start, end, text: text.to_string(), ruby: vec![], speaker: String::new(), sign: false };
+    let nudge = nudge(backend, episode_id);
+    let line = Line { start: start + nudge, end: end + nudge, text: text.to_string(), ruby: vec![], speaker: String::new(), sign: false };
     let (s, e) = clip_bounds(&lines, &line, &padding);
     let job = backend.db.add_mine_job(newest, episode_id, s, e, text)?;
     backend.push_event("working", "Adding this line to your last card", &text.replace('\n', " "), newest, job);
@@ -388,6 +414,34 @@ mod tests {
         assert_eq!(clip_bounds(&lines, &lines[1], "250"), (12.25, 14.75));
         assert_eq!(clip_bounds(&lines, &lines[1], "500"), (12.0, 15.0));
         assert_eq!(clip_bounds(&lines, &lines[1], "prev"), (9.75, 14.75));
+    }
+
+    #[test]
+    fn the_line_before_is_left_out_rather_than_cutting_the_line_short() {
+        // 100–103, then the line mined at 109–113: both would be 13.5 s, over the 12 s a clip may be.
+        let lines = vec![Line { end: 103.0, ..line(100.0, "前の台詞") }, Line { end: 113.0, ..line(109.0, "この台詞") }];
+        assert_eq!(clip_bounds(&lines, &lines[1], "prev"), (108.75, 113.25));
+        // A line longer than a clip is still cut at 12 s.
+        let long = Line { end: 130.0, ..line(110.0, "長い台詞") };
+        assert_eq!(clip_bounds(&lines, &long, "250"), (109.75, 121.75));
+    }
+
+    #[test]
+    fn a_card_is_cut_where_the_line_plays_with_your_nudge() {
+        let dir = std::env::temp_dir().join(format!("telly-nudge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let episodes = vec![crate::db::NewEpisode { number: 1, path: "1.mkv".into(), size: 1, duration: 1400.0 }];
+        let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let id = backend.db.episodes(show).unwrap()[0].id;
+        jobs::write_lines(&backend, id, &[Line { end: 103.0, ..line(100.0, "この台詞") }]).unwrap();
+        // Z/X moved the subtitles 1.5 s later: the line is said at 101.5–104.5.
+        backend.db.set_nudge(id, 1500).unwrap();
+        let played = played_lines(&backend, id);
+        assert_eq!((played[0].start, played[0].end), (101.5, 104.5));
+        assert_eq!(clip_bounds(&played, &played[0], "250"), (101.25, 104.75));
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

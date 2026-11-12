@@ -300,8 +300,9 @@ fn shows_in_order(backend: &Backend) -> Vec<Show> {
 }
 
 /// Whether an episode ready to play may be without its seek-bar pictures or
-/// its English lines: one of the files isn't there, and `catch_up_worker`
-/// hasn't looked at the episode yet.
+/// its English lines: one of the files isn't there (a rip without English
+/// text has an empty list of them, see `keep_translation`), and
+/// `catch_up_worker` hasn't looked at the episode yet.
 fn behind(backend: &Backend, episode: &Episode) -> bool {
     let looked = backend.jobs.caught_up.lock().unwrap_or_else(|e| e.into_inner()).contains(&episode.id);
     !looked && !(sheet_path(backend, episode.show_id, episode.id).is_file() && translation_path(backend, episode.id).is_file())
@@ -534,9 +535,14 @@ fn probe_worker(backend: &Backend) {
 fn catch_up_worker(backend: &Backend) {
     let slot = &backend.jobs.catching_up;
     let mut seen = 0;
+    let mut remembered = false;
     loop {
         backend.jobs.wait(&mut seen, Duration::from_secs(5));
         let Some(ffmpeg) = backend.tools().ffmpeg else { continue };
+        if !remembered {
+            remember_without_english(backend);
+            remembered = true;
+        }
         while let Some((show, episode, _)) = pick(backend, "catch up") {
             backend.jobs.caught_up.lock().unwrap_or_else(|e| e.into_inner()).insert(episode.id);
             let Some(probe) = stored_probe(backend, episode.id) else { continue };
@@ -544,6 +550,9 @@ fn catch_up_worker(backend: &Backend) {
             let sheet = sheet_path(backend, show.id, episode.id);
             let pictures = !sheet.is_file();
             let english = lacks_translation(backend, episode.id, &probe);
+            // A rip with no English text is remembered as such, so this
+            // episode isn't behind again at the next start.
+            keep_translation(backend, episode.id, &probe, &[]);
             if !pictures && !english {
                 continue;
             }
@@ -564,6 +573,22 @@ fn catch_up_worker(backend: &Backend) {
                 }
             }
             set_task(slot, None);
+        }
+    }
+}
+
+/// Remembers, in one look over the library, which ready episodes' rips have
+/// no English text (see `keep_translation`), for those got ready before that
+/// was remembered. Found one at a time by `pick`, each took a look over the
+/// whole library: on 2,700 made-up episodes, half of them without, 38 to 69 s
+/// of a core at every start.
+fn remember_without_english(backend: &Backend) {
+    for episode in backend.db.all_episodes().unwrap_or_default() {
+        if episode.media_state != "ready" || translation_path(backend, episode.id).is_file() {
+            continue;
+        }
+        if let Some(probe) = stored_probe(backend, episode.id) {
+            keep_translation(backend, episode.id, &probe, &[]);
         }
     }
 }
@@ -745,6 +770,8 @@ fn plan_video(backend: &Backend, ffprobe: &Path, show: &Show, episode: &Episode)
     let (plan, audio) = plan_for(backend, episode, &probe);
     let probe_json = serde_json::to_string(&probe).unwrap_or_default();
     backend.db.set_probe(episode.id, &probe_json, probe.duration, media::ending_at(&probe), plan.name())?;
+    // A rip with no English text has no English lines to keep (see `behind`).
+    keep_translation(backend, episode.id, &probe, &[]);
     if plan == Plan::Direct {
         // A copy made for another audio track isn't needed any more.
         let _ = std::fs::remove_file(copy_path(backend, show.id, episode.id));
@@ -1158,14 +1185,22 @@ fn keep_lines(backend: &Backend, episode_id: i64, text: &str, format: &str) -> R
 }
 
 /// Keeps a rip's English lines from its tracks as `media::read_rip` just read
-/// them, when they aren't kept yet: the player then never reads the rip for them.
+/// them, when they aren't kept yet: the player then never reads the rip for
+/// them. A rip with no English text track, or whose track gave no lines, is
+/// kept as having none (an empty list, which the player shows as none), so
+/// the episode isn't behind (see `behind`) and its rip isn't read for them
+/// again. Given no tracks (nothing read), it keeps only that a rip has no
+/// English text track.
 fn keep_translation(backend: &Backend, episode_id: i64, probe: &media::Probe, tracks: &[media::TrackTiming]) {
-    if !lacks_translation(backend, episode_id, probe) {
+    if translation_path(backend, episode_id).is_file() {
         return;
     }
-    let read = media::english_text_track(probe).and_then(|english| tracks.iter().find(|t| t.index == english.index));
-    if let Some(track) = read.filter(|t| !t.text.is_empty()) {
-        let _ = keep_lines(backend, episode_id, &track.text, media::text_format(&track.codec));
+    let read = match media::english_text_track(probe) {
+        Some(english) => tracks.iter().find(|t| t.index == english.index).map(|t| (t.text.as_str(), media::text_format(&t.codec))),
+        None => Some(("", "srt")),
+    };
+    if let Some((text, format)) = read {
+        let _ = keep_lines(backend, episode_id, text, format);
     }
 }
 
@@ -2327,6 +2362,42 @@ mod tests {
         let sheet = sheet_path(&backend, show, first.id);
         std::fs::create_dir_all(sheet.parent().unwrap()).unwrap();
         std::fs::write(&sheet, "pictures").unwrap();
+        assert!(pick(&backend, "catch up").is_none());
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_rip_without_english_lines_is_caught_up_once() {
+        let dir = std::env::temp_dir().join(format!("telly-no-english-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let open = || Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let backend = open();
+        let episodes = (1..=3).map(|number| crate::db::NewEpisode { number, path: format!("{number}.mkv"), size: 1, duration: 1400.0 }).collect();
+        let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let eps = backend.db.episodes(show).unwrap();
+        // Three episodes ready, with their pictures: one rip has no subtitles,
+        // one an English track that gave no lines, one an English track not read yet.
+        let english = media::SubtitleInfo { index: 2, codec: "subrip".into(), language: "eng".into(), title: String::new() };
+        let probes = [media::Probe::default(), media::Probe { subtitles: vec![english.clone()], ..Default::default() }, media::Probe { subtitles: vec![english], ..Default::default() }];
+        for (e, probe) in eps.iter().zip(&probes) {
+            backend.db.set_probe(e.id, &serde_json::to_string(probe).unwrap(), 1400.0, None, "direct").unwrap();
+            backend.db.media_ready(e.id, &e.path, 0, 0).unwrap();
+            backend.db.set_subs(e.id, "synced", "", "", None, None).unwrap();
+            let sheet = sheet_path(&backend, show, e.id);
+            std::fs::create_dir_all(sheet.parent().unwrap()).unwrap();
+            std::fs::write(&sheet, "pictures").unwrap();
+        }
+        assert_eq!(pick(&backend, "catch up").map(|(_, e, _)| e.number), Some(1));
+        // Looked over at once, or read: the first two have no English lines, and the player is told so.
+        remember_without_english(&backend);
+        keep_translation(&backend, eps[1].id, &probes[1], &[media::TrackTiming { index: 2, codec: "subrip".into(), ..Default::default() }]);
+        assert!(translation(&backend, &eps[0]).unwrap().is_empty() && translation(&backend, &eps[1]).unwrap().is_empty());
+        // At the next start, only the one whose English lines are still to read is behind.
+        drop(backend);
+        let backend = open();
+        assert_eq!(pick(&backend, "catch up").map(|(_, e, _)| e.number), Some(3));
+        backend.jobs.caught_up.lock().unwrap().insert(eps[2].id);
         assert!(pick(&backend, "catch up").is_none());
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);

@@ -239,6 +239,22 @@ fn groups(folder: &Path, files: &[ScannedFile]) -> Vec<Group> {
         .collect()
 }
 
+/// Orders paths (with /) folder by folder, as Explorer does: "Show" comes
+/// before "Show 2nd Season", where comparing the whole paths would put the
+/// space before the slash.
+fn path_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let (mut a, mut b) = (a.split('/'), b.split('/'));
+    loop {
+        match (a.next(), b.next()) {
+            (Some(x), Some(y)) => match natural_cmp(x, y) {
+                std::cmp::Ordering::Equal => continue,
+                order => return order,
+            },
+            (x, y) => return x.is_some().cmp(&y.is_some()),
+        }
+    }
+}
+
 /// Reads `folder`. `durations` gets the length of each video (ffprobe) and is
 /// asked for all of them at once, so it can work in parallel.
 pub fn scan(folder: &Path, durations: impl Fn(&[PathBuf]) -> Vec<Option<f64>>) -> Result<Scan> {
@@ -250,7 +266,7 @@ pub fn scan(folder: &Path, durations: impl Fn(&[PathBuf]) -> Vec<Option<f64>>) -
     if paths.is_empty() {
         return Err(anyhow!("There are no videos in {}.", folder.display()));
     }
-    paths.sort_by(|a, b| natural_cmp(&relative(folder, a), &relative(folder, b)));
+    paths.sort_by(|a, b| path_cmp(&relative(folder, a), &relative(folder, b)));
     let lengths = durations(&paths);
 
     let mut files: Vec<ScannedFile> = paths
@@ -436,6 +452,33 @@ mod tests {
         let dir = fake_folder("season", &["KonoSuba – God’s Blessing On This Wonderful World/Season 2/KonoSuba - S02E01.mkv", "Show/Season 00/Show - S00E01.mkv"]);
         assert_eq!(scan_folder_with(&dir.join("KonoSuba – God’s Blessing On This Wonderful World").join("Season 2")).guess, "KonoSuba – God’s Blessing On This Wonderful World Season 2");
         assert_eq!(scan_folder_with(&dir.join("Show").join("Season 00")).guess, "Show");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_season_folder_named_as_the_show_comes_before_its_sequel() {
+        let dir = fake_folder(
+            "sequel",
+            &[
+                "Frieren/Sousou no Frieren 2nd Season/Sousou no Frieren 2nd Season - 01.mkv",
+                "Frieren/Sousou no Frieren 2nd Season/Sousou no Frieren 2nd Season - 02.mkv",
+                "Frieren/Sousou no Frieren/Sousou no Frieren - 01.mkv",
+                "Frieren/Sousou no Frieren/Sousou no Frieren - 02.mkv",
+            ],
+        );
+        let scan = scan_folder_with(&dir.join("Frieren"));
+        let order: Vec<(Option<i64>, &str)> = scan.files.iter().map(|f| (f.number, f.rel.as_str())).collect();
+        assert_eq!(
+            order,
+            [
+                (Some(1), "Sousou no Frieren/Sousou no Frieren - 01.mkv"),
+                (Some(2), "Sousou no Frieren/Sousou no Frieren - 02.mkv"),
+                (Some(3), "Sousou no Frieren 2nd Season/Sousou no Frieren 2nd Season - 01.mkv"),
+                (Some(4), "Sousou no Frieren 2nd Season/Sousou no Frieren 2nd Season - 02.mkv"),
+            ]
+        );
+        assert_eq!(path_cmp("Show/01.mkv", "Show/Season 2/01.mkv"), std::cmp::Ordering::Less);
+        assert_eq!(path_cmp("Show/Disc 2/a.mkv", "Show/Disc 10/a.mkv"), std::cmp::Ordering::Less);
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -991,7 +991,8 @@
   function onKey(e: KeyboardEvent) {
     const target = e.target as HTMLElement | null;
     if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    // AltGr comes as Ctrl+Alt on Windows: what's typed with it, like [ and ] on many layouts, still counts.
+    if (e.metaKey || ((e.ctrlKey || e.altKey) && !e.getModifierState("AltGraph"))) return;
     wake();
     if (help) {
       if (e.key === "?" || e.key === "Escape") help = false;

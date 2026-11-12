@@ -173,7 +173,8 @@
     try {
       status = await call<Status>("setMediaFolder", { folder });
       settings = await call<Settings>("settings");
-      toast({ key: "copies", state: "working", title: "Moving Telly’s copies of episodes", text: "The title bar shows how it’s going." });
+      // The title bar takes over from here, so this goes after a few seconds.
+      toast({ key: "copies", state: "working", title: "Moving Telly’s copies of episodes", text: "The title bar shows how it’s going." }, 6000);
     } catch (e) {
       toast({ key: "copies", state: "failed", title: "Folder not changed", text: errorText(e) });
     }
@@ -249,7 +250,8 @@
   async function remakeNames() {
     try {
       names = await call<NamesStatus>("rebuildNames");
-      toast({ key: "names", state: "working", title: "Making the character dictionary again", text: "Every cast is fetched from AniList again. The title bar shows how it’s going." });
+      // The title bar takes over from here, so this goes after a few seconds.
+      toast({ key: "names", state: "working", title: "Making the character dictionary again", text: "Every cast is fetched from AniList again. The title bar shows how it’s going." }, 6000);
     } catch (e) {
       toast({ key: "names", state: "failed", title: "Couldn’t make the character dictionary again", text: errorText(e) });
     }
@@ -285,7 +287,8 @@
   async function getWhisperModel() {
     try {
       await call("getWhisperModel");
-      toast({ key: "whispermodel", state: "working", title: "Getting Whisper’s Japanese model", text: "The title bar shows how it’s going." });
+      // The title bar takes over from here, so this goes after a few seconds.
+      toast({ key: "whispermodel", state: "working", title: "Getting Whisper’s Japanese model", text: "The title bar shows how it’s going." }, 6000);
     } catch (e) {
       toast({ key: "whispermodel", state: "failed", title: "Couldn’t get Whisper’s model", text: errorText(e) });
     }

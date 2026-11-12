@@ -166,7 +166,8 @@
   async function getModel() {
     try {
       await call("getWhisperModel");
-      toast({ key: "whispermodel", state: "working", title: "Getting Whisper’s Japanese model", text: "The title bar shows how it’s going." });
+      // The title bar takes over from here, so this goes after a few seconds.
+      toast({ key: "whispermodel", state: "working", title: "Getting Whisper’s Japanese model", text: "The title bar shows how it’s going." }, 6000);
     } catch (e) {
       toast({ key: "whispermodel", state: "failed", title: "Couldn’t get Whisper’s model", text: errorText(e) });
     }

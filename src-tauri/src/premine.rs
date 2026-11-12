@@ -153,6 +153,9 @@ pub struct Premining {
     /// Hachidori's answers, by the text asked, for as long as Telly is open.
     /// Each episode's words are also saved, when its subtitles sync.
     terms: Mutex<HashMap<String, Option<Term>>>,
+    /// Which Hachidori, with which dictionaries, `terms` are answers of
+    /// (terms_source): another one's answers aren't used.
+    terms_from: Mutex<String>,
 }
 
 /// Your card format: the first Template in Hachidori's Settings → Anki.
@@ -466,8 +469,26 @@ fn rank_of(frequency: &Value) -> Option<i64> {
 }
 
 /// Looks up the texts Telly hasn't asked Hachidori about yet, and says how many those were.
+/// Which Hachidori is asked, and with which dictionaries when it's Telly's own:
+/// answers kept from another (before a dictionary was installed, or before
+/// Telly was linked to the Hachidori in your browser) don't stand.
+fn terms_source(backend: &Backend) -> String {
+    match std::env::var("TELLY_YOMITAN_API") {
+        Ok(stand_in) => stand_in,
+        Err(_) if asks_own(backend) => format!("own {}", own_hachidori::installed_revisions(backend)),
+        Err(_) => "relay".into(),
+    }
+}
+
 fn look_up(backend: &Backend, texts: &[String], step: &dyn Fn(f64)) -> Result<usize> {
     let cache = &backend.premining.terms;
+    let source = terms_source(backend);
+    if let Ok(mut from) = backend.premining.terms_from.lock() {
+        if *from != source {
+            cache.lock().map_err(|_| anyhow!("premining stopped"))?.clear();
+            *from = source;
+        }
+    }
     let new: Vec<String> = {
         let known = cache.lock().map_err(|_| anyhow!("premining stopped"))?;
         let mut seen = HashSet::new();

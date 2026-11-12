@@ -139,6 +139,11 @@ pub fn next_dictionary(backend: &Backend) -> Value {
     }
 }
 
+/// The dictionaries installed, each with its revision, as text.
+pub fn installed_revisions(backend: &Backend) -> String {
+    Value::Object(installed(backend)).to_string()
+}
+
 /// Whether a dictionary in the folder is still to be installed (or is being
 /// installed), so a lookup now could miss its words. One that failed to
 /// install isn't waited for.

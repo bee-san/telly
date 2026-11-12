@@ -23,7 +23,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -490,8 +490,43 @@ pub fn sheet_args(video: &Path, duration: f64, output: &Path) -> Vec<String> {
     args
 }
 
-/// Makes the seek bar's pictures of `video` at `output`.
+/// The seek bar's pictures being made now, by `make_sheet` or in a read of a
+/// rip (`read_rip`). The player asks for an episode's pictures as it opens,
+/// maybe while the background work is making them: it waits for those rather
+/// than decoding every keyframe of the video a second time beside them.
+static MAKING: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+static MADE: std::sync::Condvar = std::sync::Condvar::new();
+
+/// Pictures this caller is making: others asking for them wait until it's dropped.
+struct Making(PathBuf);
+
+impl Drop for Making {
+    fn drop(&mut self) {
+        MAKING.lock().unwrap_or_else(|e| e.into_inner()).retain(|p| *p != self.0);
+        MADE.notify_all();
+    }
+}
+
+/// Starts making the pictures at `sheet`, once nobody else is making them.
+/// None when somebody else just made them.
+fn start_making(sheet: &Path) -> Option<Making> {
+    let mut making = MAKING.lock().unwrap_or_else(|e| e.into_inner());
+    let mut waited = false;
+    while making.iter().any(|p| p == sheet) {
+        waited = true;
+        making = MADE.wait(making).unwrap_or_else(|e| e.into_inner());
+    }
+    if waited && sheet.is_file() {
+        return None;
+    }
+    making.push(sheet.to_path_buf());
+    Some(Making(sheet.to_path_buf()))
+}
+
+/// Makes the seek bar's pictures of `video` at `output`, or waits for them
+/// when they're being made already (see `MAKING`).
 pub fn make_sheet(ffmpeg: &Path, video: &Path, duration: f64, output: &Path) -> Result<()> {
+    let Some(_making) = start_making(output) else { return Ok(()) };
     let partial = output.with_extension("jpg.part");
     let out = command(ffmpeg).args(sheet_args(video, duration, &partial)).stdin(Stdio::null()).output().context("starting ffmpeg")?;
     if !out.status.success() {
@@ -697,7 +732,10 @@ pub fn read_rip(ffmpeg: &Path, path: &Path, probe: &Probe, sheet: Option<&Path>)
         .map(|s| TrackTiming { index: s.index, title: s.title.clone(), language: s.language.clone(), codec: s.codec.clone(), ..Default::default() })
         .collect();
     let folder = std::env::temp_dir().join(format!("telly-tracks-{}-{}", std::process::id(), RUNS.fetch_add(1, Ordering::SeqCst)));
-    // Not `make_sheet`'s name for it: the player may ask for the pictures meanwhile.
+    // The player asking for the pictures meanwhile waits for these (see
+    // `MAKING`); if it was making them already, this read waits and leaves them out.
+    let making = sheet.and_then(start_making);
+    let sheet = sheet.filter(|_| making.is_some());
     let partial = sheet.map(|s| s.with_extension("jpg.reading"));
     let Some(args) = rip_args(path, &out, &folder, partial.as_deref().map(|p| (probe.duration, p))) else { return Ok(out) };
     std::fs::create_dir_all(&folder)?;
@@ -808,6 +846,37 @@ mod tests {
         assert_eq!(sheet_rows(50.1), 2);
         let args = sheet_args(Path::new("ep.mp4"), 1437.0, Path::new("ep.jpg")).join(" ");
         assert!(args.contains("-thread_type:v slice -skip_frame:v nokey -i ep.mp4") && args.contains("fps=1/5,scale=160:-2,tpad=stop=-1:stop_mode=clone,tile=10x29"), "{args}");
+    }
+
+    #[test]
+    fn pictures_asked_for_while_a_read_makes_them_are_waited_for() {
+        let sheet = std::env::temp_dir().join(format!("telly-making-{}.jpg", std::process::id()));
+        let _ = std::fs::remove_file(&sheet);
+        // A read of the rip is making the pictures when the player asks for
+        // them. There's no ffmpeg here: the player can only have them by waiting.
+        let reading = start_making(&sheet).unwrap();
+        std::thread::scope(|scope| {
+            let (asking, asked) = std::sync::mpsc::channel();
+            let sheet = &sheet;
+            let player = scope.spawn(move || {
+                asking.send(()).unwrap();
+                make_sheet(Path::new("no-such-ffmpeg"), Path::new("ep.mkv"), 1437.0, sheet)
+            });
+            asked.recv().unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+            std::fs::write(sheet, "pictures").unwrap();
+            drop(reading);
+            assert!(player.join().unwrap().is_ok());
+        });
+        // A read that failed to make them leaves them to the next who asks.
+        std::fs::remove_file(&sheet).unwrap();
+        let reading = start_making(&sheet).unwrap();
+        std::thread::scope(|scope| {
+            let next = scope.spawn(|| start_making(&sheet).is_some());
+            std::thread::sleep(Duration::from_millis(50));
+            drop(reading);
+            assert!(next.join().unwrap());
+        });
     }
 
     #[test]

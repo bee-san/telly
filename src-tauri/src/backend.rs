@@ -1329,7 +1329,9 @@ impl Backend {
             "episode" => self.episode_view(arg(&args, "id")?),
             "openPlayer" => {
                 let id = arg(&args, "id")?;
-                let view = self.open_player(id)?;
+                let mut view = self.open_player(id)?;
+                // The player shows what happens to cards from now on, not what happened before it opened.
+                view["lastEvent"] = json!(self.events.lock().map(|e| e.0).unwrap_or(0));
                 // Hachidori mines into this show's deck.
                 if let Some(show) = self.db.episode(id)?.and_then(|e| self.db.show(e.show_id).ok().flatten()) {
                     own_hachidori::watching(self, &show.title);

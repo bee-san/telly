@@ -210,6 +210,8 @@ export interface PlayerView {
   show: Show;
   episode: Episode;
   src: string;
+  /** The last card event when the player opened: it shows only those after. */
+  lastEvent?: number;
   lines: Line[];
   prev: EpisodeLite | null;
   next: EpisodeLite | null;

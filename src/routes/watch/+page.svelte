@@ -236,6 +236,8 @@
     try {
       settings = await call<Record<string, unknown>>("settings");
       const v = await call<PlayerView>("openPlayer", { id });
+      // Cards finished before this episode opened aren't news here.
+      lastEvent = Math.max(lastEvent, v.lastEvent ?? 0);
       recapRun++;
       recapAt = v.resume?.possible ? v.episode.position : null;
       const back = wantRecap(v, autoplayed);
@@ -406,7 +408,7 @@
         ev.state === "failed" && ev.jobId
           ? { label: "Retry", run: () => call("retryCard", { job: ev.jobId }).catch((e) => toast({ key, state: "failed", title: "Couldn’t retry the card", text: errorText(e) })) }
           : undefined,
-    });
+    }, ev.state === "done" ? 3000 : undefined);
   }
 
   // ---- pause while you read; resume back on the picture ---------------------------

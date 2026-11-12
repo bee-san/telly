@@ -398,6 +398,7 @@ impl Backend {
         std::thread::spawn(move || {
             backend.refind_tools();
             jobs::clear_parts(&backend);
+            backend.forget_removed_files();
             jobs::start(backend.clone());
             let for_cards = backend.clone();
             std::thread::Builder::new().name("telly-cards".into()).spawn(move || cards::worker(&for_cards)).ok();
@@ -824,6 +825,20 @@ impl Backend {
         self.forget_episode_files(&[episode_id]);
         let _ = self.lines.forget(episode_id);
         Ok(())
+    }
+
+    /// Files in subtitles of episodes no longer in Telly: a worker may write
+    /// one just after its show is removed.
+    fn forget_removed_files(&self) {
+        let Ok(here) = self.db.all_episodes() else { return };
+        let here: std::collections::HashSet<i64> = here.iter().map(|e| e.id).collect();
+        for entry in std::fs::read_dir(self.dirs.subs()).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let id = name.split('.').next().and_then(|id| id.parse::<i64>().ok());
+            if id.is_some_and(|id| !here.contains(&id)) && entry.path().is_file() {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
     }
 
     /// Removes everything kept in subtitles by these episodes' ids: their
@@ -1653,6 +1668,27 @@ mod tests {
         let changed = tagged(json!({ "episodes": [1, 2, 3] }), &json!({ "id": 1, "tag": tag }));
         assert_eq!(changed["episodes"], json!([1, 2, 3]));
         assert_ne!(changed["tag"], json!(tag));
+    }
+
+    #[test]
+    fn files_of_episodes_no_longer_in_telly_are_swept_away() {
+        let dir = std::env::temp_dir().join(format!("telly-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let episodes = vec![crate::db::NewEpisode { number: 1, path: "1.mkv".into(), size: 1, duration: 1400.0 }];
+        let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let id = backend.db.episodes(show).unwrap()[0].id;
+        let subs = backend.dirs.subs();
+        std::fs::create_dir_all(&subs).unwrap();
+        for name in [format!("{id}.json"), format!("{}.json", id + 100), format!("{}.words.json", id + 100), "notes.txt".into()] {
+            std::fs::write(subs.join(name), b"[]").unwrap();
+        }
+        backend.forget_removed_files();
+        let mut left: Vec<String> = std::fs::read_dir(&subs).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(left, vec![format!("{id}.json"), "notes.txt".to_string()]);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

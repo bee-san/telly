@@ -96,6 +96,7 @@ pub struct Backend {
     pub cards: cards::Queue,
     playing: Mutex<Option<Playing>>,
     last_play: Mutex<Option<Instant>>,
+    ahead: Arc<Ahead>,
     events: Mutex<(u64, VecDeque<Event>)>,
     pub mining: OnceLock<Arc<Mining>>,
     /// Questions for Claude being answered (ask.rs).
@@ -241,6 +242,19 @@ fn mime_of(path: &Path) -> &'static str {
 /// The most of a file one request returns; the player asks for the rest as it goes.
 const CHUNK: u64 = 4 * 1024 * 1024;
 
+/// How much of a file the reader ahead of the player reads at a time. A hard
+/// drive gives big reads its full speed, where the player's own small ones,
+/// taken in turn with anything else reading the drive, get a fraction of it.
+const AHEAD_BLOCK: usize = 8 * 1024 * 1024;
+
+/// The reading ahead of the episode in the player (see `Backend::read_ahead`):
+/// the file, where the reading started, how far it has got, and which reader
+/// it is (a new one takes over when the player jumps).
+#[derive(Default)]
+struct Ahead {
+    at: Mutex<(PathBuf, u64, u64, u64)>,
+}
+
 fn read_range(path: &Path, range: Option<&str>) -> Result<Served> {
     let mut file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let total = file.metadata()?.len();
@@ -307,6 +321,7 @@ impl Backend {
             cards: cards::Queue::default(),
             playing: Mutex::new(None),
             last_play: Mutex::new(None),
+            ahead: Arc::default(),
             events: Mutex::new((0, VecDeque::new())),
             mining: OnceLock::new(),
             asks: Asks::default(),
@@ -397,6 +412,37 @@ impl Backend {
 
     fn events_since(&self, since: u64) -> Vec<Event> {
         self.events.lock().map(|e| e.1.iter().filter(|ev| ev.id > since).cloned().collect()).unwrap_or_default()
+    }
+
+    /// Reads an episode's video ahead of the player, from `start` (where the
+    /// player just asked for) to the end, so what the player asks for next is
+    /// in Windows' file cache already and comes from memory, not the drive.
+    /// The player itself keeps only a few seconds ahead. One reader at a time:
+    /// asking from somewhere it isn't (another episode, a jump) starts a new
+    /// one there, and the old one stops.
+    fn read_ahead(&self, path: &Path, start: u64) {
+        let Ok(mut at) = self.ahead.at.lock() else { return };
+        // The reader is here, or will be within a block.
+        if at.0 == path && start >= at.1 && start <= at.2 + AHEAD_BLOCK as u64 {
+            return;
+        }
+        *at = (path.to_path_buf(), start, start, at.3 + 1);
+        let (ahead, path, reader) = (self.ahead.clone(), path.to_path_buf(), at.3);
+        std::thread::spawn(move || {
+            let Ok(mut file) = std::fs::File::open(&path) else { return };
+            if file.seek(SeekFrom::Start(start)).is_err() {
+                return;
+            }
+            let mut block = vec![0; AHEAD_BLOCK];
+            loop {
+                let read = file.read(&mut block).unwrap_or(0);
+                let Ok(mut at) = ahead.at.lock() else { return };
+                if read == 0 || at.3 != reader {
+                    return;
+                }
+                at.2 += read as u64;
+            }
+        });
     }
 
     /// The episode playing (or paused) in the player, if it's open.
@@ -1266,7 +1312,10 @@ impl Backend {
         let file = match parts.as_slice() {
             ["ep", id] => {
                 let e = self.episode_or_err(id.parse().map_err(|_| anyhow!("bad episode"))?)?;
-                if e.media_state == "ready" && !e.play_path.is_empty() { PathBuf::from(e.play_path) } else { PathBuf::from(e.path) }
+                let video = if e.media_state == "ready" && !e.play_path.is_empty() { PathBuf::from(e.play_path) } else { PathBuf::from(e.path) };
+                let from = range.and_then(|r| r.trim().strip_prefix("bytes=")).and_then(|r| r.split('-').next()?.trim().parse().ok());
+                self.read_ahead(&video, from.unwrap_or(0));
+                video
             }
             ["sheet", id] => self.sheet_path(&self.episode_or_err(id.parse().map_err(|_| anyhow!("bad episode"))?)?),
             ["cover", id] => {

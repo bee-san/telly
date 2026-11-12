@@ -301,6 +301,21 @@ fn update_task(slot: &Mutex<Option<Task>>, label: Option<&str>, progress: f64) {
     }
 }
 
+/// Waits while the player has an episode open from the drive `rip` is on. A
+/// worker reading a rip from end to end takes the drive from the player,
+/// which then waits for its video; so no such read starts until the player
+/// is closed (one already going is left to end).
+fn after_the_player(backend: &Backend, rip: &Path) {
+    let drive = |path: &Path| path.ancestors().last().map(Path::to_path_buf);
+    let playing_there = || {
+        let playing = backend.now_playing().and_then(|p| backend.db.episode(p.episode_id).ok().flatten());
+        playing.is_some_and(|e| drive(Path::new(&e.play_path)) == drive(rip))
+    };
+    while playing_there() {
+        std::thread::sleep(Duration::from_secs(2));
+    }
+}
+
 /// Takes the most useful episode waiting for `kind` work ("media", "probe" or
 /// "subs") for one worker. The claim is what keeps two workers off one episode:
 /// only the first to make it gets the episode, and the other looks again.
@@ -422,6 +437,7 @@ fn catch_up_worker(backend: &Backend) {
                 let _ = media::make_sheet(&ffmpeg, Path::new(&episode.play_path), episode.duration, &sheet);
             }
             if from_rip || english {
+                after_the_player(backend, rip);
                 let drive = backend.jobs.drive(rip);
                 let _turn = drive.take();
                 if let Ok(tracks) = media::read_rip(&ffmpeg, rip, &probe, from_rip.then_some(sheet.as_path())) {
@@ -1514,6 +1530,7 @@ fn find_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &Path, 
     // One rip is read through at a time on each drive (see `Jobs::drive`).
     let drive = backend.jobs.drive(rip);
     let reading = || {
+        after_the_player(backend, rip);
         let turn = drive.take();
         update_task(slot, Some(&format!("Reading the timing of {} {}", show.title, episode.number)), 0.0);
         turn

@@ -958,12 +958,11 @@ impl Backend {
         if jobs::playing_track(&episode, &probe) != track {
             jobs::change_audio(self, &ffmpeg, &episode, &probe, track)?;
         }
-        // Later episodes that are ready with another track are got ready again; their copies keep their picture.
+        // Later episodes that are ready with another track follow: rips that play
+        // it as they are at once, Telly's copies when they're got ready again.
         for later in self.db.episodes(episode.show_id)?.into_iter().filter(|e| e.number > episode.number && e.media_state == "ready") {
             if let Some(p) = jobs::stored_probe(self, later.id) {
-                if jobs::playing_track(&later, &p) != jobs::audio_track(self, later.show_id, &p) {
-                    self.db.media_requeue(later.id)?;
-                }
+                jobs::follow_audio(self, &ffmpeg, &later, &p)?;
             }
         }
         self.jobs.poke();

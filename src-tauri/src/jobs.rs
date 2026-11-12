@@ -272,7 +272,13 @@ fn pick(backend: &Backend, kind: &str) -> Option<(Show, Episode, usize)> {
             } else {
                 3
             };
-            if matches!(kind, "media" | "probe") && (bucket == 3 || (bucket == 2 && !(idle && convert_rest))) {
+            // Only episodes near the next are got ready, but for a copy got ready
+            // again for another audio track (follow_audio): it's there already,
+            // and until it's done the episode doesn't play.
+            if matches!(kind, "media" | "probe")
+                && (bucket == 3 || (bucket == 2 && !(idle && convert_rest)))
+                && !(kind == "media" && copy_path(backend, show.id, e.id).is_file())
+            {
                 continue;
             }
             let key = (bucket, rank, e.number);
@@ -508,6 +514,20 @@ pub fn change_audio(backend: &Backend, ffmpeg: &Path, episode: &Episode, probe: 
     std::fs::rename(&partial, &output).context("saving the video with its new audio")?;
     backend.db.media_ready(episode.id, &output.to_string_lossy(), 0, track as i64)?;
     Ok(())
+}
+
+/// Brings an episode that's ready to the audio track its show plays now. A
+/// rip that plays that track as it is changes at once; a copy of Telly's is
+/// got ready again, keeping its picture, wherever the episode is (see `pick`).
+pub fn follow_audio(backend: &Backend, ffmpeg: &Path, episode: &Episode, probe: &media::Probe) -> Result<()> {
+    let (plan, audio) = plan_for(backend, episode, probe);
+    if playing_track(episode, probe) == audio {
+        return Ok(());
+    }
+    if plan == Plan::Direct {
+        return change_audio(backend, ffmpeg, episode, probe, audio);
+    }
+    backend.db.media_requeue(episode.id)
 }
 
 /// Telly's copy of an episode: <copies folder>\<show>\<episode>.mp4, in
@@ -1816,6 +1836,58 @@ mod tests {
             subs_offset_ms: None,
             subs_nudge_ms: 0,
         }
+    }
+
+    #[test]
+    fn another_audio_track_leaves_every_later_episode_playable() {
+        let dir = std::env::temp_dir().join(format!("telly-audio-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = std::sync::Arc::new(Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap());
+        backend.db.set_setting("tools.ffmpeg", &serde_json::json!("ffmpeg")).unwrap();
+        backend.refresh_tools();
+        let rips = dir.join("rips");
+        std::fs::create_dir_all(&rips).unwrap();
+        let episodes = (1..=24)
+            .map(|number| crate::db::NewEpisode { number, path: rips.join(format!("Show - {number:02}.mkv")).to_string_lossy().into_owned(), size: 1, duration: 1440.0 })
+            .collect();
+        let show = backend.db.add_show(&crate::db::NewShow { folder: rips.to_string_lossy().into_owned(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        // Rips that play as they are (H.264 in MKV, AAC), with a Japanese and an English track.
+        let probe = serde_json::json!({
+            "format": "matroska,webm", "duration": 1440.0,
+            "video": { "codec": "h264", "profile": "High", "pixFmt": "yuv420p", "width": 1920, "height": 1080, "sar": 1.0, "fieldOrder": "progressive", "fps": 23.976 },
+            "audio": [
+                { "index": 1, "codec": "aac", "channels": 2, "language": "jpn", "title": "", "default": true },
+                { "index": 2, "codec": "aac", "channels": 2, "language": "eng", "title": "", "default": false }
+            ],
+            "subtitles": [], "chapters": []
+        });
+        let eps = backend.db.episodes(show).unwrap();
+        for e in &eps {
+            std::fs::write(&e.path, b"x").unwrap();
+            backend.db.set_probe(e.id, &probe.to_string(), 1440.0, None, "direct").unwrap();
+            backend.db.media_ready(e.id, &e.path, 0, 0).unwrap();
+        }
+        if backend.tools().ffmpeg.is_none() {
+            return; // Picking a track needs ffmpeg, and this computer has none.
+        }
+        // Watching episode 3, the English track is picked: every later episode plays it at once.
+        backend.call("setAudio", serde_json::json!({ "id": eps[2].id, "track": 1 })).unwrap();
+        let after = backend.db.episodes(show).unwrap();
+        assert!(after.iter().all(|e| e.media_state == "ready"), "{:?}", after.iter().map(|e| (e.number, e.media_state.clone())).collect::<Vec<_>>());
+        assert!(after.iter().filter(|e| e.number >= 3).all(|e| e.audio_track == Some(1)));
+
+        // A copy of Telly's got ready again for another track is done however far ahead it is.
+        let far = &after[19];
+        let copy = copy_path(&backend, show, far.id);
+        std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
+        std::fs::write(&copy, b"x").unwrap();
+        backend.db.media_requeue(far.id).unwrap();
+        assert_eq!(take(&backend, "media").map(|(_, e, _)| e.number), Some(20));
+        // One that never had a copy still waits until it's near.
+        backend.db.media_reset(after[21].id).unwrap();
+        assert_eq!(take(&backend, "media").map(|(_, e, _)| e.number), None);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

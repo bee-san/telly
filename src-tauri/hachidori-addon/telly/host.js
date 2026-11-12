@@ -27,8 +27,8 @@
 //    (src-tauri/src/own_hachidori.rs): it installs every dictionary in your
 //    dictionaries folder, one at a time; it sets its Anki template to the
 //    note type and deck of the show being watched, with Hachidori's own Kiku
-//    mapping, and adds the Local Audio Server's word audio when it's there
-//    (both as its first-run setup makes them); and it answers premining's
+//    mapping; pronunciation defaults to Yomitan Audio Fast, with the Local
+//    Audio Server Anki add-on as a fallback; and it answers premining's
 //    questions with Hachidori's own API code (api-host.js), which Hachidori
 //    Relay would otherwise ask a sharing Hachidori.
 //
@@ -42,8 +42,7 @@ import { uploadDictionary } from "../linked-import.js";
 import "../reader-options.js";
 import { createApiHost } from "../api-host.js";
 import { ankiSetupTemplates } from "../anki-setup.js";
-import { detectLocalAudioSource } from "../local-audio-setup.js";
-import { createLocalAudioSource, findLocalAudioSource } from "../local-audio-source.js";
+import { createLocalAudioSource } from "../local-audio-source.js";
 
 const SHARING = "hachidori-sharing";
 const PREFIX = "telly-hachidori:";
@@ -235,9 +234,41 @@ function japaneseOptions(stored) {
 
 // The setup last made, so it's made once per show.
 let ankiMade = "";
-// The Local Audio Server's address (the Anki add-on), null when it isn't there;
-// checked once a page load, as Hachidori's first-run setup checks it.
-let localAudio;
+
+// Set once, so later changes in Hachidori's Audio Settings stick.
+const LOCAL_AUDIO_SET_KEY = "tellyLocalAudioSet";
+const LOCAL_AUDIO_URLS = [
+  "http://127.0.0.1:5052/?term={term}&reading={reading}", // Yomitan Audio Fast's standalone Rust server.
+  "http://127.0.0.1:5050/?term={term}&reading={reading}", // Its drop-in Anki add-on (also the original server).
+];
+
+/** Defaults pronunciation to local recordings, even if Anki or the server starts later. */
+async function enableLocalAudio() {
+  try {
+    if ((await chrome.storage.local.get(LOCAL_AUDIO_SET_KEY))[LOCAL_AUDIO_SET_KEY]) return;
+    const client = await status();
+    if (client?.linked) return;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const stored = await storedOptions();
+      const sources = japaneseOptions(stored).audioSources;
+      const local = LOCAL_AUDIO_URLS.map(url => sources.find(source => source.type === "custom-json" && source.url === url)
+        ?? createLocalAudioSource(crypto.randomUUID(), url));
+      const reply = await chrome.runtime.sendMessage({
+        target: WORKER_TARGET, type: "hd_options_write", requestId: crypto.randomUUID(),
+        profileId: readerOptions().JAPANESE_PROFILE_ID,
+        baseRevision: Number.isInteger(stored?.revision) ? stored.revision : 0,
+        options: { audioSources: [...local, ...sources.filter(source => !local.includes(source))] },
+      });
+      if (reply?.conflict) continue;
+      if (!reply?.ok) throw new Error(reply?.error || "Hachidori didn't take the audio sources");
+      await chrome.storage.local.set({ [LOCAL_AUDIO_SET_KEY]: true });
+      return;
+    }
+    throw new Error("Hachidori's settings kept changing");
+  } catch (error) {
+    report("error", `Couldn't set up local pronunciation: ${errorText(error)}`);
+  }
+}
 
 /** Points this Hachidori's Anki template at the note type, deck and tags Telly asks for. */
 async function syncAnki() {
@@ -250,17 +281,12 @@ async function syncAnki() {
   if (key === ankiMade) return;
   const tell = (fields) => fetch(`${TELLY}/hd/anki/done?${new URLSearchParams(fields)}`).catch(() => {});
   try {
-    if (localAudio === undefined) localAudio = await detectLocalAudioSource({ fetch: globalThis.fetch }).catch(() => null);
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const stored = await storedOptions();
       const options = japaneseOptions(stored);
       const anki = options.anki;
-      // Word audio for {audio}, from the Local Audio Server, unless there's a source for it already.
-      const audioSources = localAudio !== null && findLocalAudioSource(options.audioSources) === null
-        ? [createLocalAudioSource(crypto.randomUUID(), localAudio), ...options.audioSources]
-        : null;
       const tagged = Array.isArray(anki.tags) && anki.tags.join(" ") === tags.join(" ");
-      if (anki.model === want.model && anki.deck === want.deck && tagged && anki.fieldTemplates && audioSources === null) {
+      if (anki.model === want.model && anki.deck === want.deck && tagged && anki.fieldTemplates) {
         ankiMade = key;
         await tell({ ok: "1" });
         return;
@@ -273,7 +299,7 @@ async function syncAnki() {
       const reply = await chrome.runtime.sendMessage({
         target: WORKER_TARGET, type: "hd_options_write", requestId: crypto.randomUUID(),
         baseRevision: Number.isInteger(stored?.revision) ? stored.revision : 0,
-        options: { anki: { ...anki, model: want.model, deck: want.deck, tags, fieldTemplates }, ...(audioSources ? { audioSources } : {}) },
+        options: { anki: { ...anki, model: want.model, deck: want.deck, tags, fieldTemplates } },
       });
       if (reply?.conflict) continue;
       if (!reply?.ok) throw new Error(reply?.error || "Hachidori didn't take the Anki setup");
@@ -373,6 +399,7 @@ async function main() {
     return;
   }
   await step(true);
+  await enableLocalAudio();
   void syncNames();
   void enableHighlights();
   void syncAnki();
@@ -380,6 +407,7 @@ async function main() {
   void serveApi();
   setInterval(() => {
     void step(false);
+    void enableLocalAudio();
     void syncNames();
     void syncDictionaries();
   }, POLL_MS);

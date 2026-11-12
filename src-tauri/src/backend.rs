@@ -355,6 +355,7 @@ impl Backend {
         // The work starts once ffmpeg has said what it can do, so none of it sees half an answer.
         std::thread::spawn(move || {
             backend.refind_tools();
+            jobs::clear_parts(&backend);
             jobs::start(backend.clone());
             let for_cards = backend.clone();
             std::thread::Builder::new().name("telly-cards".into()).spawn(move || cards::worker(&for_cards)).ok();

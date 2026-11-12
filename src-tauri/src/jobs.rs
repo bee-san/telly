@@ -507,7 +507,7 @@ pub fn change_audio(backend: &Backend, ffmpeg: &Path, episode: &Episode, probe: 
         return Ok(());
     }
     std::fs::create_dir_all(output.parent().expect("a folder"))?;
-    let partial = output.with_extension("part");
+    let partial = part_path(&output);
     let video = if output.is_file() { &output } else { &source };
     let args = media::swap_audio_args(probe, video, &source, track, &partial);
     if let Err(e) = media::run_ffmpeg(ffmpeg, &args, probe.duration, &AtomicBool::new(false), &|_| {}) {
@@ -531,6 +531,25 @@ pub fn follow_audio(backend: &Backend, ffmpeg: &Path, episode: &Episode, probe: 
         return change_audio(backend, ffmpeg, episode, probe, audio);
     }
     backend.db.media_requeue(episode.id)
+}
+
+/// Where a copy is made before it's put in place: a name of this run of
+/// Telly's own. An ffmpeg a closed Telly left going (Windows doesn't end it)
+/// then never writes the same file as the one started again, which would
+/// leave a broken copy that's taken as ready.
+fn part_path(output: &Path) -> PathBuf {
+    output.with_extension(format!("{}.part", std::process::id()))
+}
+
+/// Copies being made when Telly last closed, before the work starts again.
+pub fn clear_parts(backend: &Backend) {
+    for show in std::fs::read_dir(backend.media_dir()).into_iter().flatten().flatten() {
+        for file in std::fs::read_dir(show.path()).into_iter().flatten().flatten() {
+            if file.path().extension().is_some_and(|e| e == "part") {
+                let _ = std::fs::remove_file(file.path());
+            }
+        }
+    }
 }
 
 /// Telly's copy of an episode: <copies folder>\<show>\<episode>.mp4, in
@@ -640,7 +659,7 @@ fn convert_video(backend: &Backend, ffmpeg: &Path, encoder: &str, show: &Show, e
         return Ok(());
     }
     std::fs::create_dir_all(output.parent().expect("a folder"))?;
-    let partial = output.with_extension("part");
+    let partial = part_path(&output);
     let verb = match plan {
         Plan::Video => "Converting",
         _ => "Copying",

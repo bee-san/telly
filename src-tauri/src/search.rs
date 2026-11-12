@@ -628,7 +628,7 @@ struct Found {
 pub fn find(backend: &Backend, q: &str) -> Result<Value> {
     let q = q.trim();
     if !contains_japanese(q) {
-        return Ok(json!({ "lines": [] }));
+        return Ok(json!({ "lines": [], "shows": {} }));
     }
     let forms = forms(q);
     let hits = hits(&backend.lines, q)?;
@@ -1124,6 +1124,19 @@ mod tests {
         assert_eq!(found(&index, "の"), []);
         assert_eq!(found(&index, "研"), [(0, "研".to_string())]);
         assert_eq!(found(&index, "ばかり"), [(0, "ばかり".to_string())]);
+    }
+
+    #[test]
+    fn a_search_without_japanese_answers_as_one_that_finds_nothing() {
+        let dir = std::env::temp_dir().join(format!("telly-lines-latin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        // As the Library's LineSearch has it (api.ts): the lines and each show's count.
+        for q in ["Frieren", "  ", "雪合戦"] {
+            assert_eq!(find(&backend, q).unwrap(), json!({ "lines": [], "shows": {} }), "{q:?}");
+        }
+        drop(backend);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -79,6 +79,10 @@ struct Playing {
     at: Instant,
     saved_at: Instant,
     session: Option<i64>,
+    /// Where this sitting began, and whether it has reached the point that
+    /// makes the episode watched: a rewatch counts once a sitting, played to.
+    from: f64,
+    reached_end: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1104,7 +1108,17 @@ impl Backend {
         if let Ok(mut p) = self.playing.lock() {
             self.end_sitting(p.take());
             let now = Instant::now();
-            *p = Some(Playing { episode_id: id, show_id: episode.show_id, position: episode.position, playing: false, at: now, saved_at: now, session: None });
+            *p = Some(Playing {
+                episode_id: id,
+                show_id: episode.show_id,
+                position: episode.position,
+                playing: false,
+                at: now,
+                saved_at: now,
+                session: None,
+                from: episode.position,
+                reached_end: false,
+            });
         }
         if let Some(m) = self.mining.get() {
             m.watch(true);
@@ -1188,11 +1202,24 @@ impl Backend {
         let show = self.db.show(episode.show_id)?.ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?;
         let now = Instant::now();
         let mut became_watched = false;
+        let mut rewatched = false;
+        let duration = if episode.duration > 0.0 { episode.duration } else { 0.0 };
+        let watched_from = episode.ending_at.filter(|e| *e > duration * 0.5).unwrap_or(duration * 0.9);
         {
             let mut guard = self.playing.lock().map_err(|_| anyhow!("busy"))?;
             if guard.as_ref().is_none_or(|p| p.episode_id != a.id) {
                 self.end_sitting(guard.take());
-                *guard = Some(Playing { episode_id: a.id, show_id: show.id, position: a.position, playing: false, at: now, saved_at: now, session: None });
+                *guard = Some(Playing {
+                    episode_id: a.id,
+                    show_id: show.id,
+                    position: a.position,
+                    playing: false,
+                    at: now,
+                    saved_at: now,
+                    session: None,
+                    from: a.position,
+                    reached_end: false,
+                });
             }
             let p = guard.as_mut().expect("just set");
             let gap = now.duration_since(p.at);
@@ -1235,6 +1262,13 @@ impl Backend {
                     let _ = self.log.extend(session, now_ms(), seconds, &lines, a.subtitles);
                 }
             }
+            // Watched to its end again: a rewatch (for AniList), once a sitting that played up to there.
+            if duration > 0.0 && a.position >= watched_from && !p.reached_end {
+                p.reached_end = true;
+                if episode.watched_at.is_some() && p.from < watched_from {
+                    rewatched = self.db.add_rewatch(a.id).is_ok();
+                }
+            }
             p.position = a.position;
             p.playing = a.playing;
             p.at = now;
@@ -1248,11 +1282,12 @@ impl Backend {
                 p.saved_at = now;
             }
         }
-        let duration = if episode.duration > 0.0 { episode.duration } else { 0.0 };
-        let watched_from = episode.ending_at.filter(|e| *e > duration * 0.5).unwrap_or(duration * 0.9);
         if episode.watched_at.is_none() && duration > 0.0 && a.position >= watched_from {
             self.db.set_watched(a.id, true)?;
             became_watched = true;
+            self.jobs.poke();
+        }
+        if rewatched {
             self.jobs.poke();
         }
         Ok(json!({ "events": self.events_since(a.since), "watched": became_watched || episode.watched_at.is_some() }))
@@ -1737,6 +1772,34 @@ mod tests {
         let mut left: Vec<String> = std::fs::read_dir(&subs).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
         left.sort();
         assert_eq!(left, vec![format!("{id}.json"), "notes.txt".to_string()]);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_episode_watched_to_its_end_again_is_a_rewatch_once_a_sitting() {
+        let dir = std::env::temp_dir().join(format!("telly-rewatch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let episodes = (1..=2).map(|number| crate::db::NewEpisode { number, path: format!("{number}.mkv"), size: 1, duration: 1400.0 }).collect();
+        let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let eps = backend.db.episodes(show).unwrap();
+        for e in &eps {
+            backend.db.set_watched(e.id, true).unwrap();
+        }
+        let tick = |id: i64, position: f64| {
+            backend.tick(serde_json::from_value(json!({ "id": id, "position": position, "playing": true })).unwrap()).unwrap();
+        };
+        // Played from the start to past its end: one rewatch, however many ticks after.
+        tick(eps[0].id, 10.0);
+        tick(eps[0].id, 1300.0);
+        tick(eps[0].id, 1350.0);
+        // Opened at its end, it isn't rewatched.
+        tick(eps[1].id, 1300.0);
+        let watches = backend.db.watches_since(show, 0).unwrap();
+        let again: Vec<i64> = watches.iter().map(|w| w.0).filter(|id| *id == eps[0].id).collect();
+        assert_eq!(again.len(), 2, "the first watch and one rewatch: {watches:?}");
+        assert_eq!(watches.iter().filter(|w| w.0 == eps[1].id).count(), 1);
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

@@ -126,6 +126,14 @@ CREATE TRIGGER episodes_last_id AFTER INSERT ON episodes
 ALTER TABLE openings ADD COLUMN ed_start REAL;
 ALTER TABLE openings ADD COLUMN ed_end REAL;
 ALTER TABLE openings ADD COLUMN ed_asked INTEGER NOT NULL DEFAULT 0;
+", "
+-- Each time an episode already watched is watched to its end again: a
+-- rewatch, for your AniList list (anilist_list.rs).
+CREATE TABLE rewatches (
+  episode_id  INTEGER NOT NULL REFERENCES episodes (id) ON DELETE CASCADE,
+  at          INTEGER NOT NULL
+);
+CREATE INDEX rewatches_by_episode ON rewatches (episode_id);
 "];
 
 /// The next id for a show or an episode: after every one given out, removed or not.
@@ -724,6 +732,25 @@ impl Db {
             params![id, position, now_ms()],
         )?;
         Ok(())
+    }
+
+    /// An episode watched already, watched to its end again.
+    pub fn add_rewatch(&self, id: i64) -> Result<()> {
+        self.conn()?.execute("INSERT INTO rewatches (episode_id, at) VALUES (?1, ?2)", params![id, now_ms()])?;
+        Ok(())
+    }
+
+    /// Every time one of a show's episodes was watched to its end since `since`
+    /// (unix ms): the first time and each time again, as (episode, when).
+    pub fn watches_since(&self, show_id: i64, since: i64) -> Result<Vec<(i64, i64)>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, watched_at FROM episodes WHERE show_id = ?1 AND watched_at >= ?2
+             UNION ALL
+             SELECT r.episode_id, r.at FROM rewatches r JOIN episodes e ON e.id = r.episode_id WHERE e.show_id = ?1 AND r.at >= ?2",
+        )?;
+        let rows = stmt.query_map(params![show_id, since], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     pub fn set_watched(&self, id: i64, watched: bool) -> Result<()> {

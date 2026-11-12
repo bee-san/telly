@@ -5,6 +5,12 @@
 //! up: rewatching an earlier episode, or marking one unwatched, changes
 //! nothing. An entry reaching its last episode is marked completed.
 //!
+//! Watching an entry you've completed (in Telly or anywhere) is a rewatch:
+//! it's marked rewatching (REPEATING) at the episode you're on, goes up as you
+//! watch, and is completed again at its last episode, its rewatch count one
+//! more. Rewatching only its last episode starts no rewatch. An episode
+//! watched again counts when it's watched to its end again (db rewatches).
+//!
 //! A show added as one folder holding several seasons has an AniList entry
 //! for each season folder. The first folder is the show's own entry; a later
 //! one is looked up by its folder's name, and logs nothing unless AniList is
@@ -17,8 +23,11 @@
 //!
 //! Settings: anilist.token (the access token), anilist.user (its name),
 //! anilist.since (unix ms: when you signed in), anilist.error (the last
-//! update that failed), anilist.sent.<entry> (the progress last sent) and
-//! anilist.group.<show>.<folder> (a season folder's entry, -1 for none).
+//! update that failed), anilist.sent.<entry> (the progress last sent),
+//! anilist.group.<show>.<folder> (a season folder's entry, -2 for none),
+//! anilist.rewatches_from (unix ms: watches before it were before rewatches
+//! were logged), anilist.looked.<entry> (the last watch looked at for a
+//! rewatch) and anilist.rewatch.<entry> (when the rewatch going on began).
 
 use crate::anilist::{self, ListEntry};
 use crate::backend::Backend;
@@ -97,10 +106,21 @@ pub fn start(backend: Arc<Backend>) {
         .ok();
 }
 
-/// Sends each entry's progress that's higher than what was last sent; true if the list changed.
+/// Sends each entry's progress that's higher than what was last sent, and
+/// rewatches; true if the list changed.
 fn update(backend: &Backend, token: &str) -> Result<bool> {
     let since = backend.db.setting_i64("anilist.since", i64::MAX);
+    // Watches from before rewatches were logged were looked at already.
+    let rewatches_from = match backend.db.setting("anilist.rewatches_from")?.and_then(|v| v.as_i64()) {
+        Some(at) => at,
+        None => {
+            backend.db.set_setting("anilist.rewatches_from", &json!(now_ms()))?;
+            now_ms()
+        }
+    };
     let mut wanted: BTreeMap<i64, i64> = BTreeMap::new();
+    // Each entry's episodes watched to the end (the first time and again) since then, as (number, when).
+    let mut watches: BTreeMap<i64, Vec<(i64, i64)>> = BTreeMap::new();
     for show in backend.db.shows()?.into_iter().filter(|s| s.anilist_id.is_some()) {
         let episodes = backend.db.episodes(show.id)?;
         for e in episodes.iter().filter(|e| e.watched_at.is_some_and(|at| at >= since)) {
@@ -109,20 +129,68 @@ fn update(backend: &Backend, token: &str) -> Result<bool> {
                 *best = (*best).max(progress);
             }
         }
+        for (id, at) in backend.db.watches_since(show.id, since.max(rewatches_from))? {
+            let Some(e) = episodes.iter().find(|e| e.id == id) else { continue };
+            if let Some((entry, number)) = place(&show, &episodes, e, |group, count| group_entry(backend, &show, group, count))? {
+                watches.entry(entry).or_default().push((number, at));
+            }
+        }
     }
+    let entries: std::collections::BTreeSet<i64> = wanted.keys().chain(watches.keys()).copied().collect();
     let mut sent_any = false;
-    for (entry, progress) in wanted {
-        let sent = format!("anilist.sent.{entry}");
-        if progress <= backend.db.setting_i64(&sent, 0) {
+    for entry in entries {
+        let (sent, looked, rewatch) = (format!("anilist.sent.{entry}"), format!("anilist.looked.{entry}"), format!("anilist.rewatch.{entry}"));
+        let progress = wanted.get(&entry).copied().unwrap_or(0);
+        let raised = progress > backend.db.setting_i64(&sent, 0);
+        let watched = watches.get(&entry).map(Vec::as_slice).unwrap_or_default();
+        let last = watched.iter().map(|w| w.1).max().unwrap_or(0);
+        let looked_at = backend.db.setting_i64(&looked, 0);
+        let new: Vec<(i64, i64)> = watched.iter().filter(|w| w.1 > looked_at).copied().collect();
+        if !raised && new.is_empty() {
             continue;
         }
-        if let Some(status) = change(&anilist::list_entry(token, entry)?, progress) {
-            anilist::save_progress(token, entry, progress, status)?;
-            sent_any = true;
+        let listed = anilist::list_entry(token, entry)?;
+        if matches!(listed.status.as_deref(), Some("COMPLETED" | "REPEATING")) && !new.is_empty() {
+            // A rewatch: from when it began (the first of these watches, for one starting now).
+            let began = match listed.status.as_deref() {
+                Some("REPEATING") => backend.db.setting_i64(&rewatch, new.iter().map(|w| w.1).min().unwrap_or(0)),
+                _ => new.iter().map(|w| w.1).min().unwrap_or(0),
+            };
+            let reached = watched.iter().filter(|w| w.1 >= began).map(|w| w.0).max().unwrap_or(0);
+            if let Some((status, at, repeat)) = rewatch_change(&listed, reached) {
+                anilist::save_progress(token, entry, at, status, repeat)?;
+                sent_any = true;
+                if status == "REPEATING" {
+                    backend.db.set_setting(&rewatch, &json!(began))?;
+                }
+            }
+        } else if raised {
+            if let Some(status) = change(&listed, progress) {
+                anilist::save_progress(token, entry, progress, status, None)?;
+                sent_any = true;
+            }
         }
-        backend.db.set_setting(&sent, &json!(progress))?;
+        backend.db.set_setting(&sent, &json!(progress.max(backend.db.setting_i64(&sent, 0))))?;
+        backend.db.set_setting(&looked, &json!(last.max(looked_at)))?;
     }
     Ok(sent_any)
+}
+
+/// What to send for a rewatch of an entry you've completed, `reached` being
+/// the furthest episode watched in it: rewatching (REPEATING) at it, or
+/// completed again, its rewatch count one more, at the last episode. Its last
+/// episode alone starts no rewatch; and nothing goes down.
+fn rewatch_change(entry: &ListEntry, reached: i64) -> Option<(&'static str, i64, Option<i64>)> {
+    let last = entry.episodes;
+    if reached <= 0 || last.is_some_and(|n| reached > n) {
+        return None;
+    }
+    match entry.status.as_deref() {
+        Some("COMPLETED") if last != Some(reached) => Some(("REPEATING", reached, None)),
+        Some("REPEATING") if reached > entry.progress && last == Some(reached) => Some(("COMPLETED", reached, Some(entry.repeat + 1))),
+        Some("REPEATING") if reached > entry.progress => Some(("REPEATING", reached, None)),
+        _ => None,
+    }
 }
 
 /// The AniList entry an episode is of, and its number there.
@@ -304,8 +372,24 @@ mod tests {
     }
 
     #[test]
+    fn watching_a_completed_show_again_is_a_rewatch() {
+        let entry = |status: &str, progress, repeat| ListEntry { episodes: Some(12), status: Some(status.into()), progress, repeat };
+        // Episode 1 of a show you've completed: rewatching, at 1.
+        assert_eq!(rewatch_change(&entry("COMPLETED", 12, 0), 1), Some(("REPEATING", 1, None)));
+        // Its last episode alone starts no rewatch.
+        assert_eq!(rewatch_change(&entry("COMPLETED", 12, 0), 12), None);
+        // Up as you rewatch, and completed again at the last, one more rewatch.
+        assert_eq!(rewatch_change(&entry("REPEATING", 4, 1), 5), Some(("REPEATING", 5, None)));
+        assert_eq!(rewatch_change(&entry("REPEATING", 11, 1), 12), Some(("COMPLETED", 12, Some(2))));
+        // An earlier episode again, or one past the end, changes nothing.
+        assert_eq!(rewatch_change(&entry("REPEATING", 6, 0), 3), None);
+        assert_eq!(rewatch_change(&entry("REPEATING", 6, 0), 13), None);
+        assert_eq!(rewatch_change(&entry("CURRENT", 6, 0), 3), None);
+    }
+
+    #[test]
     fn progress_only_goes_up_and_never_past_the_last_episode() {
-        let entry = |episodes, status: Option<&str>, progress| ListEntry { episodes, status: status.map(str::to_string), progress };
+        let entry = |episodes, status: Option<&str>, progress| ListEntry { episodes, status: status.map(str::to_string), progress, repeat: 0 };
         assert_eq!(change(&entry(Some(12), None, 0), 1), Some("CURRENT"));
         assert_eq!(change(&entry(Some(12), Some("PAUSED"), 4), 5), Some("CURRENT"));
         assert_eq!(change(&entry(Some(12), Some("CURRENT"), 11), 12), Some("COMPLETED"));

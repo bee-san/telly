@@ -204,25 +204,38 @@ pub struct ListEntry {
     pub episodes: Option<i64>,
     pub status: Option<String>,
     pub progress: i64,
+    /// How many times it's been rewatched to the end.
+    pub repeat: i64,
 }
 
 pub fn list_entry(token: &str, id: i64) -> Result<ListEntry> {
-    let q = "query ($id: Int) { Media(id: $id, type: ANIME) { episodes mediaListEntry { status progress } } }";
+    let q = "query ($id: Int) { Media(id: $id, type: ANIME) { episodes mediaListEntry { status progress repeat } } }";
     let answer = query_as(q, json!({ "id": id }), Some(token))?;
     let media = answer.pointer("/data/Media").ok_or_else(|| anyhow!("AniList has no anime {id}"))?;
     Ok(ListEntry {
         episodes: media.get("episodes").and_then(Value::as_i64),
         status: media.pointer("/mediaListEntry/status").and_then(Value::as_str).map(str::to_string),
         progress: media.pointer("/mediaListEntry/progress").and_then(Value::as_i64).unwrap_or(0),
+        repeat: media.pointer("/mediaListEntry/repeat").and_then(Value::as_i64).unwrap_or(0),
     })
 }
 
 /// Sets how many episodes of anime `id` the user has watched, and its status
-/// (CURRENT, COMPLETED, REPEATING…).
-pub fn save_progress(token: &str, id: i64, progress: i64, status: &str) -> Result<()> {
-    let q = "mutation ($id: Int, $progress: Int, $status: MediaListStatus) {
-      SaveMediaListEntry(mediaId: $id, progress: $progress, status: $status) { id } }";
-    query_as(q, json!({ "id": id, "progress": progress, "status": status }), Some(token))?;
+/// (CURRENT, COMPLETED, REPEATING…), and how many times it's been rewatched
+/// when that changes.
+pub fn save_progress(token: &str, id: i64, progress: i64, status: &str, repeat: Option<i64>) -> Result<()> {
+    match repeat {
+        Some(repeat) => {
+            let q = "mutation ($id: Int, $progress: Int, $status: MediaListStatus, $repeat: Int) {
+              SaveMediaListEntry(mediaId: $id, progress: $progress, status: $status, repeat: $repeat) { id } }";
+            query_as(q, json!({ "id": id, "progress": progress, "status": status, "repeat": repeat }), Some(token))?;
+        }
+        None => {
+            let q = "mutation ($id: Int, $progress: Int, $status: MediaListStatus) {
+              SaveMediaListEntry(mediaId: $id, progress: $progress, status: $status) { id } }";
+            query_as(q, json!({ "id": id, "progress": progress, "status": status }), Some(token))?;
+        }
+    }
     Ok(())
 }
 

@@ -1312,12 +1312,13 @@ impl Backend {
             m.watch(false);
         }
         self.jobs.poke();
-        // Leaving after most of an episode: write the recap for the next one now,
-        // so it's ready when you come back. Leaving part-way: the recap up to here.
+        // Write now, so it's ready when you come back, the recap of what plays
+        // next (`jobs::next_episode`): the next episode's after this one is watched
+        // or near its end, else this one's up to here. Not both: one would go unused.
         if let Ok(e) = self.episode_or_err(id) {
             let seen = position.unwrap_or(e.position);
-            let finished = e.watched_at.is_some() || (e.duration > 0.0 && seen >= e.duration * 0.8);
-            ask::prepare_recaps(self, id, finished, ask::resuming(&e, seen).then_some(seen));
+            let finished = e.watched_at.is_some() || (e.duration > 0.0 && seen >= e.duration * 0.9);
+            ask::prepare_recaps(self, id, finished, (!finished && ask::resuming(&e, seen)).then_some(seen));
         }
         Ok(json!({}))
     }

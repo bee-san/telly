@@ -790,7 +790,8 @@ pub fn shares(backend: &Backend) -> (HashMap<i64, Share>, String) {
 
 /// Brings every episode's share of known words up to date, in the background:
 /// Telly's copy of Anki's words first, then the shares of `first`'s episodes (a
-/// show's page asks when it opens), then the rest of the library's, working
+/// show's page asks when it opens), then those of the shows you're watching,
+/// the latest first, then the rest of the library's, working
 /// out the words of any episode that has none saved. Asking again while it's
 /// going starts it over with the new `first`. When Telly's own Hachidori
 /// couldn't be asked (it was starting, or installing dictionaries), it goes
@@ -830,6 +831,23 @@ pub fn start_shares(backend: &Arc<Backend>, first: Option<i64>) {
     });
 }
 
+/// How often the shares are brought up to date while Telly stays open, as
+/// well as when it starts and when the Library or a show's page opens.
+const SHARES_EVERY: Duration = Duration::from_secs(24 * 3600);
+
+/// Brings the shares up to date once a day for as long as Telly is open
+/// (start_shares: the shows you're watching first).
+pub fn start_daily_shares(backend: &Arc<Backend>) {
+    let backend = backend.clone();
+    std::thread::Builder::new()
+        .name("telly-shares-daily".into())
+        .spawn(move || loop {
+            std::thread::sleep(SHARES_EVERY);
+            start_shares(&backend, None);
+        })
+        .ok();
+}
+
 /// How much of an episode's words (`uses`, found in `lines`) are among `known_words`.
 fn share_of(lines: &[Line], uses: Vec<SavedUse>, cast: &HashSet<String>, known_words: &HashSet<String>) -> Share {
     let mut share = Share::default();
@@ -863,7 +881,8 @@ fn work_out_shares(backend: &Backend, first: Option<i64>) -> Result<()> {
     let stamp = known::stamp(backend);
     let scores = backend.db.word_scores()?;
     let mut shows = backend.db.shows()?;
-    shows.sort_by_key(|s| Some(s.id) != first);
+    // The show whose page is open, then those you're watching, the latest first, then the rest.
+    shows.sort_by_key(|s| (Some(s.id) != first, s.last_watched_at.is_none(), std::cmp::Reverse(s.last_watched_at)));
     // Why Hachidori couldn't work out an episode's words. The rest of this
     // pass then uses saved words only; the next (the Library and a show's
     // page each ask for one as they open) tries again.

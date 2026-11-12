@@ -482,6 +482,7 @@ impl Backend {
             backend.fill_covers();
             recommend::gather(&backend);
             premine::start_shares(&backend, None);
+            premine::start_daily_shares(&backend);
             names::start(backend.clone());
             anilist_list::start(backend.clone());
             search::start(backend.clone());

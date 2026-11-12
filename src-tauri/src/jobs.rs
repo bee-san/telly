@@ -1229,9 +1229,9 @@ fn keep_beside(backend: &Backend, episode: &Episode, own: &[jimaku::Local]) -> R
 }
 
 /// Works out the words of episodes given a file from beside their rip
-/// (`premine::prepare`). Hachidori takes about a minute over an episode's
-/// words, measured in the library, and thousands of episodes get their file
-/// in one pass: so the pass doesn't wait for it, and this does it after.
+/// (`premine::prepare`). That asks Hachidori about every word, a second or so
+/// an episode, and thousands of episodes get their file in one pass: so the
+/// pass doesn't wait for it, and this does it after.
 fn words_worker(backend: &Backend) {
     let mut seen = 0;
     loop {

@@ -37,7 +37,7 @@ use serde_json::{json, Map, Value};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Hachidori Relay's Yomitan API.
 const API: &str = "http://127.0.0.1:19633";
@@ -46,13 +46,18 @@ const API: &str = "http://127.0.0.1:19633";
 fn api_address() -> String {
     std::env::var("TELLY_YOMITAN_API").unwrap_or_else(|_| API.to_string())
 }
-/// Words asked of Hachidori at a time: each answer carries every dictionary's
-/// entries, and the relay waits 30 seconds at most for one.
+/// Words asked of the Hachidori in your browser at a time: each answer carries
+/// every dictionary's entries, and the relay waits 30 seconds at most for one.
 const LOOKUPS_PER_REQUEST: usize = 40;
+/// Words asked of Telly's own Hachidori at a time. Its answers carry only the
+/// best match of each (host.js termEntries), and its page has several lookups
+/// going at once, so a bigger batch keeps it busy.
+const OWN_LOOKUPS_PER_REQUEST: usize = 400;
 /// The subdeck of your card format's deck that premined cards go in.
 const SUBDECK: &str = "Premined";
 const NO_RELAY: &str = "Premining needs Anki open, with Hachidori Relay. Open Anki and try again.";
 const NO_OWN: &str = "Telly’s Hachidori isn’t running yet. Wait a moment, or use Restart Hachidori in Settings.";
+const INSTALLING: &str = "Telly’s Hachidori is still installing your dictionaries. Words are worked out once it has them all.";
 const NO_SHARING: &str = "Premining needs the Hachidori in your browser. Turn on sharing in it (Settings → Sharing) and try again.";
 
 /// What Hachidori shows for a word: its headword, its reading, and its rank in
@@ -362,13 +367,27 @@ fn candidates(text: &str) -> Result<Vec<Candidate>> {
 /// Telly's own, unless Telly is linked to the one in your browser, or a
 /// stand-in is set for testing.
 fn api(backend: &Backend, path: &str, body: Value) -> Result<Value> {
-    if std::env::var_os("TELLY_YOMITAN_API").is_none() && !backend.db.setting_bool("hachidori.link", false) {
+    if asks_own(backend) {
         if !backend.own_hachidori.answering() {
             return Err(anyhow!(NO_OWN));
+        }
+        // Words saved now would lack the dictionaries still to come, and stay that way.
+        if own_hachidori::installing(backend) {
+            return Err(anyhow!(INSTALLING));
         }
         return own_api(backend, path, body);
     }
     relay_api(path, body)
+}
+
+/// Whether premining asks Telly's own Hachidori, rather than the relay.
+fn asks_own(backend: &Backend) -> bool {
+    std::env::var_os("TELLY_YOMITAN_API").is_none() && !backend.db.setting_bool("hachidori.link", false)
+}
+
+/// Whether Telly's own Hachidori can be asked: its page is there and has every dictionary.
+fn own_ready(backend: &Backend) -> bool {
+    backend.own_hachidori.answering() && !own_hachidori::installing(backend)
 }
 
 /// The request as Hachidori's own API code takes it (its hd_api_* messages),
@@ -376,7 +395,8 @@ fn api(backend: &Backend, path: &str, body: Value) -> Result<Value> {
 fn own_api(backend: &Backend, path: &str, body: Value) -> Result<Value> {
     let ask = |request: Value| backend.own_hachidori.ask(request, Duration::from_secs(120));
     match path {
-        "/termEntries" => Ok(ask(json!({ "type": "hd_api_term_entries", "terms": body["term"] }))?["results"].take()),
+        // Only the best match of each, and only what term_of reads of it (host.js termEntries).
+        "/termEntries" => Ok(ask(json!({ "type": "telly_term_entries", "terms": body["term"] }))?["results"].take()),
         "/ankiCardFormats" => Ok(ask(json!({ "type": "hd_api_anki_card_formats" }))?["cardFormats"].take()),
         "/ankiFields" => ask(json!({
             "type": "hd_api_anki_fields",
@@ -439,16 +459,17 @@ fn rank_of(frequency: &Value) -> Option<i64> {
     digits.parse().ok()
 }
 
-/// Looks up the texts Telly hasn't asked Hachidori about yet.
-fn look_up(backend: &Backend, texts: &[String], step: &dyn Fn(f64)) -> Result<()> {
+/// Looks up the texts Telly hasn't asked Hachidori about yet, and says how many those were.
+fn look_up(backend: &Backend, texts: &[String], step: &dyn Fn(f64)) -> Result<usize> {
     let cache = &backend.premining.terms;
     let new: Vec<String> = {
         let known = cache.lock().map_err(|_| anyhow!("premining stopped"))?;
         let mut seen = HashSet::new();
         texts.iter().filter(|t| !known.contains_key(*t) && seen.insert((*t).clone())).cloned().collect()
     };
-    for (k, chunk) in new.chunks(LOOKUPS_PER_REQUEST).enumerate() {
-        step(k as f64 * LOOKUPS_PER_REQUEST as f64 / new.len().max(1) as f64);
+    let per_request = if asks_own(backend) { OWN_LOOKUPS_PER_REQUEST } else { LOOKUPS_PER_REQUEST };
+    for (k, chunk) in new.chunks(per_request).enumerate() {
+        step(k as f64 * per_request as f64 / new.len().max(1) as f64);
         let answer = api(backend, "/termEntries", json!({ "term": chunk }))?;
         let results = answer.as_array().cloned().unwrap_or_default();
         let mut known = cache.lock().map_err(|_| anyhow!("premining stopped"))?;
@@ -456,7 +477,7 @@ fn look_up(backend: &Backend, texts: &[String], step: &dyn Fn(f64)) -> Result<()
             known.insert(text.clone(), results.get(i).and_then(|r| term_of(text, r)));
         }
     }
-    Ok(())
+    Ok(new.len())
 }
 
 fn card_format(backend: &Backend) -> Result<CardFormat> {
@@ -557,6 +578,7 @@ fn episode_uses(backend: &Backend, episode_id: i64, lines: &[Line]) -> Result<Ve
     }
     let print = fingerprint(lines);
     let path = words_path(backend, episode_id);
+    let started = Instant::now();
     let mut found: Vec<(usize, Candidate)> = Vec::new();
     for (l, line) in lines.iter().enumerate() {
         for candidate in candidates(&line.text)? {
@@ -564,7 +586,15 @@ fn episode_uses(backend: &Backend, episode_id: i64, lines: &[Line]) -> Result<Ve
         }
     }
     let texts: Vec<String> = found.iter().flat_map(|(l, c)| c.texts(&lines[*l].text)).collect();
-    look_up(backend, &texts, &|_| {})?;
+    let read = started.elapsed();
+    let asked = look_up(backend, &texts, &|_| {})?;
+    eprintln!(
+        "words: episode {episode_id}: {} lines, {} lookups, {asked} asked of Hachidori: {:.2} s ({:.0} ms reading the lines)",
+        lines.len(),
+        texts.len(),
+        started.elapsed().as_secs_f64(),
+        read.as_secs_f64() * 1000.0
+    );
     let terms = backend.premining.terms.lock().map_err(|_| anyhow!("premining stopped"))?;
     let mut uses = Vec::new();
     for (l, candidate) in found {
@@ -725,8 +755,11 @@ pub fn shares(backend: &Backend) -> (HashMap<i64, Share>, String) {
 
 /// Brings every episode's share of known words up to date, in the background:
 /// Telly's copy of Anki's words first, then the shares of `first`'s episodes (a
-/// show's page asks when it opens), then the rest of the library's. Asking
-/// again while it's going starts it over with the new `first`.
+/// show's page asks when it opens), then the rest of the library's, working
+/// out the words of any episode that has none saved. Asking again while it's
+/// going starts it over with the new `first`. When Telly's own Hachidori
+/// couldn't be asked (it was starting, or installing dictionaries), it goes
+/// again once it can be.
 pub fn start_shares(backend: &Arc<Backend>, first: Option<i64>) {
     {
         let Ok(mut shares) = backend.premining.shares.lock() else { return };
@@ -745,8 +778,18 @@ pub fn start_shares(backend: &Arc<Backend>, first: Option<i64>) {
         });
         let Some(first) = next else { break };
         let error = work_out_shares(&worker, first).err().map(|e| format!("{e:#}")).unwrap_or_default();
+        let wait = !error.is_empty() && asks_own(&worker) && !own_ready(&worker);
         if let Ok(mut shares) = worker.premining.shares.lock() {
             shares.error = error;
+        }
+        if wait {
+            let asked = |w: &Backend| w.premining.shares.lock().is_ok_and(|s| s.wanted.is_some());
+            while !own_ready(&worker) && !asked(&worker) {
+                std::thread::sleep(Duration::from_secs(2));
+            }
+            if let Ok(mut shares) = worker.premining.shares.lock() {
+                shares.wanted.get_or_insert(first);
+            }
         }
     });
 }
@@ -772,6 +815,10 @@ fn work_out_shares(backend: &Backend, first: Option<i64>) -> Result<()> {
     let scores = backend.db.word_scores()?;
     let mut shows = backend.db.shows()?;
     shows.sort_by_key(|s| Some(s.id) != first);
+    // Why Hachidori couldn't work out an episode's words. The rest of this
+    // pass then uses saved words only; the next (the Library and a show's
+    // page each ask for one as they open) tries again.
+    let mut unasked: Option<anyhow::Error> = None;
     for show in shows {
         let cast: HashSet<String> = names::show_names(backend, &show).into_iter().map(|n| n.term).collect();
         for e in backend.db.episodes(show.id)? {
@@ -786,21 +833,26 @@ fn work_out_shares(backend: &Backend, first: Option<i64>) -> Result<()> {
             if lines.is_empty() {
                 continue;
             }
-            // The show whose page is open has its words worked out when they aren't saved;
-            // the rest of the library's are when their subtitles sync.
-            let uses = if Some(show.id) == first {
-                episode_uses(backend, e.id, &lines)?
-            } else {
-                match saved_uses(backend, e.id, &lines) {
-                    Some(uses) => uses,
-                    None => continue,
-                }
+            // Words not saved yet (subtitles that synced while Hachidori wasn't
+            // there to ask) are worked out here: the open show's first, then the
+            // rest of the library's, so every show has its share.
+            let uses = match saved_uses(backend, e.id, &lines) {
+                Some(uses) => uses,
+                None if unasked.is_some() => continue,
+                None => match episode_uses(backend, e.id, &lines) {
+                    Ok(uses) => uses,
+                    Err(error) => {
+                        unasked = Some(error);
+                        continue;
+                    }
+                },
             };
             let share = share_of(&lines, uses, &cast, &known_words);
             backend.db.set_word_score(e.id, share.uses as i64, share.known as i64, &stamp)?;
         }
     }
-    asked.map(|_| ())
+    asked?;
+    unasked.map_or(Ok(()), Err)
 }
 
 // ---- Cards ----
@@ -1093,6 +1145,75 @@ pub fn start_cards(backend: &Arc<Backend>, words: Vec<Word>) -> Result<Status> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn words_that_waited_for_telly_s_hachidori_are_worked_out_once_it_answers() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let dir = std::env::temp_dir().join(format!("telly-shares-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Arc::new(Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap());
+        // No dictionaries to install, and an Anki that isn't there.
+        std::fs::create_dir_all(dir.join("dictionaries")).unwrap();
+        backend.db.set_setting(own_hachidori::FOLDER, &json!(dir.join("dictionaries").to_string_lossy())).unwrap();
+        backend.db.set_setting("anki.url", &json!("http://127.0.0.1:9")).unwrap();
+        backend.db.set_setting("known.field", &json!("Word")).unwrap();
+        let episodes = (1..=2).map(|number| crate::db::NewEpisode { number, path: format!("{number}.mkv"), size: 1, duration: 1400.0 }).collect();
+        let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let ids: Vec<i64> = backend.db.episodes(show).unwrap().iter().map(|e| e.id).collect();
+        for id in &ids {
+            let line = Line { start: 0.0, end: 1.0, text: "腹が減った".into(), ruby: vec![], speaker: String::new(), sign: false };
+            jobs::write_lines(&backend, *id, &[line]).unwrap();
+        }
+        let scored = || {
+            let scores = backend.db.word_scores().unwrap();
+            ids.iter().filter(|id| scores.contains_key(id)).count()
+        };
+        let waiting = |what: &dyn Fn() -> bool| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(20);
+            while !what() && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+
+        // The Library opens before Telly's Hachidori answers: nothing to count
+        // yet, and the pass says why (Anki first, which isn't there either).
+        start_shares(&backend, None);
+        waiting(&|| !shares(&backend).1.is_empty());
+        assert!(shares(&backend).1.contains("Anki isn’t reachable"), "{}", shares(&backend).1);
+        assert_eq!(scored(), 0);
+
+        // Its page comes, and knows every word asked as itself.
+        let stop = Arc::new(AtomicBool::new(false));
+        let page = {
+            let (backend, stop) = (backend.clone(), stop.clone());
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let next = backend.own_hachidori.next_request(Duration::from_millis(100));
+                    let Some(id) = next["id"].as_u64() else { continue };
+                    assert_eq!(next["request"]["type"], "telly_term_entries");
+                    let results: Vec<Value> = next["request"]["terms"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|t| {
+                            let t = t.as_str().unwrap();
+                            json!({ "originalTextLength": t.encode_utf16().count(), "dictionaryEntries": [{ "headwords": [{ "term": t, "reading": "" }], "frequencies": [] }] })
+                        })
+                        .collect();
+                    let body = json!({ "ok": true, "result": { "results": results } }).to_string();
+                    backend.own_hachidori.answer(&format!("id={id}"), body.as_bytes()).unwrap();
+                }
+            })
+        };
+        waiting(&|| scored() == ids.len());
+        stop.store(true, Ordering::Relaxed);
+        page.join().unwrap();
+        assert_eq!(scored(), ids.len());
+        // 腹 and 減る: が and た aren't words.
+        assert!(shares(&backend).0.values().all(|s| s.uses == 2), "{:?}", shares(&backend).0);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     /// The words in a line, with a dictionary that knows only the words alone.
     fn bases(text: &str) -> Vec<String> {

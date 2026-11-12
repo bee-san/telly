@@ -11,7 +11,8 @@
 //!   (例文マイニング), tagged Telly and the show being watched (Fairy_Tail),
 //!   with Hachidori's own field mapping for Kiku, so a card can be added the moment a line is hovered.
 //! - Premining's questions: the Yomitan API requests Hachidori Relay would
-//!   send a sharing Hachidori, answered by Hachidori's own API code in the page.
+//!   send a sharing Hachidori, answered by Hachidori's own API code in the page,
+//!   but for its lookups, which the page answers with only what Telly reads.
 //!
 //! None of this happens while it's linked to the Hachidori in a browser, which
 //! then has the dictionaries and the Anki setup.
@@ -136,6 +137,16 @@ pub fn next_dictionary(backend: &Backend) -> Value {
         }
         None => json!({}),
     }
+}
+
+/// Whether a dictionary in the folder is still to be installed (or is being
+/// installed), so a lookup now could miss its words. One that failed to
+/// install isn't waited for.
+pub fn installing(backend: &Backend) -> bool {
+    let Some(dir) = folder(backend) else { return false };
+    let done = installed(backend);
+    let failed = lock(&backend.own_hachidori).failed.clone();
+    archives(&dir).iter().any(|(name, _, revision)| done.get(name).and_then(Value::as_str) != Some(revision) && failed.get(name) != Some(revision))
 }
 
 /// A dictionary file for the page to upload.

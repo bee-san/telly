@@ -29,8 +29,9 @@
 //    note type and deck of the show being watched, with Hachidori's own Kiku
 //    mapping; pronunciation defaults to Yomitan Audio Fast, with the Local
 //    Audio Server Anki add-on as a fallback; and it answers premining's
-//    questions with Hachidori's own API code (api-host.js), which Hachidori
-//    Relay would otherwise ask a sharing Hachidori.
+//    questions, which Hachidori Relay would otherwise ask a sharing
+//    Hachidori: its lookups itself (termEntries), the rest with Hachidori's
+//    own API code (api-host.js).
 //
 // Telly watches this page's title for its state:
 // "telly-hachidori:" + JSON {state, detail, host}, where state is one of
@@ -48,6 +49,8 @@ const SHARING = "hachidori-sharing";
 const PREFIX = "telly-hachidori:";
 const ENGINE = "offscreen.html";
 const POLL_MS = 15_000;
+// Premining's lookups in flight at once.
+const LOOKUPS_AT_ONCE = 16;
 // The Anki setup follows the show being watched, so it's checked more often.
 const ANKI_POLL_MS = 2_000;
 // Hachidori's storage keys and message targets (background-core.js, offscreen.js).
@@ -347,24 +350,68 @@ async function engineRequest(target, fields, direct) {
   return reply;
 }
 
+/** This Hachidori's dictionaries, in its order, as its Japanese profile has them. */
+async function readDictionaries() {
+  const state = (await chrome.storage.local.get(DICTIONARY_STATE_KEY))[DICTIONARY_STATE_KEY] ?? null;
+  const o = readerOptions();
+  if (!o.hasDictionaryProfiles(state)) return state?.dictionaries ?? [];
+  return o.projectDictionaryState(state, o.JAPANESE_PROFILE_ID)?.dictionaries ?? [];
+}
+
 let apiHost;
 function api() {
   apiHost ??= createApiHost({
     version: chrome.runtime.getManifest().version,
     engine: (fields) => engineRequest(ENGINE_TARGET, fields, false),
     render: (fields) => engineRequest(RENDER_TARGET, fields, true),
-    readDictionaries: async () => {
-      const state = (await chrome.storage.local.get(DICTIONARY_STATE_KEY))[DICTIONARY_STATE_KEY] ?? null;
-      const o = readerOptions();
-      if (!o.hasDictionaryProfiles(state)) return state?.dictionaries ?? [];
-      return o.projectDictionaryState(state, o.JAPANESE_PROFILE_ID)?.dictionaries ?? [];
-    },
+    readDictionaries,
     readAudioSources: async () => japaneseOptions(await storedOptions()).audioSources.filter((source) => source.enabled),
     readAnkiTemplates: async () => japaneseOptions(await storedOptions()).anki.templates,
     readSmallerAnkiCards: async () => japaneseOptions(await storedOptions()).smallerAnkiCards,
     readCompactGlossaries: async () => japaneseOptions(await storedOptions()).glossaryLayoutMode === "compact-popup-anki",
   });
   return apiHost;
+}
+
+/**
+ * Premining's lookups (telly_term_entries): for each text, Hachidori's best
+ * match, the first /termEntries gives (api-host.js termEntry), with only what
+ * Telly reads of it: its length, headword, reading and frequencies. The rest
+ * (every dictionary's definitions of up to 32 matches) never leaves the page.
+ * The engine still finds its usual 32: asked for one, it can rank two that tie
+ * the other way round from the popup. Several lookups go at once, so the
+ * engine isn't left waiting on the messages between them.
+ */
+async function termEntries(terms) {
+  const dictionaries = await readDictionaries();
+  const titles = dictionaries.map((item) => item.title);
+  const index = (title) => Math.max(0, titles.indexOf(title));
+  const mode = (title) => dictionaries.find((item) => item.title === title)?.frequencyMode || null;
+  const entry = async (text) => {
+    const reply = text === "" ? null : await engineRequest(ENGINE_TARGET, { type: "hd_lookup", text }, false);
+    const best = reply?.results?.[0];
+    if (!best) return { originalTextLength: 0, dictionaryEntries: [] };
+    const frequencies = best.term.frequencies.flatMap((group) => group.frequencies.map((value) => ({
+      dictionaryIndex: index(group.dictionary),
+      frequencyMode: mode(group.dictionary),
+      frequency: value.value,
+      displayValue: value.displayValue || null,
+    })));
+    return {
+      originalTextLength: best.matched.length,
+      dictionaryEntries: [{ headwords: [{ term: best.term.expression, reading: best.term.reading }], frequencies }],
+    };
+  };
+  const results = new Array(terms.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < terms.length) {
+      const i = next++;
+      results[i] = await entry(terms[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: LOOKUPS_AT_ONCE }, worker));
+  return { results };
 }
 
 /** Answers premining's questions for as long as the page is open (Telly holds each ask 20 s). */
@@ -381,7 +428,8 @@ async function serveApi() {
       const client = await status().catch(() => null);
       if (client?.linked) throw new Error("Telly's Hachidori is linked to your browser's, so premining asks that one");
       await engineReady();
-      answer = { ok: true, result: await api()(next.request) };
+      const request = next.request;
+      answer = { ok: true, result: request?.type === "telly_term_entries" ? await termEntries(request.terms) : await api()(request) };
     } catch (error) {
       answer = { ok: false, error: errorText(error) };
     }

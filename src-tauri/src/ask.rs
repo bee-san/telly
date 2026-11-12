@@ -538,6 +538,8 @@ fn kind(at: Option<f64>) -> &'static str {
 fn recap_view(backend: &Backend, show_id: i64, source: &Source, recap: &Recap) -> Result<Value> {
     let all = backend.db.episodes(show_id)?;
     let mut clips = Vec::new();
+    // The clip before: its episode, start and end.
+    let mut before: Option<(i64, f64, f64)> = None;
     for pick in &recap.moments {
         let Some(e) = all.iter().find(|e| e.number == pick.episode) else { continue };
         // An episode this recap read is played as far as it read it.
@@ -552,9 +554,21 @@ fn recap_view(backend: &Backend, show_id: i64, source: &Source, recap: &Recap) -
         // Played where its lines are heard: with the episode's nudge, as the player shows them.
         let nudge = e.subs_nudge_ms as f64 / 1000.0;
         for m in moments(lines, &[pick.line]) {
+            let (mut start, end) = ((m.start + nudge).max(0.0), m.end + nudge);
+            // Two lines picked close together: the second's clip carries on from where the first's
+            // ended, rather than playing its lines again, and goes if the first played all of it.
+            if let Some((episode, from, to)) = before {
+                if episode == e.id && start < to && end > from {
+                    if end <= to {
+                        continue;
+                    }
+                    start = to;
+                }
+            }
+            before = Some((e.id, start, end));
             clips.push(json!({
-                "start": (m.start + nudge).max(0.0),
-                "end": m.end + nudge,
+                "start": start,
+                "end": end,
                 "lines": m.lines,
                 "caption": pick.caption,
                 "episodeId": e.id,
@@ -779,6 +793,27 @@ mod tests {
         assert_eq!((tenths(&clip["start"]), tenths(&clip["end"])), (1314, 1375), "{clip}");
         // Its lines are as the file has them, and the player shows them nudged, as in the episode.
         assert_eq!((clip["lines"][0]["start"].as_f64(), clip["nudgeMs"].as_i64()), (Some(130.0), Some(2000)));
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_moment_that_runs_into_the_one_before_carries_on_from_it_instead_of_playing_its_lines_again() {
+        let lines: Vec<Line> = (0..30).map(|i| line(100.0 + i as f64 * 3.0, 102.0 + i as f64 * 3.0, &format!("台詞{i}"))).collect();
+        let (backend, episodes, dir) = library("overlap", 2, &lines);
+        // Lines 10 and 11 are a question and its answer, 3 s apart: line 10's moment already plays line 11.
+        let pick = |line, caption: &str| Pick { episode: 1, line, caption: caption.into() };
+        let recap = Recap { arcs: Vec::new(), last: "Roman runs.".into(), moments: vec![pick(10, "Asked."), pick(11, "Answered."), pick(11, "Again."), pick(25, "Later.")] };
+        keep(&backend, &episodes[1], &recap);
+        let view = super::recap(&backend, episodes[1].id, false, None).unwrap();
+        let clips: Vec<(i64, i64, &str)> = view["moments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| ((c["start"].as_f64().unwrap() * 10.0).round() as i64, (c["end"].as_f64().unwrap() * 10.0).round() as i64, c["caption"].as_str().unwrap()))
+            .collect();
+        // Line 11's moment starts where line 10's ended; the same moment again, wholly played already, goes.
+        assert_eq!(clips, vec![(1294, 1355, "Asked."), (1355, 1385, "Answered."), (1744, 1805, "Later.")]);
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

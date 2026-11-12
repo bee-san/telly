@@ -1206,6 +1206,9 @@ pub struct Tried {
     pub offset_ms: i64,
     #[serde(default)]
     pub error: String,
+    /// A file of yours beside the rip: used as it is, never synced, so its score says nothing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub beside: bool,
 }
 
 pub fn lines_path(backend: &Backend, episode_id: i64) -> PathBuf {
@@ -1563,9 +1566,13 @@ const BY_HAND: &str = "chosen by hand";
 /// (see `beside`). Nothing of the rip is read, and no sync moves the file: you
 /// put it there. The others stay on the episode's page to switch to.
 fn keep_beside(backend: &Backend, episode: &Episode, own: &[jimaku::Local]) -> Result<()> {
-    let file = &own[0];
+    keep_beside_file(backend, episode, &own[0], own)
+}
+
+/// Uses `file`, one of the Japanese subtitle files beside the rip (`own`), as it is.
+fn keep_beside_file(backend: &Backend, episode: &Episode, file: &jimaku::Local, own: &[jimaku::Local]) -> Result<()> {
     write_lines(backend, episode.id, &japanese_lines(&file.path, &file.name)?)?;
-    let tried: Vec<Tried> = own.iter().map(|f| Tried { name: f.name.clone(), path: f.path.to_string_lossy().into_owned(), score: 0.0, offset_ms: 0, error: String::new() }).collect();
+    let tried: Vec<Tried> = own.iter().map(|f| Tried { name: f.name.clone(), path: f.path.to_string_lossy().into_owned(), score: 0.0, offset_ms: 0, error: String::new(), beside: true }).collect();
     crate::util::write_whole(&tried_path(backend, episode.id), serde_json::to_vec(&tried)?)?;
     backend.db.set_subs(episode.id, "synced", &format!("beside the rip · {AS_IT_IS}"), &file.name, None, Some(0))?;
     backend.jobs.words.lock().unwrap_or_else(|e| e.into_inner()).push_back(episode.id);
@@ -1732,12 +1739,12 @@ fn keep_own(backend: &Backend, episode: &Episode, own: &[jimaku::Local], timing:
         let path = file.path.to_string_lossy().into_owned();
         match sync_file(&file.path, &file.name, timing, video) {
             Ok((synced, fit)) => {
-                tried.push(Tried { name: file.name.clone(), path, score: synced.score, offset_ms: synced.offset_ms, error: String::new() });
+                tried.push(Tried { name: file.name.clone(), path, score: synced.score, offset_ms: synced.offset_ms, error: String::new(), beside: false });
                 if in_sync(&synced) && best.as_ref().is_none_or(|(_, _, b)| matching::better(&fit, b)) {
                     best = Some((file, synced, fit));
                 }
             }
-            Err(e) => tried.push(Tried { name: file.name.clone(), path, score: 0.0, offset_ms: 0, error: format!("{e:#}") }),
+            Err(e) => tried.push(Tried { name: file.name.clone(), path, score: 0.0, offset_ms: 0, error: format!("{e:#}"), beside: false }),
         }
     }
     let Some((file, synced, _)) = best else { return Ok(false) };
@@ -1843,13 +1850,13 @@ pub fn pick_subtitles(files: &[jimaku::Local], pool: &[jimaku::Local], timing: &
     let mut synced_files: Vec<(jimaku::Local, f64)> = Vec::new();
     let mut consider = |file: &jimaku::Local, tried: &mut Vec<Tried>, best: &mut Option<Pick>| match sync_file(&file.path, &file.name, timing, video) {
         Ok((synced, fit)) => {
-            tried.push(Tried { name: file.name.clone(), path: file.path.to_string_lossy().into_owned(), score: synced.score, offset_ms: synced.offset_ms, error: String::new() });
+            tried.push(Tried { name: file.name.clone(), path: file.path.to_string_lossy().into_owned(), score: synced.score, offset_ms: synced.offset_ms, error: String::new(), beside: false });
             synced_files.push((file.clone(), synced.ratio));
             if best.as_ref().is_none_or(|b| matching::better(&fit, &b.fit)) {
                 *best = Some(Pick { synced, fit, name: file.name.clone(), filed_as: file.episode });
             }
         }
-        Err(e) => tried.push(Tried { name: file.name.clone(), path: file.path.to_string_lossy().into_owned(), score: 0.0, offset_ms: 0, error: format!("{e:#}") }),
+        Err(e) => tried.push(Tried { name: file.name.clone(), path: file.path.to_string_lossy().into_owned(), score: 0.0, offset_ms: 0, error: format!("{e:#}"), beside: false }),
     };
     let first: Vec<&jimaku::Local> = files.iter().take(MAX_TRIES).collect();
     for (i, file) in first.iter().enumerate() {
@@ -2145,15 +2152,21 @@ fn describe(s: &sync::Synced) -> String {
 }
 
 /// Uses a subtitle file you picked (or one Telly tried before) for an episode.
-pub fn use_file(backend: &Backend, episode: &Episode, path: &Path, name: &str) -> Result<sync::Synced> {
+/// One of the Japanese files beside the rip is used as it is, as the first
+/// of them was: nothing of the rip is read, and no sync moves it.
+pub fn use_file(backend: &Backend, episode: &Episode, path: &Path, name: &str) -> Result<()> {
+    let own = beside(episode);
+    if let Some(file) = own.iter().find(|f| f.path == path) {
+        return keep_beside_file(backend, episode, file, &own);
+    }
+    // Read before the rip is, which can take minutes: a file that can't be read says so at once.
+    let lines = subs::parse(name, &std::fs::read(path)?)?;
     let tools = backend.tools();
     let (Some(ffmpeg), Some(ffprobe)) = (tools.ffmpeg, tools.ffprobe) else {
         return Err(anyhow!("Telly needs ffmpeg for this. Choose it in Settings."));
     };
     let probe = media::probe(&ffprobe, Path::new(&episode.path))?;
     let timing = timing_of(&ffmpeg, &probe, episode)?;
-    let bytes = std::fs::read(path)?;
-    let lines = subs::parse(name, &bytes)?;
     let mut synced = sync_to(&lines, &timing);
     if synced.score < GOOD_SYNC {
         if let Some(cut) = sync_to_in_pieces(&lines, synced.ratio, &timing) {
@@ -2165,7 +2178,7 @@ pub fn use_file(backend: &Backend, episode: &Episode, path: &Path, name: &str) -
     let detail = format!("{} · matched to {} · {BY_HAND}", describe(&synced), timing.against);
     backend.db.set_subs(episode.id, state, &detail, name, Some(synced.score), Some(synced.offset_ms))?;
     crate::premine::prepare(backend, episode.id);
-    Ok(synced)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2392,9 +2405,11 @@ mod tests {
         std::fs::create_dir_all(&rips).unwrap();
         let japanese = "1\n00:00:01,000 --> 00:00:03,000\nそこは魔法の世界。\n\n2\n00:00:04,000 --> 00:00:06,000\n彼らは魔道士と呼ばれる。\n";
         // Episode 1 has a file of its own, episode 2 had one but Telly kept nothing, episode 3 was picked by hand, episode 4 has none.
-        for name in ["Show - 01.ja.srt", "Show - 01.srt", "Show - 02.ja.srt", "Show - 03.ja.srt"] {
+        for name in ["Show - 01.ja.srt", "Show - 02.ja.srt", "Show - 03.ja.srt"] {
             std::fs::write(rips.join(name), japanese).unwrap();
         }
+        // The other file of episode 1 is timed a little later.
+        std::fs::write(rips.join("Show - 01.srt"), japanese.replace("00:00:01,000", "00:00:01,500").replace("00:00:04,000", "00:00:04,500")).unwrap();
         let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
         let episodes = (1..=4).map(|number| crate::db::NewEpisode { number, path: rips.join(format!("Show - 0{number}.mkv")).to_string_lossy().into_owned(), size: 1, duration: 1400.0 }).collect();
         let show = backend.db.add_show(&crate::db::NewShow { folder: rips.to_string_lossy().into_owned(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
@@ -2414,6 +2429,17 @@ mod tests {
         assert_eq!(starts, [1.0, 4.0]);
         let others: Vec<String> = read_tried(&backend, ids[0]).into_iter().map(|t| t.name).collect();
         assert_eq!(others, ["Show - 01.ja.srt", "Show - 01.srt"]);
+        // Switching to the other is using it as it is too: no rip is read (there's none to read), nothing moves it.
+        let first = backend.db.episode(ids[0]).unwrap().unwrap();
+        use_file(&backend, &first, &rips.join("Show - 01.srt"), "Show - 01.srt").unwrap();
+        let after = backend.db.episode(ids[0]).unwrap().unwrap();
+        assert_eq!((after.subs_state.as_str(), after.subs_file.as_str(), after.subs_detail.as_str()), ("synced", "Show - 01.srt", "beside the rip · as it is"));
+        let starts: Vec<f64> = read_lines(&backend, ids[0]).iter().map(|l| l.start).collect();
+        assert_eq!(starts, [1.5, 4.5]);
+        // The list to switch between stays as it was, each file marked as yours.
+        let tried = read_tried(&backend, ids[0]);
+        assert_eq!(tried.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["Show - 01.ja.srt", "Show - 01.srt"]);
+        assert!(tried.iter().all(|t| t.beside));
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

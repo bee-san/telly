@@ -215,6 +215,8 @@ export interface Tried {
   score: number;
   offsetMs: number;
   error: string;
+  /** A file of yours beside the rip: used as it is, never synced, so it has no score. */
+  beside?: boolean;
 }
 
 export interface EpisodeLite {

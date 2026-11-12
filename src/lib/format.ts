@@ -53,11 +53,17 @@ function gettingSub(s: ShowCard): string {
   return getting;
 }
 
+/** Whether an episode's subtitles are a file of yours beside the rip, used as it is (nothing synced it, so it has no score). */
+export function ownFile(detail: string): boolean {
+  return detail.startsWith("beside the rip");
+}
+
 /** `file` is who made machine-made subtitles; `maker` is who would make them now. */
-export function subsLabel(state: string, score: number | null, file: string, maker: string): { text: string; tone: "ok" | "warn" | "wait" | "bad" | "" } {
+export function subsLabel(state: string, score: number | null, file: string, detail: string, maker: string): { text: string; tone: "ok" | "warn" | "wait" | "bad" | "" } {
   switch (state) {
     case "synced":
-      return score === null ? { text: `Made by ${file}`, tone: "ok" } : { text: `Synced · ${Math.round(score * 100)}%`, tone: "ok" };
+      if (score !== null) return { text: `Synced · ${Math.round(score * 100)}%`, tone: "ok" };
+      return ownFile(detail) ? { text: "Your file", tone: "ok" } : { text: `Made by ${file}`, tone: "ok" };
     case "check":
       return { text: `Timing unsure · ${Math.round((score ?? 0) * 100)}%`, tone: "warn" };
     case "working":
@@ -95,7 +101,7 @@ export function subsHelp(state: string, detail: string, file: string, maker: str
   const what = [file, detail].filter(Boolean).join(" · ");
   switch (state) {
     case "synced":
-      return `Synced: the lines fit this video. ${what}`;
+      return ownFile(detail) ? `Your subtitle file beside the rip, used as it is: Telly doesn’t move it. ${what}` : `Synced: the lines fit this video. ${what}`;
     case "check":
       return `Telly found subtitles but isn’t sure they’re in time with this video. Watch a little, and use Sync ▾ in the player if they’re off. ${what}`;
     case "none":

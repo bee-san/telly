@@ -5,7 +5,7 @@
   import Icon from "$lib/Icon.svelte";
   import { call, errorText, mediaUrl, setFullscreen, setWindowTitle, type AskProgress, type CardEvent, type CastName, type ClaudeStatus, type Line, type PlayerView, type Recap, type SeekSheet } from "$lib/api";
   import { arrange, createRenderer, drawTiles, filters, toggle } from "$lib/filters";
-  import { clock } from "$lib/format";
+  import { clock, ownFile } from "$lib/format";
   import { app } from "$lib/state.svelte";
   import { toast, toasts } from "$lib/toast-store.svelte";
   import { pickAudio } from "$lib/video";
@@ -615,7 +615,8 @@
       const v = await call<PlayerView>("useSubtitle", { id: view.episode.id, path, name });
       view.lines = v.lines;
       view.episode = v.episode;
-      toast({ key: "resync", state: "done", title: "Subtitles changed", text: `${name} · ${Math.round((v.episode.subsScore ?? 0) * 100)}%` });
+      const how = v.episode.subsScore === null ? "as it is" : `${Math.round(v.episode.subsScore * 100)}%`;
+      toast({ key: "resync", state: "done", title: "Subtitles changed", text: `${name} · ${how}` });
     } catch (e) {
       toast({ key: "resync", state: "failed", title: "Couldn’t use that file", text: errorText(e) });
     }
@@ -1258,8 +1259,9 @@
   const syncNote = $derived.by(() => {
     const e = view?.episode;
     if (!e) return "";
-    // Machine-made subtitles have no sync score, and their file is who made them.
-    if (e.subsState === "synced" && e.subsScore === null) return `Subtitles made by ${e.subsFile}`;
+    // A file of yours beside the rip and machine-made subtitles have no sync
+    // score; the machine-made ones' file is who made them.
+    if (e.subsState === "synced" && e.subsScore === null) return ownFile(e.subsDetail) ? "Your subtitle file, as it is" : `Subtitles made by ${e.subsFile}`;
     if (e.subsState === "synced") return `Subtitles synced · ${Math.round((e.subsScore ?? 0) * 100)}%`;
     if (e.subsState === "check") return `Subtitle timing unsure · ${Math.round((e.subsScore ?? 0) * 100)}%`;
     if (e.subsState === "pending" || e.subsState === "working") return "Finding subtitles…";
@@ -1413,7 +1415,7 @@
               <span class="sm-h">Try another file</span>
               {#each view.tried as f (f.path)}
                 <button type="button" class="sm-file" class:on={f.name === view.episode.subsFile} title={f.name} onclick={() => useFile(f.path, f.name)} disabled={!!f.error}>
-                  <span>{f.name}</span><small>{f.error ? "unreadable" : `${Math.round(f.score * 100)}%`}</small>
+                  <span>{f.name}</span><small>{f.error ? "unreadable" : f.beside ? "as it is" : `${Math.round(f.score * 100)}%`}</small>
                 </button>
               {/each}
             {/if}

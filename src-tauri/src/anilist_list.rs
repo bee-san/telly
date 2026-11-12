@@ -132,7 +132,7 @@ pub(crate) fn place(show: &Show, episodes: &[Episode], episode: &Episode, group_
     let listing: Vec<(i64, String)> = episodes.iter().map(|e| (e.number, e.path.clone())).collect();
     let groups = matching::groups(&show.folder, &listing);
     if groups.len() <= 1 {
-        return Ok(Some((own, episode.number)));
+        return Ok(Some((own, from_one(show.anilist_episodes, &listing, episode.number))));
     }
     let group = matching::group_of(&show.folder, &episode.path);
     let first = listing.iter().filter(|(_, p)| matching::group_of(&show.folder, p) == group).map(|(n, _)| *n).min().unwrap_or(episode.number);
@@ -142,6 +142,19 @@ pub(crate) fn place(show: &Show, episodes: &[Episode], episode: &Episode, group_
     }
     let count = groups.iter().find(|(g, _)| *g == group).map_or(0, |(_, c)| *c);
     Ok(group_entry(&group, count)?.map(|entry| (entry, number)))
+}
+
+/// An episode's number in a show's one entry. Files that go on from an
+/// earlier season's numbers (Spy x Family 13–25, matched to the 13 episodes of
+/// Part 2) are numbered from 1 there, when that's what makes them fit:
+/// otherwise the first would be logged as the last, and the season completed.
+fn from_one(entry_episodes: Option<i64>, listing: &[(i64, String)], number: i64) -> i64 {
+    let first = listing.iter().map(|(n, _)| *n).min().unwrap_or(number);
+    let last = listing.iter().map(|(n, _)| *n).max().unwrap_or(number);
+    match entry_episodes {
+        Some(count) if first > 1 && last > count && last - (first - 1) <= count => number - (first - 1),
+        _ => number,
+    }
 }
 
 /// A later season folder's own AniList entry, worked out once and kept.
@@ -224,6 +237,24 @@ mod tests {
         assert_eq!(found.unwrap(), Some((20626, 2)));
         // A folder AniList isn't sure about logs nothing.
         assert_eq!(place(&s, &seasons, &seasons[2], |_, _| Ok(None)).unwrap(), None);
+    }
+
+    #[test]
+    fn files_numbered_on_from_the_last_season_log_from_one() {
+        // Spy x Family 13–25 in one folder, matched to the 13 episodes of Part 2.
+        let s = Show { anilist_id: Some(158927), anilist_episodes: Some(13), ..show() };
+        let files: Vec<Episode> = (13..=25).map(|n| ep(n, &format!("Spy x Family - {n}.mkv"))).collect();
+        let none = |_: &str, _| panic!("one folder needs no search");
+        assert_eq!(place(&s, &files, &files[0], none).unwrap(), Some((158927, 1)));
+        assert_eq!(place(&s, &files, &files[12], none).unwrap(), Some((158927, 13)));
+        // Numbers that already fit, or a show AniList hasn't counted, stay as they are.
+        let late: Vec<Episode> = (12..=13).map(|n| ep(n, &format!("Show - {n}.mkv"))).collect();
+        assert_eq!(place(&s, &late, &late[1], none).unwrap(), Some((158927, 13)));
+        let airing = Show { anilist_episodes: None, ..s.clone() };
+        assert_eq!(place(&airing, &files, &files[0], none).unwrap(), Some((158927, 13)));
+        // Two cours in one folder against the first's 13 episodes: the second's don't fit either way.
+        let both: Vec<Episode> = (1..=25).map(|n| ep(n, &format!("Spy x Family - {n}.mkv"))).collect();
+        assert_eq!(place(&s, &both, &both[13], none).unwrap(), Some((158927, 14)));
     }
 
     #[test]

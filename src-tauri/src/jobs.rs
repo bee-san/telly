@@ -64,36 +64,92 @@ pub struct Task {
     pub progress: f64,
 }
 
-/// Turns at something only one worker may use at a time, taken in the order
-/// they were asked for. A plain lock goes to any of those waiting, so the
-/// episode that matters most could wait longest.
+/// Where an episode stands in the order work goes to episodes (see `pick`),
+/// the lowest first: its bucket there, its show's rank, its number.
+type Place = (u8, usize, i64);
+
+/// Turns at reading a drive. A turn that ends goes to the episode waiting
+/// that comes first in the order work goes to episodes (see `pick`), not to
+/// the one that asked first: three workers find subtitles at once, and the
+/// next episode's could wait behind the other two's reads. Measured on 5
+/// episodes of Cyberpunk: Edgerunners 2 synced to Jimaku's files, read one at
+/// a time on a busy laptop: episode 1's rip was read first in 3 runs of 3
+/// (its subtitles in 6.0, 7.0 and 23.4 s), where with turns in the order
+/// asked it was read second or third in 5 runs of 7 (8.5, 31.2 and 51.6 s).
 #[derive(Default)]
 struct Turns {
-    /// How many turns have been asked for, and how many have ended.
-    counts: Mutex<(u64, u64)>,
-    ended: Condvar,
+    queue: Mutex<Queue>,
+    changed: Condvar,
+}
+
+#[derive(Default)]
+struct Queue {
+    reading: bool,
+    /// The episodes waiting for a turn or about to ask for one (see
+    /// `Waiting`), by place, then in the order they came.
+    waiting: std::collections::BTreeSet<(Place, u64)>,
+    came: u64,
+}
+
+/// An episode in the queue for a drive's turns: until it takes its turn, or
+/// this is dropped, no episode after it starts reading. A worker joins the
+/// queue as it takes an episode, before the few milliseconds' work (ffprobe)
+/// that comes before its read, so that a later episode's worker, quicker to
+/// that point, doesn't read first.
+struct Waiting<'a> {
+    turns: &'a Turns,
+    key: (Place, u64),
 }
 
 /// A turn, which ends when this is dropped.
 struct Turn<'a>(&'a Turns);
 
 impl Turns {
-    /// Waits for a turn.
-    fn take(&self) -> Turn<'_> {
-        let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
-        let mine = counts.0;
-        counts.0 += 1;
-        while counts.1 != mine {
-            counts = self.ended.wait(counts).unwrap_or_else(|e| e.into_inner());
+    fn queue(&self) -> std::sync::MutexGuard<'_, Queue> {
+        self.queue.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Joins the queue for a turn, for an episode at `place`.
+    fn wait_at(&self, place: Place) -> Waiting<'_> {
+        let mut queue = self.queue();
+        let key = (place, queue.came);
+        queue.came += 1;
+        queue.waiting.insert(key);
+        Waiting { turns: self, key }
+    }
+
+    /// Waits for a turn, for an episode at `place`.
+    fn take(&self, place: Place) -> Turn<'_> {
+        self.wait_at(place).take()
+    }
+}
+
+impl<'a> Waiting<'a> {
+    /// Waits for the turn.
+    fn take(self) -> Turn<'a> {
+        let turns = self.turns;
+        let mut queue = turns.queue();
+        while queue.reading || queue.waiting.first() != Some(&self.key) {
+            queue = turns.changed.wait(queue).unwrap_or_else(|e| e.into_inner());
         }
-        Turn(self)
+        queue.waiting.remove(&self.key);
+        queue.reading = true;
+        Turn(turns)
+    }
+}
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        if self.turns.queue().waiting.remove(&self.key) {
+            self.turns.changed.notify_all();
+        }
     }
 }
 
 impl Drop for Turn<'_> {
     fn drop(&mut self) {
-        self.0.counts.lock().unwrap_or_else(|e| e.into_inner()).1 += 1;
-        self.0.ended.notify_all();
+        self.0.queue().reading = false;
+        self.0.changed.notify_all();
     }
 }
 
@@ -251,6 +307,33 @@ fn behind(backend: &Backend, episode: &Episode) -> bool {
     !looked && !(sheet_path(backend, episode.show_id, episode.id).is_file() && translation_path(backend, episode.id).is_file())
 }
 
+/// Which of `pick`'s buckets episode `number` is in, when its show's next
+/// episode is `next`: 0 the next, 1 the `ahead` after it, 2 the rest after,
+/// 3 those before (watched).
+fn bucket(number: i64, next: i64, ahead: i64) -> u8 {
+    if number == next {
+        0
+    } else if number > next && number <= next + ahead {
+        1
+    } else if number > next {
+        2
+    } else {
+        3
+    }
+}
+
+/// How many episodes after a show's next are got ready ahead of the rest.
+fn ahead(backend: &Backend) -> i64 {
+    backend.db.setting_i64("convert.ahead", 10).max(1)
+}
+
+/// Where `episode` stands now in the order work goes to episodes (see `pick`).
+fn place(backend: &Backend, episode: &Episode) -> Place {
+    let rank = shows_in_order(backend).iter().position(|s| s.id == episode.show_id).unwrap_or(usize::MAX);
+    let next = next_episode(&backend.db.episodes(episode.show_id).unwrap_or_default()).map(|e| e.number).unwrap_or(1);
+    (bucket(episode.number, next, ahead(backend)), rank, episode.number)
+}
+
 /// The most useful episode waiting for `kind` work: "media", "probe", "subs",
 /// "whisper" or "catch up".
 fn pick(backend: &Backend, kind: &str) -> Option<(Show, Episode, usize)> {
@@ -278,7 +361,7 @@ pub fn library(backend: &Backend) -> Vec<(Show, Vec<Episode>)> {
 /// useful first: the order the workers take them in. With each, its show and
 /// how many episodes that has.
 pub fn waiting<'a>(backend: &Backend, kind: &str, library: &'a [(Show, Vec<Episode>)]) -> Vec<(&'a Show, &'a Episode, usize)> {
-    let ahead = backend.db.setting_i64("convert.ahead", 10).max(1);
+    let ahead = ahead(backend);
     let convert_rest = backend.db.setting_bool("convert.rest", false);
     let idle = backend.idle_for().is_none_or(|d| d >= IDLE_AFTER);
     let mut found: Vec<((u8, usize, i64), &Show, &Episode, usize)> = Vec::new();
@@ -298,15 +381,7 @@ pub fn waiting<'a>(backend: &Backend, kind: &str, library: &'a [(Show, Vec<Episo
             if !waiting {
                 continue;
             }
-            let bucket = if e.number == next {
-                0
-            } else if e.number > next && e.number <= next + ahead {
-                1
-            } else if e.number > next {
-                2
-            } else {
-                3
-            };
+            let bucket = bucket(e.number, next, ahead);
             // Only episodes near the next are got ready, but for a copy got ready
             // again for another audio track (follow_audio): it's there already,
             // and until it's done the episode doesn't play.
@@ -483,7 +558,7 @@ fn catch_up_worker(backend: &Backend) {
             if from_rip || english {
                 after_the_player(backend, rip);
                 let drive = backend.jobs.drive(rip);
-                let _turn = drive.take();
+                let _turn = drive.take(place(backend, &episode));
                 if let Ok(tracks) = media::read_rip(&ffmpeg, rip, &probe, from_rip.then_some(sheet.as_path())) {
                     keep_translation(backend, episode.id, &probe, &tracks);
                 }
@@ -1782,16 +1857,23 @@ fn find_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &Path, 
     }
     let key = backend.db.setting_str("jimaku.key");
     let rip = Path::new(&episode.path);
+    // One rip is read through at a time on each drive, the episodes that come
+    // first first (see `Jobs::drive`): this one is queued from now until it
+    // reads, or knows it won't before asking Jimaku.
+    let drive = backend.jobs.drive(rip);
+    let place = place(backend, episode);
+    let queued = std::cell::Cell::new(Some(drive.wait_at(place)));
     // What ffprobe found when the rip was got ready; else it's asked now.
     let probe = match stored_probe(backend, episode.id) {
         Some(probe) => probe,
         None => media::probe(ffprobe, rip)?,
     };
-    // One rip is read through at a time on each drive (see `Jobs::drive`).
-    let drive = backend.jobs.drive(rip);
     let reading = || {
         after_the_player(backend, rip);
-        let turn = drive.take();
+        let turn = match queued.take() {
+            Some(waiting) => waiting.take(),
+            None => drive.take(place),
+        };
         update_task(slot, Some(&format!("Reading the timing of {} {}", show.title, episode.number)), 0.0);
         turn
     };
@@ -1816,6 +1898,7 @@ fn find_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &Path, 
         rip_tracks();
     }
     let mut files = if probe.subtitles.iter().any(|s| japanese_text(&s.language, &s.codec)) { embedded(backend, rip_tracks(), episode) } else { Vec::new() };
+    drop(queued.take());
     let video = rip.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let read_timing = || match subtitle_timing(&probe, rip_tracks()) {
         Some(timing) => Ok(timing),
@@ -2250,29 +2333,57 @@ mod tests {
     }
 
     #[test]
-    fn rips_on_one_drive_are_read_one_at_a_time_in_the_order_asked() {
+    fn rips_on_one_drive_share_its_turns() {
         let jobs = Jobs::default();
         let drive = jobs.drive(Path::new("D:\\Anime\\Show\\01.mkv"));
         assert!(Arc::ptr_eq(&drive, &jobs.drive(Path::new("D:\\Films\\Film.mkv"))));
         assert!(!Arc::ptr_eq(&drive, &jobs.drive(Path::new("C:\\Anime\\Show\\02.mkv"))));
-        // Three workers ask for the drive while it's being read, one after another.
+    }
+
+    #[test]
+    fn a_drive_s_turns_go_to_the_episodes_that_come_first() {
+        let turns = Turns::default();
         let order = Mutex::new(Vec::new());
-        let reading = drive.take();
+        let queued = |n: usize| {
+            while turns.queue().waiting.len() < n {
+                std::thread::yield_now();
+            }
+        };
+        // Three workers ask for the drive while episode 9 (far off) is read:
+        // for one of the 10 after the next episode, the next, another far off.
+        let reading = turns.take((2, 0, 9));
         std::thread::scope(|scope| {
-            for n in 1..=3 {
-                let (drive, order) = (&drive, &order);
+            for (n, place) in [(1, 0, 5), (0, 0, 1), (2, 0, 7)].into_iter().enumerate() {
+                let (turns, order) = (&turns, &order);
                 scope.spawn(move || {
-                    let _turn = drive.take();
-                    order.lock().unwrap().push(n);
+                    let _turn = turns.take(place);
+                    order.lock().unwrap().push(place.2);
                 });
-                while drive.counts.lock().unwrap().0 <= n {
-                    std::thread::yield_now();
-                }
+                queued(n + 1);
             }
             assert!(order.lock().unwrap().is_empty());
             drop(reading);
         });
-        assert_eq!(*order.lock().unwrap(), [1, 2, 3]);
+        assert_eq!(*order.lock().unwrap(), [1, 5, 7]);
+        // The next episode, queued but not asking yet (its worker is reading
+        // what's in the rip), keeps a later one from starting on the idle drive.
+        let next = turns.wait_at((0, 0, 2));
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let _turn = turns.take((1, 0, 3));
+                order.lock().unwrap().push(3);
+            });
+            queued(2);
+            std::thread::sleep(Duration::from_millis(20));
+            let turn = next.take();
+            order.lock().unwrap().push(2);
+            drop(turn);
+        });
+        assert_eq!(order.lock().unwrap()[3..], [2, 3]);
+        // One that stops waiting doesn't hold the others up.
+        let gone = turns.wait_at((0, 0, 4));
+        drop(gone);
+        drop(turns.take((2, 0, 8)));
     }
 
     #[test]

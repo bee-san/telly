@@ -850,6 +850,19 @@ impl Db {
         Ok(())
     }
 
+    /// AniSkip's answer for an episode, kept only if the episode still has the
+    /// number, and its show the AniList match, it was asked about: Change
+    /// match or Fix order meanwhile makes it another episode's answer.
+    pub fn set_opening_if(&self, episode_id: i64, number: i64, anilist_id: i64, opening: Option<(f64, f64)>) -> Result<bool> {
+        let kept = self.conn()?.execute(
+            "INSERT OR REPLACE INTO openings (episode_id, start, end, asked_at)
+             SELECT e.id, ?2, ?3, ?4 FROM episodes e JOIN shows s ON s.id = e.show_id
+             WHERE e.id = ?1 AND e.number = ?5 AND s.anilist_id = ?6",
+            params![episode_id, opening.map(|o| o.0), opening.map(|o| o.1), now_ms(), number, anilist_id],
+        )?;
+        Ok(kept > 0)
+    }
+
     pub fn cards_per_show(&self) -> Result<std::collections::HashMap<i64, i64>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
@@ -872,6 +885,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         (Db::open(&dir.join("telly.sqlite")).unwrap(), dir)
+    }
+
+    #[test]
+    fn aniskip_s_answer_is_kept_only_for_the_episode_it_was_asked_about() {
+        let (db, dir) = temp_db("opening");
+        let episodes = vec![NewEpisode { number: 2, path: "2.mkv".into(), size: 1, duration: 1400.0 }];
+        let show = db.add_show(&NewShow { folder: "Show".into(), title: "Show".into(), anilist_id: Some(100), episodes, ..Default::default() }).unwrap();
+        let id = db.episodes(show).unwrap()[0].id;
+        assert!(db.set_opening_if(id, 2, 100, Some((90.0, 180.0))).unwrap());
+        // Fix order made it episode 3 while AniSkip was asked about episode 2.
+        db.renumber(show, &[(id, 3)]).unwrap();
+        assert!(!db.set_opening_if(id, 2, 100, None).unwrap());
+        // Change match made it another show's.
+        db.set_show_anilist(show, &NewShow { folder: "Show".into(), title: "Other".into(), anilist_id: Some(200), ..Default::default() }).unwrap();
+        assert!(!db.set_opening_if(id, 3, 100, None).unwrap());
+        assert!(db.set_opening_if(id, 3, 200, None).unwrap());
+        drop(db);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

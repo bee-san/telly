@@ -1782,7 +1782,11 @@ fn find_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &Path, 
     }
     let key = backend.db.setting_str("jimaku.key");
     let rip = Path::new(&episode.path);
-    let probe = media::probe(ffprobe, rip)?;
+    // What ffprobe found when the rip was got ready; else it's asked now.
+    let probe = match stored_probe(backend, episode.id) {
+        Some(probe) => probe,
+        None => media::probe(ffprobe, rip)?,
+    };
     // One rip is read through at a time on each drive (see `Jobs::drive`).
     let drive = backend.jobs.drive(rip);
     let reading = || {
@@ -2061,6 +2065,27 @@ mod tests {
         assert!(!crate::premine::words_path(&backend, id).exists());
         assert!(!backend.db.word_scores().unwrap().contains_key(&id));
         assert_eq!(backend.db.episode(id).unwrap().unwrap().subs_state, "none");
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn finding_subtitles_reads_what_s_in_the_rip_from_when_it_was_got_ready() {
+        let dir = std::env::temp_dir().join(format!("telly-probe-once-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let episodes = (1..=2).map(|number| crate::db::NewEpisode { number, path: format!("{number}.mkv"), size: 1, duration: 1400.0 }).collect();
+        let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let show = backend.db.show(show).unwrap().unwrap();
+        let eps = backend.db.episodes(show.id).unwrap();
+        // Episode 1 was got ready: what ffprobe found then is kept. Episode 2 wasn't.
+        let probe = media::Probe { format: "matroska,webm".into(), duration: 1400.0, ..Default::default() };
+        backend.db.set_probe(eps[0].id, &serde_json::to_string(&probe).unwrap(), 1400.0, None, "video").unwrap();
+        // No ffprobe (or ffmpeg) here: only episode 1 gets as far as wanting a Jimaku key.
+        let (nothing, slot) = (Path::new("no-such-tool"), Mutex::new(None));
+        find_subtitles(&backend, &slot, nothing, nothing, &show, &eps[0], 2).unwrap();
+        assert_eq!(backend.db.episode(eps[0].id).unwrap().unwrap().subs_state, "nokey");
+        assert!(find_subtitles(&backend, &slot, nothing, nothing, &show, &eps[1], 2).is_err());
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

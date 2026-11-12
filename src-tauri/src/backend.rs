@@ -116,6 +116,8 @@ pub struct Backend {
     pub lines: search::Index,
     /// The lines last moved by "Earlier/Later from here" (move_lines).
     moved: Mutex<Option<Moved>>,
+    /// The copies folder, once asked for (see `media_dir`).
+    media_folder: RwLock<Option<PathBuf>>,
 }
 
 /// Where "Earlier/Later from here" last moved an episode's lines from, so
@@ -461,6 +463,7 @@ impl Backend {
             own_hachidori: Own::default(),
             lines,
             moved: Mutex::new(None),
+            media_folder: RwLock::new(None),
         })
     }
 
@@ -500,12 +503,28 @@ impl Backend {
     }
 
     /// Where Telly's copies of episodes go: the folder Settings chose
-    /// ("media.folder", on an external drive, say), else Telly's own.
+    /// ("media.folder", on an external drive, say), else Telly's own. Kept
+    /// once asked for: the workers ask for it for each episode they rank,
+    /// thousands of times a pass, which took a database query each.
     pub fn media_dir(&self) -> PathBuf {
-        match self.db.setting_str("media.folder") {
+        if let Some(dir) = self.media_folder.read().ok().and_then(|d| d.clone()) {
+            return dir;
+        }
+        let mut kept = self.media_folder.write().unwrap_or_else(|e| e.into_inner());
+        let dir = match self.db.setting_str("media.folder") {
             folder if folder.is_empty() => self.dirs.media(),
             folder => PathBuf::from(folder),
-        }
+        };
+        *kept = Some(dir.clone());
+        dir
+    }
+
+    /// Sets the copies folder, and forgets the one kept.
+    fn set_media_dir(&self, folder: &Value) -> Result<()> {
+        let mut kept = self.media_folder.write().unwrap_or_else(|e| e.into_inner());
+        self.db.set_setting("media.folder", folder)?;
+        *kept = None;
+        Ok(())
     }
 
     /// Chooses the copies folder (None: Telly's own again) and moves the copies there.
@@ -516,7 +535,7 @@ impl Backend {
         }
         let before = self.media_dir();
         forget_space_used();
-        self.db.set_setting("media.folder", &folder.map(Value::String).unwrap_or(Value::Null))?;
+        self.set_media_dir(&folder.map(Value::String).unwrap_or(Value::Null))?;
         jobs::move_copies(self.clone(), before);
         Ok(self.status())
     }
@@ -1415,7 +1434,11 @@ impl Backend {
     }
 
     fn set_setting(&self, key: &str, value: &Value) -> Result<Value> {
-        self.db.set_setting(key, value)?;
+        if key == "media.folder" {
+            self.set_media_dir(value)?;
+        } else {
+            self.db.set_setting(key, value)?;
+        }
         match key {
             "tools.ffmpeg" | "whisper.model" => self.refind_tools(),
             "jimaku.key" => {
@@ -1825,6 +1848,9 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(moved.is_file() && !sheet.exists());
+        // The folder is kept once asked for, and a change to the setting is seen at once.
+        backend.call("setSetting", json!({ "key": "media.folder", "value": null })).unwrap();
+        assert_eq!(backend.media_dir(), backend.dirs.media());
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

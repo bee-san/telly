@@ -26,8 +26,8 @@
 //! update that failed), anilist.sent.<entry> (the progress last sent),
 //! anilist.group.<show>.<folder> (a season folder's entry, -2 for none),
 //! anilist.rewatches_from (unix ms: watches before it were before rewatches
-//! were logged), anilist.looked.<entry> (the last watch looked at for a
-//! rewatch) and anilist.rewatch.<entry> (when the rewatch going on began).
+//! were logged) and anilist.looked.<entry> (the last watch looked at for a
+//! rewatch).
 
 use crate::anilist::{self, ListEntry};
 use crate::backend::Backend;
@@ -139,41 +139,42 @@ fn update(backend: &Backend, token: &str) -> Result<bool> {
     let entries: std::collections::BTreeSet<i64> = wanted.keys().chain(watches.keys()).copied().collect();
     let mut sent_any = false;
     for entry in entries {
-        let (sent, looked, rewatch) = (format!("anilist.sent.{entry}"), format!("anilist.looked.{entry}"), format!("anilist.rewatch.{entry}"));
+        let (sent, looked) = (format!("anilist.sent.{entry}"), format!("anilist.looked.{entry}"));
         let progress = wanted.get(&entry).copied().unwrap_or(0);
-        let raised = progress > backend.db.setting_i64(&sent, 0);
+        let sent_before = backend.db.setting_i64(&sent, 0);
         let watched = watches.get(&entry).map(Vec::as_slice).unwrap_or_default();
         let last = watched.iter().map(|w| w.1).max().unwrap_or(0);
         let looked_at = backend.db.setting_i64(&looked, 0);
         let new: Vec<(i64, i64)> = watched.iter().filter(|w| w.1 > looked_at).copied().collect();
-        if !raised && new.is_empty() {
+        if progress <= sent_before && new.is_empty() {
             continue;
         }
         let listed = anilist::list_entry(token, entry)?;
-        if matches!(listed.status.as_deref(), Some("COMPLETED" | "REPEATING")) && !new.is_empty() {
-            // A rewatch: from when it began (the first of these watches, for one starting now).
-            let began = match listed.status.as_deref() {
-                Some("REPEATING") => backend.db.setting_i64(&rewatch, new.iter().map(|w| w.1).min().unwrap_or(0)),
-                _ => new.iter().map(|w| w.1).min().unwrap_or(0),
-            };
-            let reached = watched.iter().filter(|w| w.1 >= began).map(|w| w.0).max().unwrap_or(0);
-            if let Some((status, at, repeat)) = rewatch_change(&listed, reached) {
-                anilist::save_progress(token, entry, at, status, repeat)?;
-                sent_any = true;
-                if status == "REPEATING" {
-                    backend.db.set_setting(&rewatch, &json!(began))?;
-                }
-            }
-        } else if raised {
-            if let Some(status) = change(&listed, progress) {
-                anilist::save_progress(token, entry, progress, status, None)?;
-                sent_any = true;
-            }
+        if let Some((status, at, repeat)) = send_for(&listed, progress, sent_before, &new) {
+            anilist::save_progress(token, entry, at, status, repeat)?;
+            sent_any = true;
         }
-        backend.db.set_setting(&sent, &json!(progress.max(backend.db.setting_i64(&sent, 0))))?;
+        backend.db.set_setting(&sent, &json!(progress.max(sent_before)))?;
         backend.db.set_setting(&looked, &json!(last.max(looked_at)))?;
     }
     Ok(sent_any)
+}
+
+/// What to send for an entry, `listed` as AniList has it now: `progress` is
+/// the furthest episode watched (the first time) since signing in, `sent` the
+/// progress last sent, and `new` the watches, first or again, since the list
+/// was last looked at, as (number, when). An entry you've completed is
+/// rewatched as far as the furthest of them: the watches before are on the
+/// list already, as far as AniList still has them.
+fn send_for(listed: &ListEntry, progress: i64, sent: i64, new: &[(i64, i64)]) -> Option<(&'static str, i64, Option<i64>)> {
+    if matches!(listed.status.as_deref(), Some("COMPLETED" | "REPEATING")) && !new.is_empty() {
+        let reached = new.iter().map(|w| w.0).max().unwrap_or(0);
+        rewatch_change(listed, reached)
+    } else if progress > sent {
+        change(listed, progress).map(|status| (status, progress, None))
+    } else {
+        None
+    }
 }
 
 /// What to send for a rewatch of an entry you've completed, `reached` being
@@ -385,6 +386,18 @@ mod tests {
         assert_eq!(rewatch_change(&entry("REPEATING", 6, 0), 3), None);
         assert_eq!(rewatch_change(&entry("REPEATING", 6, 0), 13), None);
         assert_eq!(rewatch_change(&entry("CURRENT", 6, 0), 3), None);
+    }
+
+    #[test]
+    fn a_rewatch_goes_as_far_as_the_episodes_watched_since_the_list_was_looked_at() {
+        let entry = |status: &str, progress, repeat| ListEntry { episodes: Some(12), status: Some(status.into()), progress, repeat };
+        // Rewatched to the end in Telly once, then set rewatching on AniList:
+        // episode 1 again is rewatching at 1, not the end of the rewatch.
+        assert_eq!(send_for(&entry("REPEATING", 0, 1), 12, 12, &[(1, 9_000)]), Some(("REPEATING", 1, None)));
+        assert_eq!(send_for(&entry("COMPLETED", 12, 0), 12, 12, &[(1, 100), (2, 200)]), Some(("REPEATING", 2, None)));
+        // The first watch of a show raises its progress.
+        assert_eq!(send_for(&entry("CURRENT", 3, 0), 4, 3, &[(4, 100)]), Some(("CURRENT", 4, None)));
+        assert_eq!(send_for(&entry("COMPLETED", 12, 0), 12, 12, &[]), None);
     }
 
     #[test]

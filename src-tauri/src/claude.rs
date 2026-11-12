@@ -204,9 +204,10 @@ fn run(exe: &Path, question: &Ask, modern: bool, on_text: &mut impl FnMut(&str),
     }
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| anyhow!("Couldn’t start Claude Code: {e}"))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(question.prompt.as_bytes()).map_err(|e| anyhow!("Couldn’t talk to Claude Code: {e}"))?;
-    }
+    // An older Claude Code stops at an option it doesn't know without reading
+    // the question, so writing it can fail: what it says about the option is
+    // still read below, so the older flags are tried, and it's waited for.
+    let unsent = child.stdin.take().and_then(|mut stdin| stdin.write_all(question.prompt.as_bytes()).err());
     let stderr = child.stderr.take();
     let errors = std::thread::spawn(move || {
         let mut text = String::new();
@@ -257,7 +258,10 @@ fn run(exe: &Path, question: &Ask, modern: bool, on_text: &mut impl FnMut(&str),
         Some(Ok(result)) if !result.trim().is_empty() => Ok(result.trim().to_string()),
         Some(Ok(_)) => Err(anyhow!("Claude gave no answer.")),
         Some(Err(message)) => Err(classify(&message)),
-        None if stderr.trim().is_empty() => Err(anyhow!("Claude Code stopped without answering.")),
+        None if stderr.trim().is_empty() => Err(match unsent {
+            Some(e) => anyhow!("Couldn’t talk to Claude Code: {e}"),
+            None => anyhow!("Claude Code stopped without answering."),
+        }),
         None => Err(classify(&stderr)),
     }
 }
@@ -462,6 +466,25 @@ fn classify(message: &str) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn an_older_claude_code_that_stops_at_safe_mode_is_asked_again_with_the_older_flags() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("telly-claude-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("claude");
+        // Stops at --safe-mode without reading its stdin, as an older Claude Code does.
+        std::fs::write(&exe, "#!/bin/sh\ncase \"$*\" in *--safe-mode*) echo \"error: unknown option '--safe-mode'\" >&2; exit 1;; esac\ncat >/dev/null\necho '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"答え\"}'\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let prompt = "長い質問。".repeat(200_000);
+        let question = Ask { prompt: &prompt, model: None, effort: None, warm: false };
+        let stop = Arc::new(AtomicBool::new(false));
+        let first = run(&exe, &question, true, &mut |_| {}, &stop).unwrap_err();
+        assert!(format!("{first:#}").to_lowercase().contains("unknown option"), "{first:#}");
+        assert_eq!(run(&exe, &question, false, &mut |_| {}, &stop).unwrap(), "答え");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     fn feed(lines: &[&str]) -> (String, Vec<String>, Option<std::result::Result<String, String>>) {
         let mut text = String::new();

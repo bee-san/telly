@@ -155,7 +155,7 @@ With that key, Telly also asks OpenRouter by itself, without the button. An epis
 
 ## Getting a library ready
 
-Telly works through a library in the background: each show's next episode first, then the 10 after it, then the rest. Several episodes are worked on at once, and the title bar says which show is being got ready, or how many shows (point at it to see what each episode is at).
+Telly works through a library in the background: each show's next episode first, then the 10 after it, then the rest. Several episodes are worked on at once, and the title bar says which show is being got ready, or how many shows. Click it for what each worker is doing and how far it's got, and for the work waiting of each kind (video, subtitles, the seek bar's pictures, words), the next to be taken first.
 
 - **Video:** one conversion at a time. A rip that plays as it is doesn't wait behind one: a second worker reads what's in the rips nobody has looked at yet, about a second each.
 - **Subtitles:** 3 episodes at once. A rip is read through once for all its subtitle tracks together, text and pictures, however many it has. Jimaku is asked by one episode at a time, and a show's files are fetched once.

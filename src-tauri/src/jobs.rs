@@ -114,6 +114,9 @@ pub struct Jobs {
     /// Episodes given a file from beside their rip, whose words are still to
     /// work out (`words_worker`), first in first.
     words: Mutex<std::collections::VecDeque<i64>>,
+    /// The episode `words_worker` is working out the words of, for the title
+    /// bar's list (the title bar itself leaves it out).
+    pub working_out: Mutex<Option<Task>>,
     /// A download (Whisper's model).
     pub download: Mutex<Option<Task>>,
     /// Stops the running conversion (the show was removed, or Telly is closing).
@@ -141,6 +144,7 @@ impl Default for Jobs {
             caught_up: Mutex::new(HashSet::new()),
             looked_beside: Mutex::new(HashSet::new()),
             words: Mutex::new(std::collections::VecDeque::new()),
+            working_out: Mutex::new(None),
             download: Mutex::new(None),
             cancel_media: AtomicBool::new(false),
             jimaku_files: Mutex::new(HashMap::new()),
@@ -189,6 +193,11 @@ impl Jobs {
     /// What the workers are doing now, for the title bar.
     pub fn tasks(&self) -> Vec<Task> {
         [&self.media, &self.probing].into_iter().chain(&self.subs).chain([&self.catching_up, &self.download]).filter_map(|slot| slot.lock().ok()?.clone()).collect()
+    }
+
+    /// The episodes whose words are still to work out (`words_worker`), first first.
+    pub fn words_waiting(&self) -> Vec<i64> {
+        self.words.lock().unwrap_or_else(|e| e.into_inner()).iter().copied().collect()
     }
 
     /// Turns at the drive `rip` is on. A worker takes one to read a rip from
@@ -245,14 +254,37 @@ fn behind(backend: &Backend, episode: &Episode) -> bool {
 /// The most useful episode waiting for `kind` work: "media", "probe", "subs",
 /// "whisper" or "catch up".
 fn pick(backend: &Backend, kind: &str) -> Option<(Show, Episode, usize)> {
+    let library = library(backend);
+    waiting(backend, kind, &library).first().map(|&(show, e, count)| (show.clone(), e.clone(), count))
+}
+
+/// Every show with its episodes, in the order work goes to them
+/// (`shows_in_order`), read in two queries however many shows there are.
+pub fn library(backend: &Backend) -> Vec<(Show, Vec<Episode>)> {
+    let mut by_show: HashMap<i64, Vec<Episode>> = HashMap::new();
+    for e in backend.db.all_episodes().unwrap_or_default() {
+        by_show.entry(e.show_id).or_default().push(e);
+    }
+    shows_in_order(backend)
+        .into_iter()
+        .map(|show| {
+            let episodes = by_show.remove(&show.id).unwrap_or_default();
+            (show, episodes)
+        })
+        .collect()
+}
+
+/// The episodes of `library` waiting for `kind` work (see `pick`), most
+/// useful first: the order the workers take them in. With each, its show and
+/// how many episodes that has.
+pub fn waiting<'a>(backend: &Backend, kind: &str, library: &'a [(Show, Vec<Episode>)]) -> Vec<(&'a Show, &'a Episode, usize)> {
     let ahead = backend.db.setting_i64("convert.ahead", 10).max(1);
     let convert_rest = backend.db.setting_bool("convert.rest", false);
     let idle = backend.idle_for().is_none_or(|d| d >= IDLE_AFTER);
-    let mut best: Option<((u8, usize, i64), Show, Episode, usize)> = None;
-    for (rank, show) in shows_in_order(backend).into_iter().enumerate() {
-        let episodes = backend.db.episodes(show.id).unwrap_or_default();
+    let mut found: Vec<((u8, usize, i64), &Show, &Episode, usize)> = Vec::new();
+    for (rank, (show, episodes)) in library.iter().enumerate() {
         let count = episodes.len();
-        let next = next_episode(&episodes).map(|e| e.number).unwrap_or(1);
+        let next = next_episode(episodes).map(|e| e.number).unwrap_or(1);
         for e in episodes {
             let waiting = match kind {
                 "media" => e.media_state == "pending",
@@ -285,12 +317,12 @@ fn pick(backend: &Backend, kind: &str) -> Option<(Show, Episode, usize)> {
                 continue;
             }
             let key = (bucket, rank, e.number);
-            if best.as_ref().is_none_or(|(k, ..)| key < *k) {
-                best = Some((key, show.clone(), e, count));
-            }
+            found.push((key, show, e, count));
         }
     }
-    best.map(|(_, s, e, n)| (s, e, n))
+    // A stable sort: of two alike, the one met first comes first.
+    found.sort_by_key(|(key, ..)| *key);
+    found.into_iter().map(|(_, s, e, n)| (s, e, n)).collect()
 }
 
 fn set_task(slot: &Mutex<Option<Task>>, task: Option<Task>) {
@@ -1361,7 +1393,11 @@ fn words_worker(backend: &Backend) {
         loop {
             let next = backend.jobs.words.lock().unwrap_or_else(|e| e.into_inner()).pop_front();
             let Some(episode_id) = next else { break };
+            let episode = backend.db.episode(episode_id).ok().flatten();
+            let show = episode.as_ref().and_then(|e| backend.db.show(e.show_id).ok().flatten());
+            set_task(&backend.jobs.working_out, show.zip(episode).map(|(s, e)| task(&s, &e, "Working out the words of")));
             crate::premine::prepare(backend, episode_id);
+            set_task(&backend.jobs.working_out, None);
         }
     }
 }
@@ -2049,6 +2085,70 @@ mod tests {
         backend.db.media_reset(first.id).unwrap();
         assert_eq!(take(&backend, "probe").map(|(_, e, _)| e.number), Some(2));
         assert_eq!(take(&backend, "media").map(|(_, e, _)| e.number), Some(1));
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn what_s_waiting_is_listed_in_the_order_the_workers_take_it() {
+        let dir = std::env::temp_dir().join(format!("telly-waiting-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = std::sync::Arc::new(Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap());
+        let add = |title: &str, count: i64| {
+            let episodes = (1..=count).map(|number| crate::db::NewEpisode { number, path: format!("{title} {number}.mkv"), size: 1, duration: 1400.0 }).collect();
+            backend.db.add_show(&crate::db::NewShow { folder: title.into(), title: title.into(), episodes, ..Default::default() }).unwrap()
+        };
+        let (fairy_tail, frieren) = (add("Fairy Tail", 30), add("Frieren", 15));
+        // Frieren was watched last, up to episode 5: its episode 6 is next, the 10 after it near, the 5 before it last.
+        backend.db.touch_show(frieren).unwrap();
+        for e in backend.db.episodes(frieren).unwrap().iter().take(5) {
+            backend.db.set_watched(e.id, true).unwrap();
+        }
+        // Videos are got ready for every episode, not just those near the next.
+        backend.db.set_setting("convert.rest", &serde_json::json!(true)).unwrap();
+        let listed = |kind: &str| -> Vec<(String, i64)> {
+            let library = library(&backend);
+            waiting(&backend, kind, &library).into_iter().map(|(s, e, _)| (s.title.clone(), e.number)).collect()
+        };
+        let named = |taken: Option<(Show, Episode, usize)>| taken.map(|(s, e, _)| (s.title, e.number));
+
+        let subs = listed("subs");
+        assert_eq!(subs.len(), 45);
+        assert_eq!(subs[..3], [("Frieren".to_string(), 6), ("Fairy Tail".to_string(), 1), ("Frieren".to_string(), 7)]);
+        assert_eq!(subs.last(), Some(&("Frieren".to_string(), 5)));
+        // The title bar's list says as much: the count, and the first 10 in that order.
+        let queue = backend.call("queue", serde_json::json!({})).unwrap();
+        let group = queue["waiting"].as_array().unwrap().iter().find(|w| w["kind"] == "subs").unwrap().clone();
+        assert_eq!(group["count"], 45);
+        let first: Vec<(String, i64)> = group["first"].as_array().unwrap().iter().map(|q| (q["title"].as_str().unwrap().to_string(), q["number"].as_i64().unwrap())).collect();
+        assert_eq!(first, subs[..10]);
+        assert_eq!(queue["waiting"][0]["first"][0]["step"], "To read");
+
+        // Taking work one episode after another goes down the list, kind by kind.
+        assert_eq!(std::iter::from_fn(|| named(take(&backend, "subs"))).collect::<Vec<_>>(), subs);
+        let media = listed("media");
+        assert_eq!(media.len(), 40, "all but the episodes watched");
+        assert_eq!(std::iter::from_fn(|| named(take(&backend, "media"))).collect::<Vec<_>>(), media);
+        let all: Vec<Episode> = [fairy_tail, frieren].iter().flat_map(|&id| backend.db.episodes(id).unwrap()).collect();
+        for e in &all {
+            backend.db.media_reset(e.id).unwrap();
+        }
+        let probe = listed("probe");
+        assert_eq!(probe, media);
+        assert_eq!(std::iter::from_fn(|| named(take(&backend, "probe"))).collect::<Vec<_>>(), probe);
+        // Episodes got ready before the seek bar's pictures were made with them are caught up in the same order.
+        for e in &all {
+            backend.db.media_ready(e.id, &e.path, 0, 0).unwrap();
+            backend.db.set_subs(e.id, "synced", "", "", None, None).unwrap();
+        }
+        let catch_up = listed("catch up");
+        assert_eq!(catch_up.len(), 45);
+        let caught_up = std::iter::from_fn(|| {
+            let (show, e, _) = pick(&backend, "catch up")?;
+            backend.jobs.caught_up.lock().unwrap().insert(e.id);
+            Some((show.title, e.number))
+        });
+        assert_eq!(caught_up.collect::<Vec<_>>(), catch_up);
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

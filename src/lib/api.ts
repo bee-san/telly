@@ -120,6 +120,25 @@ export interface Activity {
   total: number;
 }
 
+/** An episode waiting for work (backend.rs `Queued`). */
+export interface Queued {
+  showId: number;
+  episodeId: number;
+  title: string;
+  number: number;
+  /** How many episodes its show has: a film's one goes by the film's title. */
+  episodes: number;
+  /** What's done to it next, where that's worth saying: "To convert". */
+  step: string;
+}
+
+/** What the title bar's list shows: what each worker is doing, and the work
+ *  waiting of each kind, the next to be taken first. */
+export interface Queue {
+  now: Task[];
+  waiting: { kind: string; what: string; count: number; first: Queued[] }[];
+}
+
 export interface Setup {
   ffmpeg: boolean;
   jimaku: boolean;

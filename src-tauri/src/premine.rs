@@ -138,6 +138,8 @@ struct Shares {
     /// Library for none in particular), and whether a worker is going.
     wanted: Option<Option<i64>>,
     working: bool,
+    /// The episode it's at, for the title bar's list.
+    task: Option<jobs::Task>,
 }
 
 #[derive(Default)]
@@ -814,6 +816,7 @@ pub fn start_shares(backend: &Arc<Backend>, first: Option<i64>) {
         let wait = !error.is_empty() && asks_own(&worker) && !own_ready(&worker);
         if let Ok(mut shares) = worker.premining.shares.lock() {
             shares.error = error;
+            shares.task = None;
         }
         if wait {
             let asked = |w: &Backend| w.premining.shares.lock().is_ok_and(|s| s.wanted.is_some());
@@ -839,6 +842,19 @@ fn share_of(lines: &[Line], uses: Vec<SavedUse>, cast: &HashSet<String>, known_w
     share
 }
 
+/// What the pass bringing the shares up to date is doing, while it's going:
+/// for the title bar's list (the title bar itself leaves it out).
+pub fn shares_task(backend: &Backend) -> Option<jobs::Task> {
+    backend.premining.shares.lock().ok().and_then(|s| s.task.clone())
+}
+
+/// Says which episode the shares pass is at.
+fn at(backend: &Backend, show: &Show, episode: &Episode, label: String, progress: f64) {
+    if let Ok(mut shares) = backend.premining.shares.lock() {
+        shares.task = Some(jobs::Task { show_id: show.id, episode_id: episode.id, number: episode.number, title: show.title.clone(), label, progress });
+    }
+}
+
 fn work_out_shares(backend: &Backend, first: Option<i64>) -> Result<()> {
     // With Anki closed the copy Telly has stands, and the page says why it may be old.
     let asked = known::refresh(backend);
@@ -854,7 +870,9 @@ fn work_out_shares(backend: &Backend, first: Option<i64>) -> Result<()> {
     let mut unasked: Option<anyhow::Error> = None;
     for show in shows {
         let cast: HashSet<String> = names::show_names(backend, &show).into_iter().map(|n| n.term).collect();
-        for e in backend.db.episodes(show.id)? {
+        let episodes = backend.db.episodes(show.id)?;
+        let count = episodes.len();
+        for (i, e) in episodes.into_iter().enumerate() {
             // Asked again (another show's page opened): start over, that show first.
             if backend.premining.shares.lock().is_ok_and(|s| s.wanted.is_some()) {
                 return Ok(());
@@ -866,19 +884,24 @@ fn work_out_shares(backend: &Backend, first: Option<i64>) -> Result<()> {
             if lines.is_empty() {
                 continue;
             }
+            let progress = i as f64 / count as f64;
+            at(backend, &show, &e, format!("Counting the words you know in {}", show.title), progress);
             // Words not saved yet (subtitles that synced while Hachidori wasn't
             // there to ask) are worked out here: the open show's first, then the
             // rest of the library's, so every show has its share.
             let uses = match saved_uses(backend, e.id, &lines) {
                 Some(uses) => uses,
                 None if unasked.is_some() => continue,
-                None => match episode_uses(backend, e.id, &lines) {
-                    Ok(uses) => uses,
-                    Err(error) => {
-                        unasked = Some(error);
-                        continue;
+                None => {
+                    at(backend, &show, &e, format!("Working out the words of {} {}", show.title, e.number), progress);
+                    match episode_uses(backend, e.id, &lines) {
+                        Ok(uses) => uses,
+                        Err(error) => {
+                            unasked = Some(error);
+                            continue;
+                        }
                     }
-                },
+                }
             };
             let share = share_of(&lines, uses, &cast, &known_words);
             backend.db.set_word_score(e.id, share.uses as i64, share.known as i64, &stamp)?;

@@ -233,6 +233,55 @@ pub struct Activity {
     pub total: usize,
 }
 
+/// What the title bar's list shows: what each worker is doing, and the work
+/// waiting, in the order the workers will take it.
+#[derive(Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Queue {
+    pub now: Vec<Task>,
+    pub waiting: Vec<Waiting>,
+}
+
+/// Work of one kind waiting.
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Waiting {
+    /// "media", "subs", "whisper", "catch up" or "words".
+    pub kind: String,
+    /// What the work is: "Finding subtitles".
+    pub what: String,
+    pub count: usize,
+    /// The first few, the next to be taken first.
+    pub first: Vec<Queued>,
+}
+
+/// An episode waiting.
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Queued {
+    pub show_id: i64,
+    pub episode_id: i64,
+    pub title: String,
+    pub number: i64,
+    /// How many episodes its show has: a film's one goes by the film's title.
+    pub episodes: usize,
+    /// What's done to it next, where that's worth saying: "To convert".
+    pub step: String,
+}
+
+/// How many of each kind of work waiting the title bar's list names.
+const QUEUE_SHOWN: usize = 10;
+
+/// What's done next to an episode waiting for its video.
+fn video_step(e: &Episode) -> &'static str {
+    match e.media_plan.as_str() {
+        // A rip nobody has looked at yet: it may play as it is.
+        "" => "To read",
+        "remux" | "audio" => "To copy",
+        _ => "To convert",
+    }
+}
+
 fn arg<T: for<'de> Deserialize<'de>>(args: &Value, key: &str) -> Result<T> {
     serde_json::from_value(args.get(key).cloned().unwrap_or(Value::Null)).with_context(|| format!("the \"{key}\" argument"))
 }
@@ -684,10 +733,15 @@ impl Backend {
         })
     }
 
-    fn activity(&self) -> Activity {
+    /// What the workers are doing now, for the title bar.
+    fn tasks(&self) -> Vec<Task> {
         let mut tasks = self.jobs.tasks();
         tasks.extend(self.names.task.lock().ok().and_then(|t| t.clone()));
-        let mut activity = Activity { tasks, ..Default::default() };
+        tasks
+    }
+
+    fn activity(&self) -> Activity {
+        let mut activity = Activity { tasks: self.tasks(), ..Default::default() };
         // Several episodes are worked on at once, often of different shows.
         let mut seen = std::collections::HashSet::new();
         for t in activity.tasks.iter().filter(|t| t.show_id != 0) {
@@ -704,6 +758,50 @@ impl Backend {
             activity.done += eps.iter().filter(|e| settled(&e.subs_state)).count();
         }
         activity
+    }
+
+    /// What each worker is doing and what's waiting, for the title bar's
+    /// list. The library is read once for all of it, and what's waiting comes
+    /// from the ranking the workers take their work by (`jobs::waiting`).
+    fn queue(&self) -> Queue {
+        let mut now = self.tasks();
+        now.extend(self.jobs.working_out.lock().ok().and_then(|t| t.clone()));
+        now.extend(premine::shares_task(self));
+        let library = jobs::library(self);
+        let queued = |show: &Show, e: &Episode, episodes: usize, step: &str| Queued {
+            show_id: show.id,
+            episode_id: e.id,
+            title: show.title.clone(),
+            number: e.number,
+            episodes,
+            step: step.into(),
+        };
+        let maker = jobs::listener(self, &self.tools()).map_or("Whisper", |l| l.name());
+        let kinds = [
+            ("media", "Getting the video ready".to_string()),
+            ("subs", "Finding subtitles".into()),
+            ("whisper", format!("Making subtitles with {maker}")),
+            ("catch up", "Catching up the seek bar’s pictures and English lines".into()),
+        ];
+        let mut waiting: Vec<Waiting> = kinds
+            .into_iter()
+            .map(|(kind, what)| {
+                let found = jobs::waiting(self, kind, &library);
+                let first = found.iter().take(QUEUE_SHOWN).map(|&(show, e, n)| queued(show, e, n, if kind == "media" { video_step(e) } else { "" })).collect();
+                Waiting { kind: kind.into(), what, count: found.len(), first }
+            })
+            .collect();
+        // The words to work out, first in first.
+        let words = self.jobs.words_waiting();
+        if !words.is_empty() {
+            let by_id: std::collections::HashMap<i64, (&Show, &Episode, usize)> =
+                library.iter().flat_map(|(show, episodes)| episodes.iter().map(move |e| (e.id, (show, e, episodes.len())))).collect();
+            let found: Vec<_> = words.iter().filter_map(|id| by_id.get(id)).collect();
+            let first = found.iter().take(QUEUE_SHOWN).map(|&&(show, e, n)| queued(show, e, n, "")).collect();
+            waiting.push(Waiting { kind: "words".into(), what: "Working out the words".into(), count: found.len(), first });
+        }
+        waiting.retain(|w| w.count > 0);
+        Queue { now, waiting }
     }
 
     fn setup(&self) -> Value {
@@ -1340,6 +1438,7 @@ impl Backend {
         match cmd {
             "library" => self.library().map(|v| tagged(v, &args)),
             "activity" => to_value(self.activity()),
+            "queue" => to_value(self.queue()),
             "show" => self.show_view(arg(&args, "id")?).map(|v| tagged(v, &args)),
             "scan" => self.scan(&arg::<String>(&args, "folder")?),
             "searchAnilist" => {

@@ -81,6 +81,10 @@ type Place = (u8, usize, i64);
 struct Turns {
     /// How many rips are read from the drive at once.
     at_once: usize,
+    /// Whether the drive has no seek penalty, as Windows says (see `drives`):
+    /// not when that can't be told. A rip on it may be read twice (see
+    /// `pictures_after`), where one on a hard drive is read once for everything.
+    seek_free: bool,
     queue: Mutex<Queue>,
     changed: Condvar,
 }
@@ -94,7 +98,7 @@ const READS_AT_ONCE: usize = 3;
 /// One rip at a time, as from a hard drive.
 impl Default for Turns {
     fn default() -> Self {
-        Turns { at_once: 1, queue: Mutex::default(), changed: Condvar::new() }
+        Turns { at_once: 1, seek_free: false, queue: Mutex::default(), changed: Condvar::new() }
     }
 }
 
@@ -126,7 +130,7 @@ impl Turns {
     /// a seek penalty; one at a time on a hard drive, and when it can't be told.
     fn for_drive(root: &Path) -> Turns {
         match crate::drives::seek_penalty(root) {
-            Some(false) => Turns { at_once: READS_AT_ONCE, ..Turns::default() },
+            Some(false) => Turns { at_once: READS_AT_ONCE, seek_free: true, ..Turns::default() },
             _ => Turns::default(),
         }
     }
@@ -603,8 +607,15 @@ fn catch_up_worker(backend: &Backend) {
                 after_the_player(backend, rip);
                 let drive = backend.jobs.drive(rip);
                 let _turn = drive.take(place(backend, &episode));
-                if let Ok(tracks) = media::read_rip(&ffmpeg, rip, &probe, from_rip.then_some(sheet.as_path())) {
-                    keep_translation(backend, episode.id, &probe, &tracks);
+                // What's still missing once it's this episode's turn: the
+                // worker that found its subtitles may have made its pictures
+                // meanwhile, or be making them (see `pictures_after`).
+                let from_rip = from_rip && !sheet.is_file() && !media::sheet_being_made(&sheet);
+                let english = lacks_translation(backend, episode.id, &probe);
+                if from_rip || english {
+                    if let Ok(tracks) = media::read_rip(&ffmpeg, rip, &probe, from_rip.then_some(sheet.as_path())) {
+                        keep_translation(backend, episode.id, &probe, &tracks);
+                    }
                 }
             }
             set_task(slot, None);
@@ -885,10 +896,11 @@ fn subs_worker(backend: &Backend, n: usize) {
         while let Some((show, episode, count)) = take(backend, "subs") {
             set_task(slot, Some(task(&show, &episode, "Finding subtitles for")));
             let result = find_subtitles(backend, slot, &ffmpeg, &ffprobe, &show, &episode, count);
-            set_task(slot, None);
             if let Err(e) = result {
                 let _ = backend.db.set_subs_state(episode.id, "failed", &format!("{e:#}"));
             }
+            pictures_after(backend, slot, &ffmpeg, &show, &episode);
+            set_task(slot, None);
         }
         // Then episodes you asked to have subtitles made for, one at a time: the first worker makes them.
         if n > 0 {
@@ -925,6 +937,30 @@ fn subs_worker(backend: &Backend, n: usize) {
             }
         }
     }
+}
+
+/// Makes the seek bar's pictures of an episode whose subtitles were just
+/// found from a read that left them out. On a drive without a seek penalty,
+/// `find_subtitles` reads the rip's subtitle tracks on their own (a fraction
+/// of a second), not in one pass with the pictures, which waits for every
+/// keyframe to be decoded (4 s for a 24-minute 1080p HEVC episode); the
+/// pictures are made after, from what that read left in the file cache. A
+/// hard drive's rips are read once for both: a film is bigger than the cache.
+/// An episode whose English lines are still to read is left to
+/// `catch_up_worker`, which reads both in one pass.
+fn pictures_after(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &Path, show: &Show, episode: &Episode) {
+    let rip = Path::new(&episode.path);
+    let drive = backend.jobs.drive(rip);
+    let sheet = sheet_path(backend, show.id, episode.id);
+    let Some(probe) = stored_probe(backend, episode.id) else { return };
+    if !drive.seek_free || sheet.is_file() || plan_for(backend, episode, &probe).0 != Plan::Direct || lacks_translation(backend, episode.id, &probe) {
+        return;
+    }
+    after_the_player(backend, rip);
+    let _turn = drive.take(place(backend, episode));
+    update_task(slot, Some(&format!("Making the seek bar’s pictures for {} {}", show.title, episode.number)), 0.0);
+    let _ = std::fs::create_dir_all(sheet.parent().expect("a folder"));
+    let _ = media::make_sheet(ffmpeg, rip, probe.duration, &sheet);
 }
 
 /// What makes subtitles for episodes Jimaku has nothing for.
@@ -1957,8 +1993,9 @@ fn find_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &Path, 
     };
     // The seek bar's pictures are made in the same read when the rip itself
     // is what plays, and its English lines kept: the player then needn't read
-    // the rip when the episode first plays.
-    let sheet = Some(sheet_path(backend, show.id, episode.id)).filter(|sheet| !sheet.is_file() && plan_for(backend, episode, &probe).0 == Plan::Direct);
+    // the rip when the episode first plays. On a drive without a seek
+    // penalty, the pictures are made after (see `pictures_after`).
+    let sheet = Some(sheet_path(backend, show.id, episode.id)).filter(|sheet| !drive.seek_free && !sheet.is_file() && plan_for(backend, episode, &probe).0 == Plan::Direct);
     // A rip without subtitle tracks is matched to its speech, when there are
     // files to match (there's a Jimaku key): heard in the same read.
     let speech = (!key.trim().is_empty() && !media::timed_subtitles(&probe) && !probe.audio.is_empty()).then(|| (media::japanese_audio(&probe), sync::FIRERED_RATE));
@@ -2447,6 +2484,57 @@ mod tests {
         assert_eq!(pick(&backend, "catch up").map(|(_, e, _)| e.number), Some(3));
         backend.jobs.caught_up.lock().unwrap().insert(eps[2].id);
         assert!(pick(&backend, "catch up").is_none());
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn on_a_drive_without_a_seek_penalty_the_pictures_come_after_the_subtitles() {
+        let dir = std::env::temp_dir().join(format!("telly-after-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let rips = dir.join("rips");
+        std::fs::create_dir_all(&rips).unwrap();
+        let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        backend.refresh_tools();
+        let tools = backend.tools();
+        let (Some(ffmpeg), Some(ffprobe)) = (tools.ffmpeg.clone(), tools.ffprobe.clone()) else {
+            return; // This computer has no ffmpeg to make rips with.
+        };
+        // Two rips that play as they are, with English subtitles.
+        std::fs::write(rips.join("en.srt"), "1\n00:00:01,000 --> 00:00:03,000\nA world of magic.\n\n").unwrap();
+        let mut episodes = Vec::new();
+        for number in 1..=2 {
+            let path = rips.join(format!("Show - 0{number}.mkv"));
+            let made = crate::util::command(&ffmpeg)
+                .args(["-nostdin", "-v", "error", "-f", "lavfi", "-i", "color=c=black:s=64x36:r=2", "-f", "lavfi", "-i", "anullsrc=r=8000:cl=mono", "-i"])
+                .arg(rips.join("en.srt"))
+                .args(["-t", "20", "-map", "0", "-map", "1", "-map", "2", "-c:v", "libx264", "-preset", "ultrafast", "-g", "4", "-c:a", "aac", "-c:s", "srt", "-metadata:s:s:0", "language=eng"])
+                .arg(&path)
+                .status();
+            if !made.is_ok_and(|s| s.success()) {
+                return; // This ffmpeg can't make H.264.
+            }
+            episodes.push(crate::db::NewEpisode { number, path: path.to_string_lossy().into_owned(), size: 1, duration: 20.0 });
+        }
+        let id = backend.db.add_show(&crate::db::NewShow { folder: rips.to_string_lossy().into_owned(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let show = backend.db.show(id).unwrap().unwrap();
+        for e in backend.db.episodes(id).unwrap() {
+            assert!(plan_video(&backend, &ffprobe, &show, &e).unwrap().is_none());
+        }
+        let eps = backend.db.episodes(id).unwrap();
+        let (slot, english) = (Mutex::new(None), |e: &Episode| translation(&backend, e).unwrap().into_iter().map(|l| l.text).collect::<Vec<_>>());
+        // From a hard drive (or one that can't be told about), one read makes both.
+        find_subtitles(&backend, &slot, &ffmpeg, &ffprobe, &show, &eps[0], 2).unwrap();
+        assert!(sheet_path(&backend, id, eps[0].id).is_file());
+        assert_eq!(english(&eps[0]), ["A world of magic."]);
+        // From an SSD, the subtitles are read on their own, and the pictures made after.
+        let root = Path::new(&eps[1].path).ancestors().last().unwrap().to_path_buf();
+        backend.jobs.drives.lock().unwrap().insert(root, Arc::new(Turns { at_once: READS_AT_ONCE, seek_free: true, ..Turns::default() }));
+        find_subtitles(&backend, &slot, &ffmpeg, &ffprobe, &show, &eps[1], 2).unwrap();
+        assert!(!sheet_path(&backend, id, eps[1].id).is_file());
+        assert_eq!(english(&eps[1]), ["A world of magic."]);
+        pictures_after(&backend, &slot, &ffmpeg, &show, &eps[1]);
+        assert!(sheet_path(&backend, id, eps[1].id).is_file());
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

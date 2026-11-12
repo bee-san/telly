@@ -523,6 +523,11 @@ fn start_making(sheet: &Path) -> Option<Making> {
     Some(Making(sheet.to_path_buf()))
 }
 
+/// Whether the seek bar's pictures at `sheet` are being made now (see `MAKING`).
+pub fn sheet_being_made(sheet: &Path) -> bool {
+    MAKING.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|p| p == sheet)
+}
+
 /// Makes the seek bar's pictures of `video` at `output`, or waits for them
 /// when they're being made already (see `MAKING`).
 pub fn make_sheet(ffmpeg: &Path, video: &Path, duration: f64, output: &Path) -> Result<()> {
@@ -877,6 +882,7 @@ mod tests {
         // A read of the rip is making the pictures when the player asks for
         // them. There's no ffmpeg here: the player can only have them by waiting.
         let reading = start_making(&sheet).unwrap();
+        assert!(sheet_being_made(&sheet));
         std::thread::scope(|scope| {
             let (asking, asked) = std::sync::mpsc::channel();
             let sheet = &sheet;

@@ -770,8 +770,8 @@ impl Backend {
         self.remove_cover(id);
         self.fetch_cover(id, new.cover_url.clone());
         recommend::gather(self);
-        // Subtitles were found under the old show's name.
-        self.db.requeue_subs(Some(id), &["none", "failed", "check", "synced", "nokey"])?;
+        // Subtitles were found, or found missing and queued to be made, under the old show's name.
+        self.db.requeue_subs(Some(id), &["none", "failed", "check", "synced", "nokey", "whisper"])?;
         self.jobs.forget_jimaku();
         self.jobs.poke();
         self.show_view(id)

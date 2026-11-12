@@ -4,6 +4,7 @@
 //! puts what you watch on your AniList list (anilist_list.rs).
 
 use anyhow::{anyhow, Context, Result};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::Path;
@@ -131,10 +132,16 @@ pub fn query_patiently(q: &str, variables: Value) -> Result<Value> {
     Err(anyhow!("AniList kept asking Telly to slow down. It will try again later."))
 }
 
-/// Anime matching `text`, AniList's best match first.
+/// Anime matching `text`, AniList's best match first. A season in it
+/// ("Season 2") isn't searched for: AniList finds every season by the show's
+/// name, and the words throw it ("K-On! Season 1" finds other shows). `rank`
+/// picks the season out.
 pub fn search(text: &str) -> Result<Vec<Anime>> {
+    static SEASON: OnceLock<Regex> = OnceLock::new();
+    let season = SEASON.get_or_init(|| Regex::new(r"(?i)\bseason\s*\d+\b").expect("valid pattern"));
+    let text = season.replace_all(text, " ");
     let q = format!("query ($search: String) {{ Page(perPage: 10) {{ media(search: $search, type: ANIME, sort: SEARCH_MATCH) {{ {FIELDS} }} }} }}");
-    let answer = query(&q, json!({ "search": text }))?;
+    let answer = query(&q, json!({ "search": text.split_whitespace().collect::<Vec<_>>().join(" ") }))?;
     Ok(answer
         .pointer("/data/Page/media")
         .and_then(Value::as_array)
@@ -246,6 +253,38 @@ fn format_hint(title: &str) -> &'static str {
     }
 }
 
+/// The season a title names: "Season 2", "2nd Season", "Second Season", or a
+/// number ending it ("Konosuba 2", "Overlord II", but not "Part 2").
+fn season(title: &str) -> Option<i64> {
+    let words = words(title);
+    let ordinal = |w: &str| -> Option<i64> {
+        match w {
+            "second" => Some(2),
+            "third" => Some(3),
+            "fourth" => Some(4),
+            "fifth" => Some(5),
+            _ => w.strip_suffix("st").or(w.strip_suffix("nd")).or(w.strip_suffix("rd")).or(w.strip_suffix("th"))?.parse().ok(),
+        }
+    };
+    for i in (0..words.len()).filter(|&i| words[i] == "season") {
+        if let Some(n) = words.get(i + 1).and_then(|n| n.parse().ok()) {
+            return Some(n);
+        }
+        if let Some(n) = i.checked_sub(1).and_then(|p| ordinal(&words[p])) {
+            return Some(n);
+        }
+    }
+    let (last, before) = (words.last()?, words.len().checked_sub(2).map(|i| words[i].as_str()));
+    match last.as_str() {
+        _ if before == Some("part") => None,
+        "ii" => Some(2),
+        "iii" => Some(3),
+        "iv" => Some(4),
+        n if n.len() <= 2 => n.parse().ok(),
+        _ => None,
+    }
+}
+
 /// Searches, and if nothing comes back, searches again with fewer words
 /// ("Fairy Tail OVA Collection" → "Fairy Tail OVA" → "Fairy Tail").
 pub fn search_loosely(text: &str) -> Result<Vec<Anime>> {
@@ -263,11 +302,14 @@ pub fn search_loosely(text: &str) -> Result<Vec<Anime>> {
 pub fn rank(results: &mut [Anime], title: &str, count: usize) {
     let n = results.len().max(1) as f64;
     let wanted = format_hint(title);
+    let wanted_season = season(title);
     for (i, a) in results.iter_mut().enumerate() {
-        let names = [a.romaji.as_str(), a.english.as_str(), a.native.as_str()]
-            .into_iter()
-            .chain(a.synonyms.iter().map(String::as_str));
-        let title_fit = names.map(|name| likeness(title, name)).fold(0.0, f64::max);
+        let names = || {
+            [a.romaji.as_str(), a.english.as_str(), a.native.as_str()]
+                .into_iter()
+                .chain(a.synonyms.iter().map(String::as_str))
+        };
+        let title_fit = names().map(|name| likeness(title, name)).fold(0.0, f64::max);
         let format_fit = match (wanted, a.format.as_str()) {
             (w, f) if w == f => 1.0,
             ("TV", "TV_SHORT" | "ONA") => 0.6,
@@ -282,7 +324,13 @@ pub fn rank(results: &mut [Anime], title: &str, count: usize) {
             _ => 0.3,
         };
         let order = 1.0 - i as f64 / n;
-        a.score = 0.55 * title_fit + 0.15 * format_fit + 0.2 * episode_fit + 0.1 * order;
+        let score = 0.55 * title_fit + 0.15 * format_fit + 0.2 * episode_fit + 0.1 * order;
+        // A folder that names its season wants the entry for that season. A
+        // first season's titles rarely name it.
+        a.score = match wanted_season {
+            Some(s) => 0.8 * score + if names().find_map(season).unwrap_or(1) == s { 0.2 } else { 0.0 },
+            None => score,
+        };
     }
     results.sort_by(|a, b| b.score.total_cmp(&a.score));
 }
@@ -332,6 +380,29 @@ mod tests {
         let mut ova = vec![anime(6702, "FAIRY TAIL", "Fairy Tail", "TV", Some(175)), anime(10087, "FAIRY TAIL OVA", "Fairy Tail OVA", "OVA", Some(9))];
         rank(&mut ova, "Fairy Tail OVA", 9);
         assert_eq!(ova[0].id, 10087);
+    }
+
+    #[test]
+    fn a_season_folder_gets_that_season() {
+        // AniList's order for "KonoSuba": both seasons are TV with 10 episodes.
+        let konosuba = || {
+            vec![
+                anime(21202, "Kono Subarashii Sekai ni Shukufuku wo!", "KONOSUBA -God's blessing on this wonderful world!", "TV", Some(10)),
+                anime(21699, "Kono Subarashii Sekai ni Shukufuku wo! 2", "KONOSUBA -God's blessing on this wonderful world! 2", "TV", Some(10)),
+                anime(136804, "Kono Subarashii Sekai ni Shukufuku wo! 3", "KONOSUBA -God's blessing on this wonderful world! 3", "TV", Some(11)),
+            ]
+        };
+        for (folder, id) in [("Season 1", 21202), ("Season 2", 21699), ("Season 3", 136804)] {
+            let mut found = konosuba();
+            rank(&mut found, &format!("KonoSuba – God’s Blessing On This Wonderful World {folder}"), if id == 136804 { 11 } else { 10 });
+            assert_eq!(found[0].id, id, "{folder}");
+        }
+        assert_eq!(season("Yuru Camp△ SEASON 2"), Some(2));
+        assert_eq!(season("Re:Zero kara Hajimeru Isekai Seikatsu 2nd Season"), Some(2));
+        assert_eq!(season("Haikyuu!! Second Season"), Some(2));
+        assert_eq!(season("Sword Art Online II"), Some(2));
+        assert_eq!(season("Pokémon Concierge Part 2"), None);
+        assert_eq!(season("FAIRY TAIL (2014)"), None);
     }
 
     #[test]

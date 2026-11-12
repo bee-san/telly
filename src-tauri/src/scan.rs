@@ -173,10 +173,15 @@ fn relative(folder: &Path, path: &Path) -> String {
 }
 
 /// The name to search AniList for: the folder's, unless it's a disc folder or
-/// says nothing, then its parent's, then the files' common start.
+/// says nothing, then its parent's, then the files' common start. A season
+/// folder's number is kept ("Show Season 2"): seasons often have the same
+/// number of episodes, so only the number tells them apart.
 fn guess_title(folder: &Path, stems: &[String]) -> String {
     static DISC: OnceLock<Regex> = OnceLock::new();
+    static SEASON: OnceLock<Regex> = OnceLock::new();
     let disc = re(&DISC, r"(?i)^(disc|disk|dvd|bd|vol(ume)?|season)\s*\d+$");
+    let season_folder = re(&SEASON, r"(?i)^season\s*(\d+)$");
+    let mut season: Option<i64> = None;
     let mut dir = Some(folder);
     while let Some(d) = dir {
         let name = d.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
@@ -184,7 +189,14 @@ fn guess_title(folder: &Path, stems: &[String]) -> String {
         let generic = ["anime", "videos", "video", "tv", "shows", "rips", "makemkv", "downloads"]
             .contains(&cleaned.to_lowercase().as_str());
         if !cleaned.is_empty() && !disc.is_match(name.trim()) && !generic && cleaned.chars().any(char::is_alphabetic) {
-            return cleaned;
+            return match season {
+                Some(n) => format!("{cleaned} Season {n}"),
+                None => cleaned,
+            };
+        }
+        // Season 0 holds the specials, which AniList keeps apart from the seasons.
+        if season.is_none() {
+            season = season_folder.captures(name.trim()).and_then(|c| c[1].parse().ok()).filter(|&n| n > 0);
         }
         dir = d.parent();
     }
@@ -416,6 +428,14 @@ mod tests {
         let one = scan_folder_with(&dir.join("Show").join("S1"));
         assert_eq!(one.numbering, "names");
         assert_eq!(one.files.iter().map(|f| f.number).collect::<Vec<_>>(), [Some(1), Some(2), Some(3)]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_season_folder_keeps_its_number_in_the_guess() {
+        let dir = fake_folder("season", &["KonoSuba – God’s Blessing On This Wonderful World/Season 2/KonoSuba - S02E01.mkv", "Show/Season 00/Show - S00E01.mkv"]);
+        assert_eq!(scan_folder_with(&dir.join("KonoSuba – God’s Blessing On This Wonderful World").join("Season 2")).guess, "KonoSuba – God’s Blessing On This Wonderful World Season 2");
+        assert_eq!(scan_folder_with(&dir.join("Show").join("Season 00")).guess, "Show");
         let _ = std::fs::remove_dir_all(dir);
     }
 

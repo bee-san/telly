@@ -57,7 +57,10 @@
     return [s.title, s.titleNative, s.titleEnglish, s.titleRomaji].join(" ").toLowerCase().includes(t);
   }
 
-  const shows = $derived((lib?.shows ?? []).filter(matches));
+  /** NSFW shows are the ones kept in a folder named JAV. */
+  const nsfw = (s: ShowCard) => s.folder.split(/[\/]/).some((part) => part.toLowerCase() === "jav");
+
+  const shows = $derived((lib?.shows ?? []).filter((s) => matches(s) && (showNsfw || !nsfw(s))));
   const watching = $derived(
     shows.filter((s) => s.status === "watching" || (s.status === "getting" && (s.watched > 0 || !!s.next?.resume))).sort((a, b) => (b.lastWatchedAt ?? 0) - (a.lastWatchedAt ?? 0)),
   );
@@ -68,9 +71,10 @@
   type Sort = "added" | "name" | "released" | "known";
   let settings = $state<Settings>(kept<Settings>("settings") ?? {});
   const kind = $derived<Kind>(["series", "movies"].includes(settings["library.show"] as string) ? (settings["library.show"] as Kind) : "all");
+  const showNsfw = $derived(settings["library.nsfw"] === true);
   const sort = $derived<Sort>(["name", "released", "known"].includes(settings["library.sort"] as string) ? (settings["library.sort"] as Sort) : "added");
 
-  function choose(key: string, value: string) {
+  function choose(key: string, value: string | boolean) {
     settings = { ...settings, [key]: value };
     call("setSetting", { key, value }).catch(() => {});
   }
@@ -209,6 +213,7 @@
           <button type="button" aria-pressed={kind === value} onclick={() => choose("library.show", value)}>{label}</button>
         {/each}
       </div>
+      <label class="check nsfw"><input type="checkbox" checked={showNsfw} onchange={(e) => choose("library.nsfw", e.currentTarget.checked)} /><span>Show NSFW</span></label>
       <label class="sort">
         <span>Sort</span>
         <select class="input" value={sort} onchange={(e) => choose("library.sort", e.currentTarget.value)}>
@@ -271,6 +276,8 @@
   .shelf-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-height: 36px; margin: 0 0 14px; }
   .shelf-head h2 { font: 600 17px/1.2 var(--font-ui); }
   .shelf-head > span { font-size: 13px; color: var(--ink-3); }
+  .nsfw { align-items: center; font: 600 12.5px/1 var(--font-ui); color: var(--ink-2); }
+  .nsfw input { margin: 0; }
   .sort { display: inline-flex; align-items: center; gap: 8px; }
   .sort span { font: 600 12.5px/1 var(--font-ui); color: var(--ink-2); }
   .pager { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 1px solid var(--rule-2); border-radius: 6px; background: transparent; color: var(--ink); cursor: pointer; }

@@ -9,7 +9,8 @@
 //! it's marked rewatching (REPEATING) at the episode you're on, goes up as you
 //! watch, and is completed again at its last episode, its rewatch count one
 //! more. Rewatching only its last episode starts no rewatch. An episode
-//! watched again counts when it's watched to its end again (db rewatches).
+//! counts when it's played to its end (db rewatches): one marked watched by
+//! hand raises progress, but starts no rewatch.
 //!
 //! A show added as one folder holding several seasons has an AniList entry
 //! for each season folder. The first folder is the show's own entry; a later
@@ -119,7 +120,7 @@ fn update(backend: &Backend, token: &str) -> Result<bool> {
         }
     };
     let mut wanted: BTreeMap<i64, i64> = BTreeMap::new();
-    // Each entry's episodes watched to the end (the first time and again) since then, as (number, when).
+    // Each entry's episodes played to the end (the first time and again) since then, as (number, when).
     let mut watches: BTreeMap<i64, Vec<(i64, i64)>> = BTreeMap::new();
     for show in backend.db.shows()?.into_iter().filter(|s| s.anilist_id.is_some()) {
         let episodes = backend.db.episodes(show.id)?;

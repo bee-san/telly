@@ -128,7 +128,7 @@ AniList's answers are kept for a week. A show is asked about again after that, a
 In **Settings → AniList**, **Get a token** opens AniList, which shows an access token once you approve Telly. Paste it and press **Sign in**. From then on, each episode you watch raises that anime's progress on your list, and its last episode marks it completed.
 
 - Only episodes watched after signing in count. Progress only goes up: rewatching an earlier episode, or marking one unwatched, changes nothing.
-- Watching a show your list has as completed (finished in Telly or anywhere) is a rewatch: it's marked **rewatching** at the episode you're on, goes up as you watch, and is completed again at its last episode, its rewatch count one more. An episode counts when it's played to its end again; rewatching only the last episode starts no rewatch.
+- Watching a show your list has as completed (finished in Telly or anywhere) is a rewatch: it's marked **rewatching** at the episode you're on, goes up as you watch, and is completed again at its last episode, its rewatch count one more. An episode counts when it's played to its end again; rewatching only the last episode starts no rewatch, and nor does marking episodes watched by hand.
 - A show added as one folder holding several seasons: the first season folder goes to the show's own entry, and a later one to the entry AniList finds for its folder's name, numbered from 1 within that folder. When AniList isn't fairly sure which entry a folder is, or a number is past the entry's last episode, nothing is logged.
 - Shows AniList doesn't know aren't logged.
 - If AniList can't be reached, Telly tries again every 10 minutes, and Settings says why it failed.

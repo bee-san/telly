@@ -1394,7 +1394,7 @@ impl Backend {
             if duration > 0.0 && a.position >= watched_from && !p.reached_end {
                 p.reached_end = true;
                 if episode.watched_at.is_some() && p.from.is_some_and(|from| from < watched_from) {
-                    rewatched = self.db.add_rewatch(a.id).is_ok();
+                    rewatched = self.db.add_watch(a.id).is_ok();
                 }
             }
             p.position = a.position;
@@ -1412,6 +1412,8 @@ impl Backend {
         }
         if episode.watched_at.is_none() && duration > 0.0 && a.position >= watched_from {
             self.db.set_watched(a.id, true)?;
+            // Played, so a watch for AniList's rewatches; marked watched by hand, it isn't one.
+            let _ = self.db.add_watch(a.id);
             became_watched = true;
             self.jobs.poke();
         }
@@ -1920,13 +1922,15 @@ mod tests {
         let episodes = (1..=2).map(|number| crate::db::NewEpisode { number, path: format!("{number}.mkv"), size: 1, duration: 1400.0 }).collect();
         let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
         let eps = backend.db.episodes(show).unwrap();
-        for e in &eps {
-            backend.db.set_watched(e.id, true).unwrap();
-        }
         let tick = |id: i64, position: f64| {
             backend.tick(serde_json::from_value(json!({ "id": id, "position": position, "playing": true })).unwrap()).unwrap();
         };
-        // Played from the start to past its end: one rewatch, however many ticks after.
+        // Each watched once.
+        for e in &eps {
+            tick(e.id, 10.0);
+            tick(e.id, 1300.0);
+        }
+        // Played from the start to past its end again: one rewatch, however many ticks after.
         tick(eps[0].id, 10.0);
         tick(eps[0].id, 1300.0);
         tick(eps[0].id, 1350.0);
@@ -1948,16 +1952,38 @@ mod tests {
         let episodes = vec![crate::db::NewEpisode { number: 1, path: "1.mkv".into(), size: 1, duration: 1400.0 }];
         let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
         let id = backend.db.episodes(show).unwrap()[0].id;
+        let tick = |position: f64, playing: bool| {
+            backend.tick(serde_json::from_value(json!({ "id": id, "position": position, "playing": playing })).unwrap()).unwrap();
+        };
         // Watched to its end, and left there.
-        backend.db.set_watched(id, true).unwrap();
-        backend.db.save_position(id, 1395.0).unwrap();
+        tick(1.0, true);
+        tick(1300.0, true);
+        tick(1395.0, false);
         // Opened again: the player starts a watched episode from the beginning, and plays it to its end.
         backend.begin_sitting(&backend.db.episode(id).unwrap().unwrap());
         for position in [0.0, 1.0, 600.0, 1300.0] {
-            backend.tick(serde_json::from_value(json!({ "id": id, "position": position, "playing": position > 0.0 })).unwrap()).unwrap();
+            tick(position, position > 0.0);
         }
         let watches = backend.db.watches_since(show, 0).unwrap();
         assert_eq!(watches.len(), 2, "the first watch and the rewatch: {watches:?}");
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_episode_marked_watched_by_hand_isn_t_a_watch_for_a_rewatch() {
+        let dir = std::env::temp_dir().join(format!("telly-rewatch-marked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Arc::new(Backend::open(Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap());
+        let episodes = vec![crate::db::NewEpisode { number: 1, path: "1.mkv".into(), size: 1, duration: 1400.0 }];
+        let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let id = backend.db.episodes(show).unwrap()[0].id;
+        // Marked watched by hand, unwatched, and watched again (on a show AniList has as completed, say).
+        for watched in [true, false, true] {
+            backend.call("markWatched", json!({ "id": id, "watched": watched })).unwrap();
+        }
+        assert!(backend.db.watches_since(show, 0).unwrap().is_empty());
+        assert!(backend.db.episode(id).unwrap().unwrap().watched_at.is_some());
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

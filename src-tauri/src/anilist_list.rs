@@ -11,6 +11,10 @@
 //! fairly sure which entry it is. A number past the entry's episode count
 //! logs nothing either: better nothing than the wrong show.
 //!
+//! A copy of which anime are on your list (all but those you only plan to
+//! watch) is kept in anilist-list.json, for Recommended to leave out. It's
+//! fetched again at start-up, on signing in, and after Telly updates the list.
+//!
 //! Settings: anilist.token (the access token), anilist.user (its name),
 //! anilist.since (unix ms: when you signed in), anilist.error (the last
 //! update that failed), anilist.sent.<entry> (the progress last sent) and
@@ -23,7 +27,8 @@ use crate::util::now_ms;
 use crate::{matching, scan};
 use anyhow::Result;
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -46,6 +51,22 @@ pub fn sign_out(backend: &Backend) -> Result<()> {
     for key in ["anilist.token", "anilist.user", "anilist.since", "anilist.error"] {
         backend.db.set_setting(key, &Value::Null)?;
     }
+    let _ = std::fs::remove_file(list_path(backend));
+    Ok(())
+}
+
+fn list_path(backend: &Backend) -> PathBuf {
+    backend.dirs.local.join("anilist-list.json")
+}
+
+/// The anime on your list, from the copy kept on disk (none when signed out).
+pub fn on_list(backend: &Backend) -> HashSet<i64> {
+    std::fs::read(list_path(backend)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
+}
+
+fn fetch_list(backend: &Backend, token: &str) -> Result<()> {
+    let ids = anilist::watched_ids(token)?;
+    std::fs::write(list_path(backend), serde_json::to_vec(&ids)?)?;
     Ok(())
 }
 
@@ -55,10 +76,19 @@ pub fn start(backend: Arc<Backend>) {
         .name("telly-anilist".into())
         .spawn(move || {
             let mut seen = 0;
+            // The token the copy of the list was fetched with: fetched again at start-up and on signing in.
+            let mut listed = String::new();
             loop {
                 let token = backend.db.setting_str("anilist.token");
                 if !token.is_empty() {
-                    let error = update(&backend, &token).err().map(|e| json!(format!("{e:#}"))).unwrap_or(Value::Null);
+                    let result = update(&backend, &token).and_then(|sent| {
+                        if sent || listed != token || !list_path(&backend).is_file() {
+                            fetch_list(&backend, &token)?;
+                            listed = token.clone();
+                        }
+                        Ok(())
+                    });
+                    let error = result.err().map(|e| json!(format!("{e:#}"))).unwrap_or(Value::Null);
                     let _ = backend.db.set_setting("anilist.error", &error);
                 }
                 backend.jobs.wait(&mut seen, Duration::from_secs(600));
@@ -67,8 +97,8 @@ pub fn start(backend: Arc<Backend>) {
         .ok();
 }
 
-/// Sends each entry's progress that's higher than what was last sent.
-fn update(backend: &Backend, token: &str) -> Result<()> {
+/// Sends each entry's progress that's higher than what was last sent; true if the list changed.
+fn update(backend: &Backend, token: &str) -> Result<bool> {
     let since = backend.db.setting_i64("anilist.since", i64::MAX);
     let mut wanted: BTreeMap<i64, i64> = BTreeMap::new();
     for show in backend.db.shows()?.into_iter().filter(|s| s.anilist_id.is_some()) {
@@ -80,6 +110,7 @@ fn update(backend: &Backend, token: &str) -> Result<()> {
             }
         }
     }
+    let mut sent_any = false;
     for (entry, progress) in wanted {
         let sent = format!("anilist.sent.{entry}");
         if progress <= backend.db.setting_i64(&sent, 0) {
@@ -87,10 +118,11 @@ fn update(backend: &Backend, token: &str) -> Result<()> {
         }
         if let Some(status) = change(&anilist::list_entry(token, entry)?, progress) {
             anilist::save_progress(token, entry, progress, status)?;
+            sent_any = true;
         }
         backend.db.set_setting(&sent, &json!(progress))?;
     }
-    Ok(())
+    Ok(sent_any)
 }
 
 /// The AniList entry an episode is of, and its number there.

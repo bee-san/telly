@@ -103,6 +103,7 @@ In **Settings → AniList**, **Get a token** opens AniList, which shows an acces
 - A show added as one folder holding several seasons: the first season folder goes to the show's own entry, and a later one to the entry AniList finds for its folder's name, numbered from 1 within that folder. When AniList isn't fairly sure which entry a folder is, or a number is past the entry's last episode, nothing is logged.
 - Shows AniList doesn't know aren't logged.
 - If AniList can't be reached, Telly tries again every 10 minutes, and Settings says why it failed.
+- **Recommended** leaves out what's on your list, except what you only plan to watch. A copy of the list is kept, fetched again when Telly starts, when you sign in and after Telly updates it.
 
 ## How subtitles are matched
 
@@ -155,6 +156,7 @@ Measured on a 4 TB USB hard drive (Seagate Expansion, exFAT) nothing else was re
 | `%LOCALAPPDATA%\Telly\names` | casts from AniList, their portraits, and the character dictionary |
 | `%LOCALAPPDATA%\Telly\known-words.json` | Telly's copy of the words Anki says you have a studied card for |
 | `%LOCALAPPDATA%\Telly\recommended.json` | what AniList's users recommend for each of your shows, kept for a week |
+| `%LOCALAPPDATA%\Telly\anilist-list.json` | which anime are on your AniList list, once you've signed in |
 | `%APPDATA%\Telly\telly-log.sqlite` | what you watched, for Tidepool (counts only, never the text) |
 
 Your rips are never moved or changed.

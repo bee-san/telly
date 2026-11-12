@@ -154,6 +154,27 @@ pub fn viewer(token: &str) -> Result<String> {
     answer.pointer("/data/Viewer/name").and_then(Value::as_str).map(str::to_string).ok_or_else(|| anyhow!("AniList didn’t say who this token is for"))
 }
 
+/// The anime on the user's list that they've started: all but those they only plan to watch.
+pub fn watched_ids(token: &str) -> Result<Vec<i64>> {
+    let viewer = query_as("query { Viewer { id } }", json!({}), Some(token))?;
+    let user = viewer.pointer("/data/Viewer/id").and_then(Value::as_i64).ok_or_else(|| anyhow!("AniList didn’t say who this token is for"))?;
+    let q = "query ($user: Int, $chunk: Int) { MediaListCollection(userId: $user, type: ANIME, status_not: PLANNING, chunk: $chunk, perChunk: 500) {
+      hasNextChunk lists { entries { mediaId } } } }";
+    let mut ids = Vec::new();
+    for chunk in 1.. {
+        let answer = query_as(q, json!({ "user": user, "chunk": chunk }), Some(token))?;
+        for list in answer.pointer("/data/MediaListCollection/lists").and_then(Value::as_array).into_iter().flatten() {
+            ids.extend(list.get("entries").and_then(Value::as_array).into_iter().flatten().filter_map(|e| e.get("mediaId").and_then(Value::as_i64)));
+        }
+        if answer.pointer("/data/MediaListCollection/hasNextChunk").and_then(Value::as_bool) != Some(true) {
+            break;
+        }
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    Ok(ids)
+}
+
 /// An anime on the user's list: its episode count (if AniList knows it),
 /// and the entry's status and progress (None when it isn't on the list).
 pub struct ListEntry {

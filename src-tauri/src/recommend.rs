@@ -1,7 +1,8 @@
 //! Recommended: anime to watch next, from AniList's community recommendations
 //! for the shows in the library ("liked X, try Y", voted up or down). No
 //! sign-in is needed: Telly asks about each show by its AniList ID, adds the
-//! votes up across the library, and leaves out what the library already has.
+//! votes up across the library, and leaves out what the library already has
+//! and, once you've signed in to AniList, what's on your list there.
 
 use crate::anilist::{self, Anime};
 use crate::backend::Backend;
@@ -269,7 +270,9 @@ pub fn view(backend: &Backend) -> Result<Value> {
     ids.sort_unstable();
     ids.dedup();
     let sources = if ids.is_empty() { Vec::new() } else { sources_for(backend, &ids)? };
-    Ok(json!({ "shows": owned.len(), "picks": rank(&owned, &sources, &hidden(backend)) }))
+    let mut left_out = hidden(backend);
+    left_out.extend(crate::anilist_list::on_list(backend));
+    Ok(json!({ "shows": owned.len(), "picks": rank(&owned, &sources, &left_out) }))
 }
 
 #[cfg(test)]

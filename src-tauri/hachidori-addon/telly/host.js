@@ -388,7 +388,9 @@ async function termEntries(terms) {
   const index = (title) => Math.max(0, titles.indexOf(title));
   const mode = (title) => dictionaries.find((item) => item.title === title)?.frequencyMode || null;
   const entry = async (text) => {
-    const reply = text === "" ? null : await engineRequest(ENGINE_TARGET, { type: "hd_lookup", text }, false);
+    if (text === "") return { originalTextLength: 0, dictionaryEntries: [] };
+    let reply = await engineRequest(ENGINE_TARGET, { type: "hd_lookup", text, maxResults: 2 }, false);
+    if (mightTie(reply.results)) reply = await engineRequest(ENGINE_TARGET, { type: "hd_lookup", text }, false);
     const best = reply?.results?.[0];
     if (!best) return { originalTextLength: 0, dictionaryEntries: [] };
     const frequencies = best.term.frequencies.flatMap((group) => group.frequencies.map((value) => ({
@@ -412,6 +414,21 @@ async function termEntries(terms) {
   };
   await Promise.all(Array.from({ length: LOOKUPS_AT_ONCE }, worker));
   return { results };
+}
+
+/**
+ * Whether the engine's two best matches could rank equal. The engine keeps no
+ * order between matches that tie, so which of them comes first can depend on
+ * how many it was asked for. When the two differ in a way its ranking
+ * compares (the length matched, the text's preprocessing steps, the score),
+ * the first is the best, as it is among the popup's 32; otherwise the 32 are
+ * asked for.
+ */
+function mightTie([a, b] = []) {
+  return b !== undefined
+    && [...a.matched].length === [...b.matched].length
+    && a.preprocessorSteps === b.preprocessorSteps
+    && a.term.score === b.term.score;
 }
 
 /** Answers premining's questions for as long as the page is open (Telly holds each ask 20 s). */

@@ -255,6 +255,7 @@
 
   /** OpenRouter's models for making subtitles, and who each one's are marked as made by. The first is used until one is picked. */
   const ROUTER_MODELS = [
+    ["microsoft/mai-transcribe-2", "MAI-Transcribe 2", "MAI-Transcribe"],
     ["elevenlabs/scribe-v2", "ElevenLabs Scribe v2", "ElevenLabs"],
     ["openai/whisper-large-v3", "Whisper large v3", "Whisper"],
   ];
@@ -491,7 +492,7 @@
         <select class="input" value={str("openrouter.model", ROUTER_MODELS[0][0])} onchange={(e) => set("openrouter.model", e.currentTarget.value)}>
           {#each ROUTER_MODELS as [id, label]}<option value={id}>{label}</option>{/each}
         </select>
-        <small>An episode costs about $0.09 with ElevenLabs, and $0.01 to $0.04 with Whisper.</small>
+        <small>An episode costs about $0.09 with ElevenLabs, and $0.01 to $0.04 with Whisper. OpenRouter lists MAI-Transcribe’s price.</small>
       </label>
     {:else if status?.tools.whisper}
       <label class="field narrow"><span>Model</span>

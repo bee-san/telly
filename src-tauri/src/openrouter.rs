@@ -21,7 +21,7 @@ use std::time::Duration;
 
 const API: &str = "https://openrouter.ai/api/v1";
 /// The model used until Settings picks one.
-const MODEL: &str = "elevenlabs/scribe-v2";
+const MODEL: &str = "microsoft/mai-transcribe-2";
 /// About how long a piece of an episode is, in seconds.
 pub const PIECE: f64 = 300.0;
 /// A cut moves this far from its even place, at most, to somewhere quiet.
@@ -52,7 +52,11 @@ pub fn chosen(backend: &Backend) -> Option<(String, String)> {
 
 /// Who a model's subtitles are marked as made by.
 pub fn maker(model: &str) -> &'static str {
-    if model.starts_with("elevenlabs/") { "ElevenLabs" } else { "Whisper" }
+    match model.split_once('/').map_or("", |(by, _)| by) {
+        "microsoft" => "MAI-Transcribe",
+        "elevenlabs" => "ElevenLabs",
+        _ => "Whisper",
+    }
 }
 
 #[derive(Deserialize)]

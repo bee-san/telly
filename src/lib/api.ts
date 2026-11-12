@@ -172,7 +172,7 @@ export interface ShowView {
   /**
    * Whether subtitles can be made (by a model on OpenRouter, or whisper.cpp
    * here with a model), whether whisper.cpp only lacks its model, and who
-   * makes them: "ElevenLabs" or "Whisper".
+   * makes them: "MAI-Transcribe", "ElevenLabs" or "Whisper".
    */
   whisper: { ready: boolean; needsModel: boolean; maker: string };
   /** Why episodes have no share of known words ("" when they do, or it's being worked out). */

@@ -117,7 +117,7 @@
 
   const missing = $derived((view?.episodes ?? []).filter((e) => ["none", "nokey", "failed"].includes(e.subsState)).length);
 
-  /** Who makes subtitles Jimaku doesn't have: "ElevenLabs" or "Whisper". */
+  /** Who makes subtitles Jimaku doesn't have: "MAI-Transcribe", "ElevenLabs" or "Whisper". */
   const maker = $derived(view?.whisper.maker ?? "Whisper");
 
   async function whisperAll() {

@@ -118,10 +118,26 @@ fn query_as(q: &str, variables: Value, token: Option<&str>) -> Result<Value> {
     }
     let answer: Value = response.body_mut().with_config().limit(8 * 1024 * 1024).read_json().context("AniList sent something unexpected")?;
     if let Some(error) = answer.pointer("/errors/0/message").and_then(Value::as_str) {
+        // What it says of an ID it has no anime for.
+        if answer.pointer("/errors/0/status").and_then(Value::as_i64) == Some(404) {
+            return Err(NotFound(error.to_string()).into());
+        }
         return Err(anyhow!("AniList: {error}"));
     }
     Ok(answer)
 }
+
+/// AniList answered "Not Found" (404) to a query.
+#[derive(Debug)]
+pub struct NotFound(String);
+
+impl std::fmt::Display for NotFound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "AniList: {}", self.0)
+    }
+}
+
+impl std::error::Error for NotFound {}
 
 /// `query`, waiting out AniList's rate limit (90 requests a minute, less
 /// when it's busy) for the many pages of a long show's cast.
@@ -208,10 +224,25 @@ pub struct ListEntry {
     pub repeat: i64,
 }
 
+/// AniList has no anime of this ID (any more: entries get merged).
+#[derive(Debug)]
+pub struct NoAnime(pub i64);
+
+impl std::fmt::Display for NoAnime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "AniList has no anime {}", self.0)
+    }
+}
+
+impl std::error::Error for NoAnime {}
+
 pub fn list_entry(token: &str, id: i64) -> Result<ListEntry> {
     let q = "query ($id: Int) { Media(id: $id, type: ANIME) { episodes mediaListEntry { status progress repeat } } }";
-    let answer = query_as(q, json!({ "id": id }), Some(token))?;
-    let media = answer.pointer("/data/Media").ok_or_else(|| anyhow!("AniList has no anime {id}"))?;
+    let answer = match query_as(q, json!({ "id": id }), Some(token)) {
+        Err(e) if e.downcast_ref::<NotFound>().is_some() => return Err(NoAnime(id).into()),
+        answer => answer?,
+    };
+    let media = answer.pointer("/data/Media").filter(|m| !m.is_null()).ok_or(NoAnime(id))?;
     Ok(ListEntry {
         episodes: media.get("episodes").and_then(Value::as_i64),
         status: media.pointer("/mediaListEntry/status").and_then(Value::as_str).map(str::to_string),

@@ -150,7 +150,16 @@ fn update(backend: &Backend, token: &str) -> Result<bool> {
         if progress <= sent_before && new.is_empty() {
             continue;
         }
-        let listed = anilist::list_entry(token, entry)?;
+        let listed = match anilist::list_entry(token, entry) {
+            Ok(listed) => listed,
+            // An entry AniList no longer has (merged into another) is passed over, not
+            // in the way of the rest. Anything else (AniList not reachable) stops them all.
+            Err(e) if e.downcast_ref::<anilist::NoAnime>().is_some() => {
+                eprintln!("anilist: {e}; passed over");
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
         if let Some((status, at, repeat)) = send_for(&listed, progress, sent_before, &new) {
             anilist::save_progress(token, entry, at, status, repeat)?;
             sent_any = true;

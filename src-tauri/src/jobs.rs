@@ -1647,7 +1647,8 @@ impl Openings {
             for id in due {
                 let Some(episode) = episodes.iter().find(|e| e.id == id) else { continue };
                 let probe = stored_probe(backend, id).unwrap_or_default();
-                if probe.duration <= 0.0 || media::opening(&probe).is_some() {
+                // The chapters say where both are: nothing to ask. One without the other: AniSkip has it.
+                if probe.duration <= 0.0 || (media::opening(&probe).is_some() && media::ending(&probe).is_some()) {
                     self.passed.insert(id);
                     continue;
                 }

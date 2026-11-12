@@ -41,6 +41,8 @@
   let hoverAt = $state<number | null>(null);
   /** The seek bar's pictures, once they're loaded; `ratio` is one picture's width over its height. */
   let sheet = $state<(SeekSheet & { ratio: number }) | null>(null);
+  /** Goes up with each episode, and when the player is left, so pictures on their way for the last one are let go. */
+  let sheetRun = 0;
   /** Which of the sheet's pictures is nearest the pointer. */
   const hoverPic = $derived(sheet && hoverAt !== null ? Math.min(Math.round(hoverAt / sheet.every), sheet.columns * sheet.rows - 1) : 0);
   /** The rip's own English subtitles (null until they're read), shown while Tab is held. */
@@ -245,17 +247,21 @@
         .then((lines) => {
           if (view?.episode.id === id) translation = lines;
         });
-      if (sheet) URL.revokeObjectURL(sheet.src);
-      sheet = null;
+      dropSheet();
       if (v.episode.mediaState === "ready") {
         // Held in memory, so a picture is there the moment the pointer is.
+        const run = sheetRun;
         call<SeekSheet>("seekSheet", { id })
           .then(async (s) => {
-            const src = URL.createObjectURL(await (await fetch(mediaUrl(s.src))).blob());
+            const blob = await (await fetch(mediaUrl(s.src))).blob();
+            if (run !== sheetRun) return;
+            const src = URL.createObjectURL(blob);
             const img = new Image();
             img.onload = () => {
-              if (view?.episode.id === id) sheet = { ...s, src, ratio: (img.naturalWidth / s.columns) / (img.naturalHeight / s.rows) };
+              if (run === sheetRun) sheet = { ...s, src, ratio: (img.naturalWidth / s.columns) / (img.naturalHeight / s.rows) };
+              else URL.revokeObjectURL(src);
             };
+            img.onerror = () => URL.revokeObjectURL(src);
             img.src = src;
           })
           .catch(() => {});
@@ -272,6 +278,13 @@
     } catch (e) {
       error = errorText(e);
     }
+  }
+
+  /** Lets go of the seek bar's pictures, and of any on their way. */
+  function dropSheet() {
+    sheetRun++;
+    if (sheet) URL.revokeObjectURL(sheet.src);
+    sheet = null;
   }
 
   /** Whether this is coming back to a show after a while, to something there's a recap for. */
@@ -1164,6 +1177,7 @@
     cancelAnimationFrame(frame);
     if (tickTimer) clearInterval(tickTimer);
     stopWaiting();
+    dropSheet();
     clearResume();
     window.removeEventListener("keydown", onKey);
     window.removeEventListener("keyup", onKeyUp);

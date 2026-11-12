@@ -396,18 +396,19 @@ fn hits(index: &Index, q: &str) -> Result<Vec<Hit>> {
     if hits.is_empty() {
         return Ok(text_hits(index.with_text(q, None)?, q));
     }
-    // Premining keeps no pronouns or numbers (俺, 君, 二人), so a line where `q`
-    // is written outside every saved word is found by its text: otherwise a
-    // search for 俺 finds only オラ and おれ, which Hachidori reads as 俺.
     let with_words = index.with_words()?;
-    let found: HashSet<(i64, usize)> = hits.iter().map(|h| (h.kept.episode_id, h.kept.line)).collect();
-    let more: Vec<Hit> = text_hits(index.with_text(q, None)?, q)
-        .into_iter()
-        .filter(|h| {
-            !with_words.contains(&h.kept.episode_id)
-                || (!found.contains(&(h.kept.episode_id, h.kept.line)) && !h.words.iter().any(|w| w.from < h.to && h.from < w.to))
-        })
-        .collect();
+    // A word premining keeps is a saved word wherever it's said, so only
+    // episodes whose words aren't saved are read for it. One it doesn't keep
+    // (a pronoun, a number, an interjection: 俺, 二人, ありがとう) is found by
+    // its text too, written outside every saved word: otherwise a search for
+    // 俺 finds only オラ and おれ, which Hachidori reads as 俺.
+    let more = if crate::premine::dictionary_form(q).is_some() {
+        let without: Vec<i64> = index.episodes()?.into_iter().filter(|e| !with_words.contains(e)).collect();
+        if without.is_empty() { Vec::new() } else { text_hits(index.with_text(q, Some(&without))?, q) }
+    } else {
+        let found: HashSet<(i64, usize)> = hits.iter().map(|h| (h.kept.episode_id, h.kept.line)).collect();
+        outside_words(index.with_text(q, None)?, q).into_iter().filter(|h| !found.contains(&(h.kept.episode_id, h.kept.line))).collect()
+    };
     hits.extend(more);
     Ok(hits)
 }
@@ -417,6 +418,18 @@ fn text_hits(kept: Vec<Kept>, q: &str) -> Vec<Hit> {
         .filter_map(|kept| {
             let from = kept.text.find(q)?;
             Some(Hit { words: unpack(&kept.words), from, to: from + q.len(), kept })
+        })
+        .collect()
+}
+
+/// The lines with `q` written outside every saved word of theirs, each at the
+/// first such `q`: 後 in 後で, not in 最後.
+fn outside_words(kept: Vec<Kept>, q: &str) -> Vec<Hit> {
+    kept.into_iter()
+        .filter_map(|kept| {
+            let words = unpack(&kept.words);
+            let from = kept.text.match_indices(q).map(|(at, _)| at).find(|&at| !words.iter().any(|w| w.from < at + q.len() && at < w.to))?;
+            Some(Hit { words, from, to: from + q.len(), kept })
         })
         .collect()
 }
@@ -650,10 +663,11 @@ mod tests {
             word(3, &lines[3].text, "旅", "旅", "たび"),
         ];
         index.replace(8, &entries(&lines, &uses).unwrap(), "now", true).unwrap();
-        // Episode 7's フリーレン様 isn't a word there, and its words are saved: it goes by them.
+        // Episode 7's フリーレン様 isn't a word there, though its words are saved: a name
+        // premining doesn't keep is found where it's written, outside every saved word.
         let mut names = found(&index, "フリーレン");
         names.sort();
-        assert_eq!(names, [(0, "フリーレン".to_string()), (1, "フリーレン様".to_string())]);
+        assert_eq!(names, [(0, "フリーレン".to_string()), (1, "フリーレン様".to_string()), (2, "フリーレン".to_string())]);
         // 旅 finds 旅 alone: 旅行 is another word, not 旅 with an honorific.
         assert_eq!(found(&index, "旅"), [(3, "旅".to_string())]);
     }
@@ -666,6 +680,31 @@ mod tests {
         let found: Vec<(i64, usize, &str)> = hits.iter().map(|h| (h.kept.episode_id, h.kept.line, &h.kept.text[h.from..h.to])).collect();
         // Its text has only the form asked for.
         assert_eq!(found, [(7, 1, "食べない"), (9, 0, "食べる")]);
+    }
+
+    #[test]
+    fn a_word_premining_doesn_t_keep_is_found_where_it_s_written() {
+        let index = index();
+        // 俺 is a pronoun, so no saved word; Hachidori read オラ as 俺 in one line.
+        let lines = [line(1.0, 2.0, "オラは強い"), line(3.0, 4.0, "俺が行く"), line(5.0, 6.0, "最後に、俺だ"), line(7.0, 8.0, "最後だ"), line(9.0, 10.0, "後で行く")];
+        let uses = [
+            word(0, &lines[0].text, "オラ", "俺", "おれ"),
+            word(2, &lines[2].text, "最後", "最後", "さいご"),
+            word(3, &lines[3].text, "最後", "最後", "さいご"),
+            word(4, &lines[4].text, "後", "後", "あと"),
+        ];
+        index.replace(8, &entries(&lines, &uses).unwrap(), "now", true).unwrap();
+        let found = found(&index, "俺");
+        assert!(found.contains(&(0, "オラ".to_string())), "{found:?}");
+        assert!(found.contains(&(1, "俺".to_string())), "{found:?}");
+        assert!(found.contains(&(2, "俺".to_string())), "{found:?}");
+        // 後, a word of its own, isn't found inside a saved 最後, though it's written there.
+        let after: Vec<(i64, usize, String)> = found_in(&index, "後").into_iter().filter(|f| f.0 == 8).collect();
+        assert_eq!(after, [(8, 4, "後".to_string())]);
+    }
+
+    fn found_in(index: &Index, q: &str) -> Vec<(i64, usize, String)> {
+        hits(index, q).unwrap().iter().map(|h| (h.kept.episode_id, h.kept.line, h.kept.text[h.from..h.to].to_string())).collect()
     }
 
     #[test]

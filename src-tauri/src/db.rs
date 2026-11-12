@@ -713,6 +713,29 @@ impl Db {
         Ok(())
     }
 
+    /// What a subtitle worker found for an episode it took ("working"), kept
+    /// only if it's still working on it: a file you picked meanwhile (Use a
+    /// subtitle file) isn't replaced by what the worker found. Whether it was kept.
+    pub fn settle_subs(&self, id: i64, state: &str, detail: &str, file: &str, score: Option<f64>, offset_ms: Option<i64>) -> Result<bool> {
+        let n = self.conn()?.execute(
+            "UPDATE episodes SET subs_state = ?2, subs_detail = ?3, subs_file = ?4, subs_score = ?5, subs_offset_ms = ?6,
+                subs_nudge_ms = CASE WHEN subs_file = ?4 AND subs_offset_ms IS ?6 THEN subs_nudge_ms ELSE 0 END
+             WHERE id = ?1 AND subs_state = 'working'",
+            params![id, state, detail, file, score, offset_ms],
+        )?;
+        Ok(n == 1)
+    }
+
+    /// A subtitle worker couldn't finish an episode it took: failed, unless
+    /// you picked a file for it meanwhile.
+    pub fn fail_subs(&self, id: i64, detail: &str) -> Result<()> {
+        self.conn()?.execute(
+            "UPDATE episodes SET subs_state = 'failed', subs_detail = ?2 WHERE id = ?1 AND subs_state = 'working'",
+            params![id, detail],
+        )?;
+        Ok(())
+    }
+
     pub fn set_subs_state(&self, id: i64, state: &str, detail: &str) -> Result<()> {
         self.conn()?.execute(
             "UPDATE episodes SET subs_state = ?2, subs_detail = ?3 WHERE id = ?1",

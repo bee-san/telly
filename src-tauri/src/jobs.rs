@@ -897,7 +897,7 @@ fn subs_worker(backend: &Backend, n: usize) {
             set_task(slot, Some(task(&show, &episode, "Finding subtitles for")));
             let result = find_subtitles(backend, slot, &ffmpeg, &ffprobe, &show, &episode, count);
             if let Err(e) = result {
-                let _ = backend.db.set_subs_state(episode.id, "failed", &format!("{e:#}"));
+                let _ = backend.db.fail_subs(episode.id, &format!("{e:#}"));
             }
             pictures_after(backend, slot, &ffmpeg, &show, &episode);
             set_task(slot, None);
@@ -1912,9 +1912,11 @@ fn hear_again(backend: &Backend) {
 /// Settles an episode no subtitle file fits: OpenRouter makes its subtitles
 /// when Settings has a key for it; else it has none, and `detail` says why.
 fn no_subtitles(backend: &Backend, episode_id: i64, detail: &str, score: Option<f64>) -> Result<()> {
-    forget_lines(backend, episode_id);
     let (state, detail) = if openrouter::chosen(backend).is_some() { ("whisper", "") } else { ("none", detail) };
-    backend.db.set_subs(episode_id, state, detail, "", score, None)?;
+    // Unless you picked a file meanwhile, whose lines stay.
+    if backend.db.settle_subs(episode_id, state, detail, "", score, None)? {
+        forget_lines(backend, episode_id);
+    }
     Ok(())
 }
 
@@ -2085,8 +2087,9 @@ fn find_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &Path, 
         if state == "none" {
             return no_subtitles(backend, episode.id, detail, None);
         }
-        forget_lines(backend, episode.id);
-        backend.db.set_subs(episode.id, state, detail, "", None, None)?;
+        if backend.db.settle_subs(episode.id, state, detail, "", None, None)? {
+            forget_lines(backend, episode.id);
+        }
         return Ok(());
     }
     let timing = match timing {
@@ -2110,11 +2113,12 @@ fn find_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &Path, 
                 listen(backend, ffmpeg, &probe, &key, &model, episode)
             };
             if let Some((lines, placed, name)) = heard.ok().and_then(|heard| place_by_words(&tried, &heard)) {
-                write_lines(backend, episode.id, &lines)?;
                 let detail = format!("shifted {:+.1} s · matched to what {maker} heard", placed.shift);
                 let score = (placed.agreeing as f64 / placed.heard as f64).max(GOOD_SYNC);
-                backend.db.set_subs(episode.id, "synced", &detail, &name, Some(score), Some((placed.shift * 1000.0).round() as i64))?;
-                crate::premine::prepare(backend, episode.id);
+                if backend.db.settle_subs(episode.id, "synced", &detail, &name, Some(score), Some((placed.shift * 1000.0).round() as i64))? {
+                    write_lines(backend, episode.id, &lines)?;
+                    crate::premine::prepare(backend, episode.id);
+                }
                 return Ok(());
             }
         }
@@ -2132,11 +2136,13 @@ fn find_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &Path, 
             let _ = backend.db.set_setting(&offset_setting(show.id, &group), &serde_json::json!(filed - l));
         }
     }
-    write_lines(backend, episode.id, &synced.lines)?;
     let state = if synced.score >= GOOD_SYNC { "synced" } else { "check" };
     let detail = format!("{} · matched to {}", describe(&synced), timing.against);
-    backend.db.set_subs(episode.id, state, &detail, &name, Some(synced.score), Some(synced.offset_ms))?;
-    crate::premine::prepare(backend, episode.id);
+    // Kept unless you picked a file meanwhile.
+    if backend.db.settle_subs(episode.id, state, &detail, &name, Some(synced.score), Some(synced.offset_ms))? {
+        write_lines(backend, episode.id, &synced.lines)?;
+        crate::premine::prepare(backend, episode.id);
+    }
     Ok(())
 }
 
@@ -2266,6 +2272,29 @@ mod tests {
     }
 
     #[test]
+    fn a_file_picked_while_a_worker_finds_subtitles_isn_t_replaced_by_what_it_finds() {
+        let dir = std::env::temp_dir().join(format!("telly-picked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let episodes = vec![crate::db::NewEpisode { number: 1, path: "1.mkv".into(), size: 1, duration: 1400.0 }];
+        let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let id = backend.db.episodes(show).unwrap()[0].id;
+        assert!(backend.db.claim_subs(id).unwrap());
+        // Meanwhile you pick a file: its lines and state are yours.
+        write_lines(&backend, id, &[Line { start: 1.0, end: 2.0, text: "選んだ".into(), ruby: vec![], speaker: String::new(), sign: false }]).unwrap();
+        backend.db.set_subs(id, "synced", "chosen by hand", "mine.srt", Some(0.9), Some(0)).unwrap();
+        // The worker finds nothing, or fails: neither touches them.
+        no_subtitles(&backend, id, "Jimaku has nothing for this episode", None).unwrap();
+        backend.db.fail_subs(id, "it broke").unwrap();
+        assert!(!backend.db.settle_subs(id, "synced", "found", "jimaku.srt", Some(1.0), Some(0)).unwrap());
+        let e = backend.db.episode(id).unwrap().unwrap();
+        assert_eq!((e.subs_state.as_str(), e.subs_file.as_str()), ("synced", "mine.srt"));
+        assert_eq!(read_lines(&backend, id)[0].text, "選んだ");
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn an_episode_left_without_subtitles_doesn_t_keep_its_old_lines() {
         let dir = std::env::temp_dir().join(format!("telly-none-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -2277,6 +2306,8 @@ mod tests {
         write_lines(&backend, id, &[Line { start: 1.0, end: 2.0, text: "前の番組".into(), ruby: vec![], speaker: String::new(), sign: false }]).unwrap();
         std::fs::write(crate::premine::words_path(&backend, id), b"{}").unwrap();
         backend.db.set_word_score(id, 10, 5, "x").unwrap();
+        // A subtitle worker takes it, and finds nothing.
+        assert!(backend.db.claim_subs(id).unwrap());
         no_subtitles(&backend, id, "Jimaku has nothing for this episode", None).unwrap();
         assert!(read_lines(&backend, id).is_empty());
         assert!(!crate::premine::words_path(&backend, id).exists());
@@ -2300,6 +2331,8 @@ mod tests {
         backend.db.set_probe(eps[0].id, &serde_json::to_string(&probe).unwrap(), 1400.0, None, "video").unwrap();
         // No ffprobe (or ffmpeg) here: only episode 1 gets as far as wanting a Jimaku key.
         let (nothing, slot) = (Path::new("no-such-tool"), Mutex::new(None));
+        // As a subtitle worker takes it.
+        assert!(backend.db.claim_subs(eps[0].id).unwrap());
         find_subtitles(&backend, &slot, nothing, nothing, &show, &eps[0], 2).unwrap();
         assert_eq!(backend.db.episode(eps[0].id).unwrap().unwrap().subs_state, "nokey");
         assert!(find_subtitles(&backend, &slot, nothing, nothing, &show, &eps[1], 2).is_err());

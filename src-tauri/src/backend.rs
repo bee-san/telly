@@ -1570,6 +1570,10 @@ impl Backend {
             "retrySubs" => {
                 let show: Option<i64> = arg(&args, "show")?;
                 match arg::<Option<i64>>(&args, "id")? {
+                    // One being found now would get a second worker.
+                    Some(id) if self.db.episode(id)?.is_some_and(|e| e.subs_state == "working") => {
+                        return Err(anyhow!("Telly is finding this episode’s subtitles right now. Ask again once it’s done."));
+                    }
                     Some(id) => self.db.set_subs_state(id, "pending", "")?,
                     None => {
                         self.db.requeue_subs(show, &["none", "failed", "nokey", "check"])?;

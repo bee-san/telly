@@ -85,6 +85,8 @@
   let montageVideo = $state<HTMLVideoElement | null>(null);
   /** The recap card is up: the episode waits for it. */
   let holdPlay = false;
+  /** Whether closing the recap with Esc (or P) plays the episode: it was playing, or waiting for the recap. */
+  let recapResume = true;
   /** This episode started from the end card’s countdown: no recap for it. */
   let cameByAutoplay = false;
   // Characters' names in the subtitles, from the names dictionary.
@@ -873,6 +875,7 @@
    *  and after a short while away it’s only of the episode just left. */
   async function openRecap(back = false) {
     if (!view || recap) return;
+    recapResume = back || !video || !video.paused;
     holdPlay = true;
     video?.pause();
     recap = { state: "writing", error: "", data: null, full: !back || (view.awayMs ?? 0) >= LONG_AWAY_MS };
@@ -1066,14 +1069,18 @@
     }
     // The recap card, or its moments, takes Space, Enter, P and Esc.
     if (recap) {
-      if (e.key === " " || e.key === "Enter" || e.key === "Escape") {
+      if (e.key === " " || e.key === "Enter") {
         e.preventDefault();
         if (montage) endMontage(true);
         else closeRecap(true);
+      } else if (e.key === "Escape") {
+        // Back to the episode as it was: paused if it was paused when P opened the recap.
+        e.preventDefault();
+        closeRecap(recapResume);
       } else if (e.key === "p" || e.key === "P") {
         if (montage) endMontage(false);
         else if (canMontage) startMontage();
-        else closeRecap(true);
+        else closeRecap(recapResume);
       }
       return;
     }

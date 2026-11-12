@@ -3,8 +3,8 @@
 //!
 //! - Text is read as UTF-8, UTF-16 or Shift_JIS, whichever it is.
 //! - ASS override tags ({\an8}, {\pos(…)}) go; \N becomes a line break.
-//! - Signs and songs (styles or lines that say so, or that are placed on
-//!   screen) are kept but marked, and the player hides them by default.
+//! - Signs and songs (styles that say so, or lines placed on screen with
+//!   \pos) are kept but marked, and the player hides them by default.
 //! - Readings in brackets after kanji, 漢字(かんじ), become furigana.
 //! - A speaker's name in brackets at the start, （ナルト）, is kept apart.
 
@@ -162,13 +162,51 @@ fn parse_srt_like(text: &str) -> Vec<Line> {
     lines
 }
 
+/// The words of a style's name, in lower case: "OP Romaji", "TLNote" and
+/// "sign_0423_EpTitle" give op and romaji, tl and note, sign, 0423, ep and title.
+fn style_words(name: &str) -> Vec<String> {
+    let chars: Vec<char> = name.chars().collect();
+    let mut words: Vec<String> = Vec::new();
+    let mut word = String::new();
+    for (i, &c) in chars.iter().enumerate() {
+        if !c.is_ascii_alphanumeric() {
+            if !word.is_empty() {
+                words.push(std::mem::take(&mut word));
+            }
+            continue;
+        }
+        if !word.is_empty() {
+            let p = chars[i - 1];
+            let next_lower = chars.get(i + 1).is_some_and(char::is_ascii_lowercase);
+            if (p.is_ascii_lowercase() && c.is_ascii_uppercase())
+                || (p.is_ascii_uppercase() && c.is_ascii_uppercase() && next_lower)
+                || p.is_ascii_digit() != c.is_ascii_digit()
+            {
+                words.push(std::mem::take(&mut word));
+            }
+        }
+        word.push(c.to_ascii_lowercase());
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    words
+}
+
+/// Whether a style (or an effect) is for signs, songs or notes: its name says
+/// so in a word of its own, as in Sign, Signs, Title, OP Kara or TL Note, but
+/// not Subtitle or Notebook.
 fn sign_style(style: &str) -> bool {
-    static R: OnceLock<Regex> = OnceLock::new();
-    re(&R, r"(?i)sign|song|lyric|karaoke|kara|\bop\b|\bed\b|title|note|insert|logo|screen|^tl").is_match(style)
+    const WORDS: &[&str] = &[
+        "sign", "signs", "typeset", "ts", "title", "titles", "logo", "screen", "onscreen", "insert", "song", "songs", "lyric",
+        "lyrics", "karaoke", "kara", "kfx", "fx", "op", "ed", "opening", "ending", "note", "notes", "tl", "tn",
+    ];
+    style_words(style).iter().any(|w| WORDS.contains(&w.as_str()))
 }
 
 fn parse_ass(text: &str) -> Vec<Line> {
-    let mut lines = Vec::new();
+    // (start, end, text, a sign by its style or effect, placed with \pos or \move)
+    let mut events: Vec<(f64, f64, &str, bool, bool)> = Vec::new();
     let mut in_events = false;
     let mut format: Vec<String> = Vec::new();
     for raw in text.lines() {
@@ -195,11 +233,21 @@ fn parse_ass(text: &str) -> Vec<Line> {
         let get = |name: &str| format.iter().position(|f| f == name).and_then(|i| fields.get(i)).map(|s| s.trim()).unwrap_or("");
         let (Some(start), Some(end)) = (timestamp(get("start")), timestamp(get("end"))) else { continue };
         let body = format.iter().position(|f| f == "text").and_then(|i| fields.get(i)).copied().unwrap_or("");
-        let placed = body.contains("\\pos(") || body.contains("\\move(") || body.contains("\\an8");
-        let sign = sign_style(get("style")) || sign_style(get("effect")) || placed;
-        lines.extend(make_line(start, end, body, sign));
+        let named = sign_style(get("style")) || sign_style(get("effect"));
+        let placed = body.contains("\\pos(") || body.contains("\\move(");
+        events.push((start, end, body, named, placed));
     }
-    lines
+    // Signs are placed where they go on screen with \pos or \move. Dialogue
+    // isn't, though it may be moved to the top ({\an8}, while two people talk
+    // at once): so a line with \an8 alone is dialogue, and so are placed
+    // lines in a file that places most of its lines, as some conversions do.
+    let unnamed = events.iter().filter(|e| !e.3).count();
+    let placed = events.iter().filter(|e| !e.3 && e.4).count();
+    let placing_marks_signs = placed * 2 <= unnamed;
+    events
+        .into_iter()
+        .filter_map(|(start, end, body, named, placed)| make_line(start, end, body, named || (placed && placing_marks_signs)))
+        .collect()
 }
 
 /// Reads a subtitle file. `name` (its file name) decides the format when the text doesn't.
@@ -289,6 +337,36 @@ mod tests {
         assert_eq!(lines[0].text, "もしもし\n元気？");
         assert!(!lines[0].sign);
         assert!(lines[1].sign && lines[2].sign);
+    }
+
+    #[test]
+    fn a_style_named_subtitle_is_dialogue_and_one_named_sign_or_title_is_not() {
+        let ass = "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:01.00,0:00:03.00,Subtitle,,0,0,0,,もしもし\nDialogue: 0,0:00:04.00,0:00:06.00,Subtitle,,0,0,0,,元気？\n";
+        let lines = parse("ep.ass", ass.as_bytes()).unwrap();
+        assert!(lines.iter().all(|l| !l.sign));
+        assert!(is_japanese(&lines));
+        for style in ["Subtitle", "Subtitles", "Notebook", "Default", "Main Top", "DefaultItalics", "Edward"] {
+            assert!(!sign_style(style), "{style} is dialogue");
+        }
+        for style in ["Sign", "Signs", "sign_0423_EpTitle", "Title", "Episode Title", "OP Kara", "ED-Romaji", "OPRomaji", "Note", "TL Note", "TLNote", "Insert Song", "Lyrics"] {
+            assert!(sign_style(style), "{style} is a sign or song");
+        }
+    }
+
+    #[test]
+    fn a_line_moved_to_the_top_is_dialogue_and_a_placed_one_a_sign() {
+        let events = "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n";
+        let ass = format!(
+            "{events}Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{{\\an8}}待って！\nDialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,行くぞ\nDialogue: 0,0:00:04.00,0:00:06.00,Default,,0,0,0,,{{\\an7\\pos(320,40)}}木ノ葉病院\nDialogue: 0,0:00:07.00,0:00:09.00,Default,,0,0,0,,そうか\n"
+        );
+        let signs: Vec<bool> = parse("ep.ass", ass.as_bytes()).unwrap().iter().map(|l| l.sign).collect();
+        assert_eq!(signs, [false, false, true, false]);
+        // A file that places every line: placing says nothing about which are signs.
+        let ass = format!(
+            "{events}Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{{\\pos(640,680)}}もしもし\nDialogue: 0,0:00:04.00,0:00:06.00,Default,,0,0,0,,{{\\pos(640,40)}}元気？\n"
+        );
+        let lines = parse("ep.ass", ass.as_bytes()).unwrap();
+        assert!(lines.iter().all(|l| !l.sign) && is_japanese(&lines));
     }
 
     #[test]

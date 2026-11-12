@@ -438,7 +438,9 @@ fn probe_worker(backend: &Backend) {
             let result = plan_video(backend, &ffprobe, &show, &episode);
             set_task(&backend.jobs.probing, None);
             match result {
-                Ok(None) => {}
+                // Ready to play: the workers waiting for that (catching up,
+                // asking AniSkip) look now, not at their next look 5 s on.
+                Ok(None) => backend.jobs.poke(),
                 Ok(Some(_)) => {
                     let _ = backend.db.media_reset(episode.id);
                     backend.jobs.poke();

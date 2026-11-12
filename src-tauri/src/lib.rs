@@ -4,6 +4,7 @@
 
 pub mod anilist;
 pub mod anilist_list;
+pub mod aniskip;
 pub mod anki;
 pub mod ask;
 pub mod backend;

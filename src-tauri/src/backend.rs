@@ -849,7 +849,7 @@ impl Backend {
         let i = episodes.iter().position(|e| e.id == id).unwrap_or(0);
         let lite = |e: &Episode| json!({ "id": e.id, "number": e.number, "ready": e.media_state == "ready", "mediaState": e.media_state, "mediaProgress": e.media_progress });
         let lines: Vec<Line> = jobs::read_lines(self, id);
-        // From what ffprobe found in the rip: its chapters, its opening and its audio tracks.
+        // From what ffprobe found in the rip: its chapters, its opening (else AniSkip's) and its audio tracks.
         let probe = jobs::stored_probe(self, id).unwrap_or_default();
         let audio: Vec<String> = probe
             .audio
@@ -867,7 +867,7 @@ impl Backend {
         Ok(json!({
             "show": show,
             "chapters": probe.chapters,
-            "opening": media::opening(&probe).map(|(start, end)| json!({ "start": start, "end": end })),
+            "opening": media::opening(&probe).or(self.db.opening(id)?).map(|(start, end)| json!({ "start": start, "end": end })),
             "audio": audio,
             "audioTrack": jobs::playing_track(&episode, &probe),
             "listedAudio": jobs::listed_track(&episode, &probe),

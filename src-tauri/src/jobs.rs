@@ -24,7 +24,7 @@ use crate::media::{self, Plan};
 use crate::subs::{self, Line};
 use crate::sync;
 use crate::jimaku;
-use crate::{anilist, heard, matching, openrouter, scan};
+use crate::{anilist, aniskip, heard, matching, openrouter, scan};
 use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -349,6 +349,7 @@ pub fn start(backend: Arc<Backend>) {
     start("telly-probe".into(), |backend, _| probe_worker(backend), 0);
     start("telly-catch-up".into(), |backend, _| catch_up_worker(backend), 0);
     start("telly-words".into(), |backend, _| words_worker(backend), 0);
+    start("telly-openings".into(), |backend, _| openings_worker(backend), 0);
     for n in 0..SUBS_WORKERS {
         start(format!("telly-subs-{n}"), subs_worker, n);
     }
@@ -1239,6 +1240,47 @@ fn words_worker(backend: &Backend) {
             let next = backend.jobs.words.lock().unwrap_or_else(|e| e.into_inner()).pop_front();
             let Some(episode_id) = next else { break };
             crate::premine::prepare(backend, episode_id);
+        }
+    }
+}
+
+/// Asks AniSkip where the opening is in episodes whose rips' chapters don't
+/// say, so Skip opening shows for them too. Its answer is kept, none
+/// included. An episode it couldn't be asked about is asked again when Telly
+/// next starts.
+fn openings_worker(backend: &Backend) {
+    // Episodes whose chapters show the opening, or that couldn't be asked about.
+    let mut looked: HashSet<i64> = HashSet::new();
+    // MyAnimeList's ID for each AniList ID, which AniSkip knows anime by.
+    let mut mal: HashMap<i64, Option<i64>> = HashMap::new();
+    let mut seen = 0;
+    loop {
+        backend.jobs.wait(&mut seen, Duration::from_secs(5));
+        for show in shows_in_order(backend) {
+            let Some(anilist_id) = show.anilist_id else { continue };
+            for (id, number) in backend.db.unasked_openings(show.id).unwrap_or_default() {
+                if looked.contains(&id) {
+                    continue;
+                }
+                let probe = stored_probe(backend, id).unwrap_or_default();
+                if probe.duration <= 0.0 || media::opening(&probe).is_some() {
+                    looked.insert(id);
+                    continue;
+                }
+                let Some(mal_id) = *mal.entry(anilist_id).or_insert_with(|| aniskip::mal_id(anilist_id).ok().flatten()) else {
+                    looked.insert(id);
+                    continue;
+                };
+                match aniskip::opening(mal_id, number, probe.duration) {
+                    Ok(opening) => {
+                        let _ = backend.db.set_opening(id, opening);
+                    }
+                    Err(_) => {
+                        looked.insert(id);
+                    }
+                }
+                std::thread::sleep(aniskip::PACE);
+            }
         }
     }
 }

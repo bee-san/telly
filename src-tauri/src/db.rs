@@ -97,6 +97,14 @@ CREATE TABLE word_scores (
   known       INTEGER NOT NULL,
   stamp       TEXT NOT NULL            -- the state of your known words it was worked out from (known.rs)
 );
+", "
+-- Where AniSkip says an episode's opening is (aniskip.rs), asked for when the
+-- rip's chapters don't say. NULL start and end: AniSkip has none for it.
+CREATE TABLE openings (
+  episode_id  INTEGER PRIMARY KEY REFERENCES episodes (id) ON DELETE CASCADE,
+  start       REAL,
+  end         REAL
+);
 "];
 
 /// Something Claude said, kept so it's there instantly next time.
@@ -431,7 +439,10 @@ impl Db {
     }
 
     pub fn set_show_anilist(&self, id: i64, s: &NewShow) -> Result<()> {
-        self.conn()?.execute(
+        let conn = self.conn()?;
+        // AniSkip's openings were for the anime it was before.
+        conn.execute("DELETE FROM openings WHERE episode_id IN (SELECT id FROM episodes WHERE show_id = ?1)", params![id])?;
+        conn.execute(
             "UPDATE shows SET title = ?2, title_native = ?3, title_english = ?4, title_romaji = ?5, anilist_id = ?6,
                anilist_episodes = ?7, format = ?8, year = ?9, cover_url = ?10, cover_color = ?11, jimaku_id = NULL
              WHERE id = ?1",
@@ -675,6 +686,8 @@ impl Db {
                 params![episode_id, show_id, number],
             )?;
         }
+        // AniSkip's openings were for the episodes' old numbers.
+        tx.execute("DELETE FROM openings WHERE episode_id IN (SELECT id FROM episodes WHERE show_id = ?1)", params![show_id])?;
         tx.commit()?;
         Ok(())
     }
@@ -749,6 +762,34 @@ impl Db {
         Ok(())
     }
 
+    /// Where AniSkip says an episode's opening is, as (start, end).
+    pub fn opening(&self, episode_id: i64) -> Result<Option<(f64, f64)>> {
+        let found: Option<(Option<f64>, Option<f64>)> =
+            self.conn()?.query_row("SELECT start, end FROM openings WHERE episode_id = ?1", params![episode_id], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+        Ok(found.and_then(|(start, end)| Some((start?, end?))))
+    }
+
+    /// A show's episodes, as (id, number), that ffprobe has read and AniSkip
+    /// hasn't been asked about.
+    pub fn unasked_openings(&self, show_id: i64) -> Result<Vec<(i64, i64)>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, number FROM episodes e WHERE show_id = ?1 AND probe != ''
+               AND NOT EXISTS (SELECT 1 FROM openings o WHERE o.episode_id = e.id) ORDER BY number",
+        )?;
+        let rows = stmt.query_map(params![show_id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// What AniSkip said about an episode's opening; None: it has none.
+    pub fn set_opening(&self, episode_id: i64, opening: Option<(f64, f64)>) -> Result<()> {
+        self.conn()?.execute(
+            "INSERT OR REPLACE INTO openings (episode_id, start, end) VALUES (?1, ?2, ?3)",
+            params![episode_id, opening.map(|o| o.0), opening.map(|o| o.1)],
+        )?;
+        Ok(())
+    }
+
     pub fn cards_per_show(&self) -> Result<std::collections::HashMap<i64, i64>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
@@ -800,6 +841,36 @@ mod tests {
         assert_eq!(db.setting_str("jimaku.key"), "k");
         db.remove_show(id).unwrap();
         assert!(db.episodes(id).unwrap().is_empty());
+        drop(db);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn asks_aniskip_again_after_a_renumber_or_rematch() {
+        let (db, dir) = temp_db("openings");
+        let id = db
+            .add_show(&NewShow {
+                folder: "D:\\Anime\\Frieren".into(),
+                title: "Frieren".into(),
+                episodes: vec![NewEpisode { number: 1, path: "a.mkv".into(), size: 1, duration: 1500.0 }],
+                ..Default::default()
+            })
+            .unwrap();
+        let ep = db.episodes(id).unwrap()[0].id;
+        // Not read by ffprobe yet.
+        assert!(db.unasked_openings(id).unwrap().is_empty());
+        db.set_probe(ep, "{}", 1500.0, None, "direct").unwrap();
+        assert_eq!(db.unasked_openings(id).unwrap(), [(ep, 1)]);
+        db.set_opening(ep, Some((116.7, 206.7))).unwrap();
+        assert_eq!(db.opening(ep).unwrap(), Some((116.7, 206.7)));
+        assert!(db.unasked_openings(id).unwrap().is_empty());
+        db.renumber(id, &[(ep, 2)]).unwrap();
+        assert_eq!(db.opening(ep).unwrap(), None);
+        assert_eq!(db.unasked_openings(id).unwrap(), [(ep, 2)]);
+        db.set_opening(ep, None).unwrap();
+        assert!(db.unasked_openings(id).unwrap().is_empty());
+        db.set_show_anilist(id, &NewShow { title: "Frieren".into(), ..Default::default() }).unwrap();
+        assert_eq!(db.unasked_openings(id).unwrap(), [(ep, 2)]);
         drop(db);
         let _ = std::fs::remove_dir_all(dir);
     }

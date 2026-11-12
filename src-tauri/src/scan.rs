@@ -118,14 +118,20 @@ pub fn makemkv_title(stem: &str) -> Option<i64> {
     re(&R, r"(?i)(?:^|_)t([0-9]{2,3})$").captures(stem).and_then(|c| c[1].parse().ok())
 }
 
-/// Names that say a file is an extra, not an episode.
+/// Names that say a file is an extra, not an episode. A file named as a
+/// season's episode (S01E05, as Sonarr names them) is one whatever its title
+/// says ("S01E03 - The Bonus Round"), though its folders can still say it's an
+/// extra; season 0's (S00E01) are specials, which often are extras.
 fn extra_reason(rel: &str) -> Option<&'static str> {
     static R: OnceLock<Regex> = OnceLock::new();
     let r = re(
         &R,
         r"(?i)\b(NCOP|NCED|creditless|non[- ]?credit|clean (?:opening|ending)|trailers?|teasers?|previews?|promos?|PV|CM|menus?|extras?|bonus|special features|making of|interviews?)\b",
     );
-    r.is_match(rel).then_some("Its name says it’s an extra")
+    let (folders, name) = rel.rsplit_once('/').unwrap_or(("", rel));
+    let stem = Path::new(name).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let named_episode = matches!(episode_number(&stem), Some((Some(season), _)) if season > 0);
+    (r.is_match(folders) || (!named_episode && r.is_match(name))).then_some("Its name says it’s an extra")
 }
 
 /// "NARUTO DVD Box 1" becomes "NARUTO"; "[Judas] Fairy Tail (2009)" becomes "Fairy Tail".
@@ -394,6 +400,27 @@ mod tests {
     fn spots_extras() {
         assert!(extra_reason("Extras/[Judas] Fairy Tail - NCOP - 14.mkv").is_some());
         assert!(extra_reason("Fairy Tail - 014.mkv").is_none());
+    }
+
+    #[test]
+    fn an_episode_named_s01e05_is_one_whatever_its_title_says() {
+        let dir = fake_folder(
+            "sonarr",
+            &[
+                "Spy x Family/Season 1/Spy x Family - S01E01 - Operation Strix.mkv",
+                "Spy x Family/Season 1/Spy x Family - S01E02 - Secure a Wife.mkv",
+                "Spy x Family/Season 1/Spy x Family - S01E03 - The Bonus Round.mkv",
+                "Spy x Family/Season 1/Spy x Family - S01E04 - The Prestigious School's Interview.mkv",
+                "Spy x Family/Season 1/Spy x Family - S01E05 - Will They Pass or Fail The Elite School's Interview.mkv",
+            ],
+        );
+        let scan = scan_folder_with(&dir.join("Spy x Family").join("Season 1"));
+        assert_eq!(scan.files.iter().map(|f| f.number).collect::<Vec<_>>(), [Some(1), Some(2), Some(3), Some(4), Some(5)]);
+        assert_eq!(scan.numbering, "names");
+        // Specials and extras folders are still extras.
+        assert!(extra_reason("Season 0/Spy x Family - S00E01 - Creditless Opening.mkv").is_some());
+        assert!(extra_reason("Extras/Spy x Family - S01E01 - Interview.mkv").is_some());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     fn fake_folder(name: &str, files: &[&str]) -> PathBuf {

@@ -11,7 +11,9 @@
 //!   words are saved. Until they are, its lines are found by their text only.
 //! - A word finds every form of itself: 食べる, たべる and 食べた all find
 //!   食べた, 食べて and 食べられる, and the whole form is what's marked.
-//!   Anything that isn't a word in the index finds the lines with that text.
+//!   Anything that isn't a word in the index finds the lines with that text,
+//!   and so does a word premining doesn't keep (俺, 君, 二人) where it's
+//!   written outside every saved word.
 //! - Each line found says how many of its other words you don't know, as
 //!   Anki has it (known.rs), so the page lists the lines you can read first:
 //!   one with none is an i+1 sentence for the word. A line of an episode
@@ -380,8 +382,9 @@ fn word_hits(kept: Vec<Kept>, forms: &[String], name: Option<&str>) -> Vec<Hit> 
 }
 
 /// The lines a search for `q` finds: those with `q` as a word, in any of its
-/// forms or as a name with an honorific, and those of episodes whose words
-/// aren't saved yet with `q` in their text. When no line has it as a word,
+/// forms or as a name with an honorific, those of episodes whose words aren't
+/// saved yet with `q` in their text, and those with `q` written outside every
+/// saved word (a pronoun or a number). When no line has it as a word,
 /// every line with `q` in its text (a phrase).
 fn hits(index: &Index, q: &str) -> Result<Vec<Hit>> {
     let forms = forms(q);
@@ -393,11 +396,19 @@ fn hits(index: &Index, q: &str) -> Result<Vec<Hit>> {
     if hits.is_empty() {
         return Ok(text_hits(index.with_text(q, None)?, q));
     }
+    // Premining keeps no pronouns or numbers (俺, 君, 二人), so a line where `q`
+    // is written outside every saved word is found by its text: otherwise a
+    // search for 俺 finds only オラ and おれ, which Hachidori reads as 俺.
     let with_words = index.with_words()?;
-    let without: Vec<i64> = index.episodes()?.into_iter().filter(|e| !with_words.contains(e)).collect();
-    if !without.is_empty() {
-        hits.extend(text_hits(index.with_text(q, Some(&without))?, q));
-    }
+    let found: HashSet<(i64, usize)> = hits.iter().map(|h| (h.kept.episode_id, h.kept.line)).collect();
+    let more: Vec<Hit> = text_hits(index.with_text(q, None)?, q)
+        .into_iter()
+        .filter(|h| {
+            !with_words.contains(&h.kept.episode_id)
+                || (!found.contains(&(h.kept.episode_id, h.kept.line)) && !h.words.iter().any(|w| w.from < h.to && h.from < w.to))
+        })
+        .collect();
+    hits.extend(more);
     Ok(hits)
 }
 

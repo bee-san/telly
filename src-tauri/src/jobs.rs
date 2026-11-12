@@ -694,9 +694,15 @@ fn convert_video(backend: &Backend, ffmpeg: &Path, encoder: &str, show: &Show, e
 // ---- subtitles -----------------------------------------------------------------
 
 /// One of the workers finding subtitles: the `n`th, whose task shows in `jobs.subs[n]`.
+/// How long OpenRouter is left after it turns an episode away (429), doubling
+/// each time it does again, up to LISTEN_WAIT_MAX.
+const LISTEN_WAIT: Duration = Duration::from_secs(60);
+const LISTEN_WAIT_MAX: Duration = Duration::from_secs(1800);
+
 fn subs_worker(backend: &Backend, n: usize) {
     let slot = &backend.jobs.subs[n];
     let mut seen = 0;
+    let (mut listen_after, mut wait): (Option<Instant>, Duration) = (None, LISTEN_WAIT);
     loop {
         backend.jobs.wait(&mut seen, Duration::from_secs(5));
         let tools = backend.tools();
@@ -718,6 +724,10 @@ fn subs_worker(backend: &Backend, n: usize) {
             continue;
         }
         if let Some(listener) = listener(backend, &tools) {
+            // OpenRouter turned an episode away (429): the rest goes on meanwhile.
+            if listen_after.is_some_and(|at| Instant::now() < at) {
+                continue;
+            }
             if let Some((show, episode, _)) = pick(backend, "whisper") {
                 let name = listener.name();
                 if backend.db.claim_whisper(episode.id, &format!("{name} is listening")).unwrap_or(false) {
@@ -727,8 +737,17 @@ fn subs_worker(backend: &Backend, n: usize) {
                         Listener::Local { whisper, model } => whisper_subtitles(backend, &ffmpeg, &ffprobe, whisper, model, &episode),
                     };
                     set_task(slot, None);
-                    if let Err(e) = result {
-                        let _ = backend.db.set_subs_state(episode.id, "failed", &format!("{name}: {e:#}"));
+                    match result {
+                        // Back in the queue as it was, and asked again in a minute, then 2, 4… up to 30.
+                        Err(e) if e.downcast_ref::<openrouter::RateLimited>().is_some() => {
+                            let _ = backend.db.set_subs_state(episode.id, "whisper", "OpenRouter is busy: asked again soon");
+                            listen_after = Some(Instant::now() + wait);
+                            wait = (wait * 2).min(LISTEN_WAIT_MAX);
+                        }
+                        Err(e) => {
+                            let _ = backend.db.set_subs_state(episode.id, "failed", &format!("{name}: {e:#}"));
+                        }
+                        Ok(()) => wait = LISTEN_WAIT,
                     }
                     backend.jobs.poke();
                 }
@@ -778,17 +797,34 @@ fn openrouter_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &
     let piece = backend.dirs.subs().join(format!("{}.piece.wav", episode.id));
     let api = openrouter::api_address();
     let mut lines: Vec<Line> = Vec::new();
+    // Each piece heard is kept until the episode is done, so one OpenRouter
+    // turned away (429) is taken up where it stopped, not paid for again.
+    let heard_path = |i: usize, cut: &[f64]| {
+        backend.dirs.subs().join(format!("{}.heard.{}.{i}-{:.0}-{:.0}.json", episode.id, crate::util::safe_file_name(model), cut[0] * 1000.0, cut[1] * 1000.0))
+    };
     for (i, cut) in cuts.windows(2).enumerate() {
-        media::write_wav(ffmpeg, source, track, cut[0], cut[1] - cut[0], &piece)?;
-        let wav = std::fs::read(&piece);
-        let _ = std::fs::remove_file(&piece);
-        let heard = openrouter::transcribe(&api, key, model, &wav.context("reading a piece of the audio")?)?;
+        let kept = heard_path(i, cut);
+        let heard: Vec<Line> = match std::fs::read(&kept).ok().and_then(|b| serde_json::from_slice(&b).ok()) {
+            Some(heard) => heard,
+            None => {
+                media::write_wav(ffmpeg, source, track, cut[0], cut[1] - cut[0], &piece)?;
+                let wav = std::fs::read(&piece);
+                let _ = std::fs::remove_file(&piece);
+                let wav = wav.context("reading a piece of the audio")?;
+                let heard = transcribe_patiently(&api, key, model, &wav)?;
+                let _ = crate::util::write_whole(&kept, serde_json::to_vec(&heard)?);
+                heard
+            }
+        };
         lines.extend(heard.into_iter().map(|mut line| {
             line.start += cut[0];
             line.end += cut[0];
             line
         }));
         update_task(slot, None, (i + 1) as f64 / (cuts.len() - 1) as f64);
+    }
+    for (i, cut) in cuts.windows(2).enumerate() {
+        let _ = std::fs::remove_file(heard_path(i, cut));
     }
     let maker = openrouter::maker(model);
     // Repeating itself over music is Whisper's habit.
@@ -797,6 +833,23 @@ fn openrouter_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &
     backend.db.set_subs(episode.id, "synced", &format!("Made by {maker} (machine-made)"), maker, None, None)?;
     crate::premine::prepare(backend, episode.id);
     Ok(())
+}
+
+/// A piece transcribed, asked again twice when OpenRouter turns it away for
+/// now (429), after what it says to wait (10 to 30 s); turned away a third
+/// time, the episode waits its turn (see subs_worker).
+fn transcribe_patiently(api: &str, key: &str, model: &str, wav: &[u8]) -> Result<Vec<Line>> {
+    let mut tries = 0;
+    loop {
+        match openrouter::transcribe(api, key, model, wav) {
+            Err(e) if tries < 2 && e.downcast_ref::<openrouter::RateLimited>().is_some() => {
+                let asked = e.downcast_ref::<openrouter::RateLimited>().and_then(|r| r.0);
+                std::thread::sleep(asked.unwrap_or(Duration::from_secs(10)).clamp(Duration::from_secs(10), Duration::from_secs(30)));
+                tries += 1;
+            }
+            heard => return heard,
+        }
+    }
 }
 
 /// Where Whisper's models come from: whisper.cpp's own on Hugging Face.

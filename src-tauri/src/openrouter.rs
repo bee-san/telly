@@ -85,6 +85,19 @@ struct Word {
     end: f64,
 }
 
+/// OpenRouter answered 429: too many requests for now. How long it asked to
+/// wait (its Retry-After), when it said.
+#[derive(Debug)]
+pub struct RateLimited(pub Option<Duration>);
+
+impl std::fmt::Display for RateLimited {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "OpenRouter is taking no more requests for now (429)")
+    }
+}
+
+impl std::error::Error for RateLimited {}
+
 /// The lines `model` hears in a piece of audio (a WAV file's bytes), timed from the piece's start.
 pub fn transcribe(api: &str, key: &str, model: &str, wav: &[u8]) -> Result<Vec<Line>> {
     let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(180))).http_status_as_error(false).build().into();
@@ -101,6 +114,10 @@ pub fn transcribe(api: &str, key: &str, model: &str, wav: &[u8]) -> Result<Vec<L
         .send_json(&body)
         .map_err(|e| anyhow!("OpenRouter isn’t reachable ({e})"))?;
     let status = response.status().as_u16();
+    if status == 429 {
+        let wait = response.headers().get("retry-after").and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse::<u64>().ok());
+        return Err(RateLimited(wait.map(Duration::from_secs)).into());
+    }
     let answer = response.body_mut().with_config().limit(64 * 1024 * 1024).read_to_string().context("reading OpenRouter’s answer")?;
     match status {
         200 => {}

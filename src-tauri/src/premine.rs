@@ -143,6 +143,12 @@ struct Shares {
 #[derive(Default)]
 pub struct Premining {
     status: Mutex<Status>,
+    /// What the list in `status` was made from (list_inputs): it's made again
+    /// when they change.
+    list_from: Mutex<String>,
+    /// The words premined while Telly is open. Their cards are new, so Anki
+    /// doesn't count them yet, but they aren't listed again.
+    made: Mutex<HashSet<(String, String)>>,
     shares: Mutex<Shares>,
     /// Hachidori's answers, by the text asked, for as long as Telly is open.
     /// Each episode's words are also saved, when its subtitles sync.
@@ -702,7 +708,13 @@ fn make_list(backend: &Backend, show: &Show, step: &dyn Fn(&str, f64)) -> Result
 
     let mut known_uses = 0;
     let mut words: Vec<(usize, Word)> = Vec::new();
+    let made = backend.premining.made.lock().map(|m| m.clone()).unwrap_or_default();
     for term in &order {
+        // A word just premined isn't listed again; its card counts as known, as it did in the list it was made from.
+        if made.contains(&(term.headword.clone(), term.reading.clone())) {
+            known_uses += seen[&(term.headword.clone(), term.reading.clone())].1;
+            continue;
+        }
         // A word you have a card for isn't listed; it counts as known when Settings says its card does.
         if known(&have.studied, term) {
             if known(&have.known, term) {
@@ -1091,11 +1103,27 @@ pub fn status(backend: &Backend) -> Status {
 
 /// Starts finding the words to premine in a show, unless that list is being
 /// made or made already.
+/// What a show's list is made from: each episode's saved words, and the
+/// state of your known words.
+fn list_inputs(backend: &Backend, show_id: i64) -> String {
+    let mut inputs = known::stamp(backend);
+    for e in backend.db.episodes(show_id).unwrap_or_default() {
+        let saved = std::fs::metadata(words_path(backend, e.id)).and_then(|m| m.modified()).ok();
+        inputs.push_str(&format!(" {}:{:?}", e.id, saved));
+    }
+    inputs
+}
+
+/// Makes the list of words to premine in a show, in the background. One made
+/// already is kept while what it was made from stays the same. While another
+/// show's list or cards are being made, that's what's said; the page asks again.
 pub fn start_list(backend: &Arc<Backend>, show_id: i64) -> Result<Status> {
     let show = backend.db.show(show_id)?.ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?;
+    let inputs = list_inputs(backend, show_id);
     {
         let mut status = backend.premining.status.lock().map_err(|_| anyhow!("premining stopped"))?;
-        if status.working || (status.show == show_id && status.list.is_some()) {
+        let unchanged = backend.premining.list_from.lock().is_ok_and(|from| *from == inputs);
+        if status.working || (status.show == show_id && status.list.is_some() && unchanged) {
             return Ok(status.clone());
         }
         *status = Status { show: show_id, working: true, step: "Starting".into(), ..Default::default() };
@@ -1104,6 +1132,10 @@ pub fn start_list(backend: &Arc<Backend>, show_id: i64) -> Result<Status> {
     std::thread::spawn(move || {
         let step = |text: &str, progress: f64| set(&worker, |s| (s.step, s.progress) = (text.to_string(), progress));
         let result = make_list(&worker, &show, &step);
+        // Working the words out may have saved some: the list is of what's saved now.
+        if let Ok(mut from) = worker.premining.list_from.lock() {
+            *from = list_inputs(&worker, show.id);
+        }
         set(&worker, |s| {
             s.working = false;
             match result {
@@ -1133,6 +1165,9 @@ pub fn start_cards(backend: &Arc<Backend>, words: Vec<Word>) -> Result<Status> {
         let step = |text: &str, progress: f64| set(&worker, |s| (s.step, s.progress) = (text.to_string(), progress));
         let result = make_cards(&worker, &words, &step);
         let made: HashSet<(String, String)> = words.iter().map(|w| (w.headword.clone(), w.reading.clone())).collect();
+        if let (Ok(mut all), Ok(_)) = (worker.premining.made.lock(), result.as_ref()) {
+            all.extend(made.iter().cloned());
+        }
         set(&worker, |s| {
             s.working = false;
             match result {

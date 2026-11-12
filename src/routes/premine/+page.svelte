@@ -65,6 +65,8 @@
 
   function follow() {
     clearTimeout(timer);
+    // Another show's list or cards were being made: now they're done, this show's turn.
+    if (status && !status.working && status.show !== id) return void start();
     if (!status?.working) return report();
     timer = setTimeout(async () => {
       try {
@@ -120,7 +122,7 @@
   {/if}
 
   {#if status?.working}
-    <p class="pm-step"><span class="spin"></span>{status.step}</p>
+    <p class="pm-step"><span class="spin"></span>{status.show === id ? status.step : "Waiting for another show’s premining"}</p>
     <span class="bar pm-bar"><i style:width="{Math.round(100 * status.progress)}%"></i></span>
   {:else if status?.error}
     <p class="err">{status.error}</p>

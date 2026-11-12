@@ -74,9 +74,11 @@
   }
 
   async function act(fn: () => Promise<unknown>) {
+    // Started before the menu closes: its buttons read the episode from the menu.
+    const doing = fn();
     menu = null;
     try {
-      await fn();
+      await doing;
     } catch (e) {
       toast({ key: "showerr", state: "failed", title: "That didn’t work", text: errorText(e) });
     }

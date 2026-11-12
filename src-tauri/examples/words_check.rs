@@ -26,7 +26,9 @@
 //!
 //! With --shares before the files, they're a show's episodes instead, with no
 //! words saved, and it times the pass the Library starts as it opens until
-//! each episode has its share of known words.
+//! each episode has its share of known words; then, with every episode's
+//! words saved, the pass again after the known words change (as when Anki's
+//! do), which works out every share again.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -166,10 +168,29 @@ fn time_shares(backend: &Arc<Backend>, files: &[PathBuf]) -> anyhow::Result<()> 
         std::thread::sleep(Duration::from_millis(50));
     }
     let (shares, error) = premine::shares(backend);
-    for id in &ids {
+    for id in ids.iter().take(10) {
         let share = shares[id];
         println!("episode {id}: {} uses, {} known", share.uses, share.known);
     }
     println!("{} episodes' shares: {:.2} s{}", ids.len(), started.elapsed().as_secs_f64(), if error.is_empty() { String::new() } else { format!(" ({error})") });
+
+    // The known words change: every share is worked out again, from the saved words.
+    for when in ["mature", "studied"] {
+        backend.db.set_setting("known.when", &serde_json::json!(when))?;
+        let stamp = telly_lib::known::stamp(backend);
+        let started = Instant::now();
+        premine::start_shares(backend, None);
+        loop {
+            let scores = backend.db.word_scores()?;
+            if ids.iter().all(|id| scores.get(id).is_some_and(|(_, _, of)| *of == stamp)) {
+                break;
+            }
+            if started.elapsed() > Duration::from_secs(600) {
+                anyhow::bail!("the shares weren't all worked out again after 10 minutes");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        println!("{} episodes' shares again, known words changed ({when}): {:.2} s", ids.len(), started.elapsed().as_secs_f64());
+    }
     Ok(())
 }

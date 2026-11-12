@@ -89,7 +89,13 @@ A show's page also shows, for each episode with subtitles, the share of its word
 
 An episode's words are worked out when its subtitles sync, and kept. An episode whose subtitles synced while Telly's Hachidori couldn't be asked (it was starting, or installing a dictionary) gets its words when the Library or a show's page next opens, that show's episodes first, or once Hachidori can be asked. Nothing is worked out while a dictionary in your folder is still to be installed, so no episode keeps words that miss its entries.
 
-The 10 episodes of Cyberpunk: Edgerunners season 2 (5,300 lines, 3,300 different words and runs of nouns to look up) took 26 to 32 s to work out with six dictionaries, and take 6 to 8.5 s now, with the same words (three runs each, Telly's Hachidori in Chromium on Linux). Each lookup's answer carried every dictionary's definitions of the word and of every shorter match, 230 MB for the 10 episodes, where Telly reads only the headword, reading and frequencies. The engine page now sends only those (0.6 MB), and has 16 lookups going at once. `cargo run --profile measure --example words_check -- <data folder> <port> <dictionaries folder> <subtitle files>` times it against a copy of Telly's Hachidori open in a browser (see the example for how).
+The 10 episodes of Cyberpunk: Edgerunners season 2 (5,300 lines, 3,300 different words and runs of nouns to look up) took 26 to 32 s to work out with six dictionaries, and take about 2.7 s now, with the same words (runs taken in turn, Telly's Hachidori in Chromium on Linux):
+
+- Each lookup's answer carried every dictionary's definitions of up to 32 matches, 230 MB for the 10 episodes, where Telly reads only the headword, reading and frequencies of the first. The engine page now sends only those (0.6 MB), and has 16 lookups going at once: 6 to 8.5 s.
+- The engine is asked for its best 2 matches, not 32, so it reads the definitions of 2. It ranks every match from every dictionary before it keeps any, so its first is the same, unless the two rank the same (Hachidori keeps no order between matches that tie, so which comes first can depend on how many it keeps): when the two match the same length, preprocessing and score, the 32 are asked for, as for 1 lookup in 20.
+- Redoing every episode's share when your known words change reads only the saved words: 0.4 s for 270 episodes.
+
+`cargo run --profile measure --example words_check -- <data folder> <port> <dictionaries folder> <subtitle files>` times it against a copy of Telly's Hachidori open in a browser (see the example for how; `--shares` times the Library's pass).
 
 ## Searching lines
 

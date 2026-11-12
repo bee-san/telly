@@ -31,6 +31,8 @@
   let popupOpen = $state(false);
   let ended = $state(false);
   let countdown = $state<number | null>(null);
+  /** Stop was pressed on this episode's countdown: the video's own end doesn't start it again. */
+  let countdownStopped = false;
   let note = $state("");
   let subMenu = $state(false);
   let audioMenu = $state(false);
@@ -230,6 +232,7 @@
     ended = false;
     stopWaiting();
     endingFired = false;
+    countdownStopped = false;
     counted.clear();
     sat = { lines: 0, chars: 0, cards: 0, seconds: 0 };
     closeExplain(false);
@@ -956,7 +959,7 @@
 
   function finish() {
     ended = true;
-    if (!view?.next || !autoplay) return;
+    if (!view?.next || !autoplay || countdownStopped) return;
     stopWaiting();
     waitForNext(waitRun);
   }
@@ -1589,7 +1592,7 @@
         <div class="end-actions">
           <button type="button" class="btn quiet" onclick={() => leave("/")}>Open library</button>
           {#if view.next}
-            <button type="button" class="btn quiet" onclick={stopCountdown} disabled={countdown === null}>Stop</button>
+            <button type="button" class="btn quiet" onclick={() => { stopCountdown(); countdownStopped = true; }} disabled={countdown === null}>Stop</button>
             <button type="button" class="btn" onclick={playNext} disabled={!view.next.ready}><Icon name="play" /><span>Play now</span></button>
           {/if}
         </div>

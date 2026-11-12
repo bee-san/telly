@@ -155,7 +155,7 @@ fn sources_for(backend: &Backend, ids: &[i64]) -> Result<Vec<Source>> {
             Ok(fresh) => {
                 kept.retain(|s| !old.contains(&s.id));
                 kept.extend(fresh);
-                std::fs::write(&path, serde_json::to_vec(&kept)?)?;
+                crate::util::write_whole(&path, serde_json::to_vec(&kept)?)?;
             }
             // Offline: last week's answers still stand, when there's one for every show.
             Err(_) if ids.iter().all(|id| kept.iter().any(|s| s.id == *id)) => {}

@@ -120,7 +120,7 @@ pub fn refresh(backend: &Backend) -> Result<bool> {
     copy.mature = mature;
     let changed = copy != before;
     if changed {
-        std::fs::write(path(backend), serde_json::to_vec(&copy)?)?;
+        crate::util::write_whole(&path(backend), serde_json::to_vec(&copy)?)?;
     }
     Ok(changed)
 }

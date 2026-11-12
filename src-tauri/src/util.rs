@@ -5,6 +5,20 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Unix time in milliseconds.
+/// Writes a file whole or not at all: to a file beside it first, then put in
+/// its place, so a crash mid-write (or a reader at the same moment) never
+/// sees half of it. Half a JSON file reads back as nothing: no lines, no
+/// known words.
+pub fn write_whole(path: &std::path::Path, bytes: impl AsRef<[u8]>) -> std::io::Result<()> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let part = path.with_file_name(format!("{name}.part-{}-{n}", std::process::id()));
+    std::fs::write(&part, bytes).and_then(|()| std::fs::rename(&part, path)).inspect_err(|_| {
+        let _ = std::fs::remove_file(&part);
+    })
+}
+
 pub fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }

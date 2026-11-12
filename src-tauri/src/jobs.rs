@@ -953,7 +953,7 @@ pub fn read_lines(backend: &Backend, episode_id: i64) -> Vec<Line> {
 
 pub fn write_lines(backend: &Backend, episode_id: i64, lines: &[Line]) -> Result<()> {
     std::fs::create_dir_all(backend.dirs.subs())?;
-    std::fs::write(lines_path(backend, episode_id), serde_json::to_vec(lines)?)?;
+    crate::util::write_whole(&lines_path(backend, episode_id), serde_json::to_vec(lines)?)?;
     Ok(())
 }
 
@@ -972,7 +972,7 @@ fn lacks_translation(backend: &Backend, episode_id: i64, probe: &media::Probe) -
 fn keep_lines(backend: &Backend, episode_id: i64, text: &str, format: &str) -> Result<Vec<Line>> {
     let lines: Vec<Line> = subs::parse(&format!("track.{format}"), text.as_bytes()).unwrap_or_default().into_iter().filter(|l| !l.sign).collect();
     std::fs::create_dir_all(backend.dirs.subs())?;
-    std::fs::write(translation_path(backend, episode_id), serde_json::to_vec(&lines)?)?;
+    crate::util::write_whole(&translation_path(backend, episode_id), serde_json::to_vec(&lines)?)?;
     Ok(lines)
 }
 
@@ -1271,7 +1271,7 @@ fn keep_beside(backend: &Backend, episode: &Episode, own: &[jimaku::Local]) -> R
     let file = &own[0];
     write_lines(backend, episode.id, &japanese_lines(&file.path, &file.name)?)?;
     let tried: Vec<Tried> = own.iter().map(|f| Tried { name: f.name.clone(), path: f.path.to_string_lossy().into_owned(), score: 0.0, offset_ms: 0, error: String::new() }).collect();
-    std::fs::write(tried_path(backend, episode.id), serde_json::to_vec(&tried)?)?;
+    crate::util::write_whole(&tried_path(backend, episode.id), serde_json::to_vec(&tried)?)?;
     backend.db.set_subs(episode.id, "synced", &format!("beside the rip · {AS_IT_IS}"), &file.name, None, Some(0))?;
     backend.jobs.words.lock().unwrap_or_else(|e| e.into_inner()).push_back(episode.id);
     backend.jobs.poke();
@@ -1442,7 +1442,7 @@ fn keep_own(backend: &Backend, episode: &Episode, own: &[jimaku::Local], timing:
     }
     let Some((file, synced, _)) = best else { return Ok(false) };
     write_lines(backend, episode.id, &japanese_lines(&file.path, &file.name)?)?;
-    std::fs::write(tried_path(backend, episode.id), serde_json::to_vec(&tried)?)?;
+    crate::util::write_whole(&tried_path(backend, episode.id), serde_json::to_vec(&tried)?)?;
     let detail = format!("in sync {AS_IT_IS} · matched to {}", timing.against);
     backend.db.set_subs(episode.id, "synced", &detail, &file.name, Some(synced.score), Some(0))?;
     crate::premine::prepare(backend, episode.id);
@@ -1772,7 +1772,7 @@ fn find_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &Path, 
         update_task(slot, Some(&format!("{what} {} {}", show.title, episode.number)), progress);
     });
     std::fs::create_dir_all(backend.dirs.subs())?;
-    std::fs::write(tried_path(backend, episode.id), serde_json::to_vec(&tried)?)?;
+    crate::util::write_whole(&tried_path(backend, episode.id), serde_json::to_vec(&tried)?)?;
     // A doubtful fit, or none: what OpenRouter hears in a few stretches says
     // whose words these are, and where they're said. If it can't be asked, or
     // what it hears places no file, the timing's own answer stands.

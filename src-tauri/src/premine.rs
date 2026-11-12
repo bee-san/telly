@@ -633,7 +633,7 @@ fn episode_uses(backend: &Backend, episode_id: i64, lines: &[Line]) -> Result<Ve
     }
     drop(terms);
     std::fs::create_dir_all(backend.dirs.subs())?;
-    std::fs::write(&path, serde_json::to_vec(&Saved { lines: print, uses: uses.clone() })?)?;
+    crate::util::write_whole(&path, serde_json::to_vec(&Saved { lines: print, uses: uses.clone() })?)?;
     crate::search::index(backend, episode_id);
     Ok(uses)
 }

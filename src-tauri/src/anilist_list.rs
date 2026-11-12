@@ -66,7 +66,7 @@ pub fn on_list(backend: &Backend) -> HashSet<i64> {
 
 fn fetch_list(backend: &Backend, token: &str) -> Result<()> {
     let ids = anilist::watched_ids(token)?;
-    std::fs::write(list_path(backend), serde_json::to_vec(&ids)?)?;
+    crate::util::write_whole(&list_path(backend), serde_json::to_vec(&ids)?)?;
     Ok(())
 }
 

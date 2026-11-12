@@ -322,7 +322,7 @@
       <label class="field"><span>Note type</span>
         <span class="inline"><input class="input grow" value={str("anki.noteType", "kiku_typed")} onchange={(e) => set("anki.noteType", e.currentTarget.value.trim())} /><button type="button" class="btn quiet" onclick={kikuFields}>Check its fields</button></span>
       </label>
-      <label class="field"><span>Deck</span><input class="input" value={str("anki.deck", "Type::{show}")} onchange={(e) => set("anki.deck", e.currentTarget.value.trim())} title={"{show} is the title of the show being watched"} /></label>
+      <label class="field"><span>Deck</span><input class="input" value={str("anki.deck", "例文マイニング")} onchange={(e) => set("anki.deck", e.currentTarget.value.trim())} title={"{show} is the title of the show being watched"} /></label>
       <label class="field"><span>Sentence field</span><input class="input" value={status?.fields.sentence ?? "Sentence"} onchange={(e) => set("anki.field.sentence", e.currentTarget.value.trim())} /></label>
       <label class="field"><span>Picture field</span><input class="input" value={status?.fields.picture ?? "Picture"} onchange={(e) => set("anki.field.picture", e.currentTarget.value.trim())} /></label>
       <label class="field"><span>Audio field</span><input class="input" value={status?.fields.audio ?? "SentenceAudio"} onchange={(e) => set("anki.field.audio", e.currentTarget.value.trim())} /></label>

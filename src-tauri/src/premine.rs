@@ -18,7 +18,7 @@
 //!   its reading, with a card you've studied (young or mature), is a word you
 //!   know. A word whose only cards are new is mined again.
 //! - Cards are made in your Hachidori card format (its first Template), in a
-//!   Premined subdeck of the show's deck (Type::Fairy Tail::Premined), with
+//!   Premined subdeck of the deck from Settings (例文マイニング::Premined), with
 //!   the line the word came from. Telly's
 //!   card finisher then adds the moving picture, the audio and MiscInfo, and
 //!   tags them as it does the cards you mine while watching.

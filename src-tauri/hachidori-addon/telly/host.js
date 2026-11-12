@@ -239,13 +239,14 @@ let ankiMade = "";
 // checked once a page load, as Hachidori's first-run setup checks it.
 let localAudio;
 
-/** Points this Hachidori's Anki template at the note type and deck Telly asks for. */
+/** Points this Hachidori's Anki template at the note type, deck and tags Telly asks for. */
 async function syncAnki() {
   const client = await status().catch(() => null);
   if (client?.linked) return;
   const want = await fetch(`${TELLY}/hd/anki`).then((r) => r.json()).catch(() => null);
   if (!want?.model || !want?.deck) return;
-  const key = `${want.model}\n${want.deck}`;
+  const tags = Array.isArray(want.tags) ? want.tags : [];
+  const key = `${want.model}\n${want.deck}\n${tags.join(" ")}`;
   if (key === ankiMade) return;
   const tell = (fields) => fetch(`${TELLY}/hd/anki/done?${new URLSearchParams(fields)}`).catch(() => {});
   try {
@@ -258,7 +259,8 @@ async function syncAnki() {
       const audioSources = localAudio !== null && findLocalAudioSource(options.audioSources) === null
         ? [createLocalAudioSource(crypto.randomUUID(), localAudio), ...options.audioSources]
         : null;
-      if (anki.model === want.model && anki.deck === want.deck && anki.fieldTemplates && audioSources === null) {
+      const tagged = Array.isArray(anki.tags) && anki.tags.join(" ") === tags.join(" ");
+      if (anki.model === want.model && anki.deck === want.deck && tagged && anki.fieldTemplates && audioSources === null) {
         ankiMade = key;
         await tell({ ok: "1" });
         return;
@@ -271,7 +273,7 @@ async function syncAnki() {
       const reply = await chrome.runtime.sendMessage({
         target: WORKER_TARGET, type: "hd_options_write", requestId: crypto.randomUUID(),
         baseRevision: Number.isInteger(stored?.revision) ? stored.revision : 0,
-        options: { anki: { ...anki, model: want.model, deck: want.deck, fieldTemplates }, ...(audioSources ? { audioSources } : {}) },
+        options: { anki: { ...anki, model: want.model, deck: want.deck, tags, fieldTemplates }, ...(audioSources ? { audioSources } : {}) },
       });
       if (reply?.conflict) continue;
       if (!reply?.ok) throw new Error(reply?.error || "Hachidori didn't take the Anki setup");

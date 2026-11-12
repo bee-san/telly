@@ -7,9 +7,9 @@
 //!   and again when the file changes. The word dictionaries go in first, so
 //!   they lead the popup and the card's definition; Hachidori Settings can
 //!   reorder them.
-//! - Its Anki template: the note type (kiku_typed) in the deck of the show
-//!   being watched (Type::Fairy Tail), with Hachidori's own field mapping for
-//!   Kiku, so a card can be added the moment a line is hovered.
+//! - Its Anki template: the note type (kiku_typed) in the deck from Settings
+//!   (例文マイニング), tagged Telly and the show being watched (Fairy_Tail),
+//!   with Hachidori's own field mapping for Kiku, so a card can be added the moment a line is hovered.
 //! - Premining's questions: the Yomitan API requests Hachidori Relay would
 //!   send a sharing Hachidori, answered by Hachidori's own API code in the page.
 //!
@@ -33,7 +33,7 @@ pub const MODEL: &str = "anki.noteType";
 pub const DECK: &str = "anki.deck";
 const INSTALLED: &str = "hachidori.installed";
 const DEFAULT_MODEL: &str = "kiku_typed";
-const DEFAULT_DECK: &str = "Type::{show}";
+const DEFAULT_DECK: &str = "例文マイニング";
 /// Word dictionaries, by a word in their file name, in the order they go in.
 const FIRST: [&str; 4] = ["jitendex", "jmdict", "daijirin", "sankoku"];
 /// The page asks for work every second or so while it's open; after this long
@@ -186,27 +186,31 @@ pub fn deck_for(backend: &Backend, show: &str) -> String {
     pattern.replace("{show}", &show.replace("::", ":"))
 }
 
+/// The tags cards from `show` get: Telly, and the show's title (a tag can't hold a space).
+pub fn tags_for(show: &str) -> Vec<String> {
+    vec!["Telly".to_string(), show.split_whitespace().collect::<Vec<_>>().join("_")]
+}
+
 pub fn model(backend: &Backend) -> String {
     let chosen = backend.db.setting_str(MODEL);
     if chosen.trim().is_empty() { DEFAULT_MODEL.to_string() } else { chosen.trim().to_string() }
 }
 
-/// The player opened an episode of `show`: Hachidori mines into its deck.
-/// Makes the deck in Anki and reads the note type's fields, then leaves the
-/// rest to the page.
+/// The player opened an episode of `show`: Hachidori mines into its deck, with its tags.
+/// Reads the note type's fields, then leaves the rest to the page. The deck
+/// isn't made here: only premining makes decks in Anki.
 pub fn watching(backend: &Arc<Backend>, show: &str) {
     let backend = backend.clone();
     let show = show.to_string();
     std::thread::spawn(move || {
         let url = cards::anki_url(&backend);
         let (model, deck) = (model(&backend), deck_for(&backend, &show));
-        let result = anki::invoke(&url, "createDeck", json!({ "deck": deck }))
-            .and_then(|_| anki::model_field_names(&url, &model))
+        let result = anki::model_field_names(&url, &model)
             .and_then(|fields| if fields.is_empty() { Err(anyhow!("Anki has no note type called {model}")) } else { Ok(fields) });
         let mut state = lock(&backend.own_hachidori);
         match result {
             Ok(fields) => {
-                state.anki = Some(json!({ "model": model, "deck": deck, "fields": fields }));
+                state.anki = Some(json!({ "model": model, "deck": deck, "tags": tags_for(&show), "fields": fields }));
                 state.anki_error.clear();
             }
             Err(e) => state.anki_error = format!("{e:#}"),

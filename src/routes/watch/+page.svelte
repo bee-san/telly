@@ -878,6 +878,8 @@
     recapResume = back || !video || !video.paused;
     holdPlay = true;
     video?.pause();
+    // On the end card: the countdown to the next episode waits for you to read.
+    if (ended) stopWaiting();
     recap = { state: "writing", error: "", data: null, full: !back || (view.awayMs ?? 0) >= LONG_AWAY_MS };
     try {
       const r = await getRecap();
@@ -899,7 +901,8 @@
     recap = null;
     montage = null;
     holdPlay = false;
-    if (play && wasOpen && video) video.play().catch(() => {});
+    // An episode that has ended stays at its end card, rather than starting again behind it.
+    if (play && wasOpen && video && !ended) video.play().catch(() => {});
   }
 
   /** The moments to play: those whose episode can play here, of the episode just left unless it’s the whole story. */
@@ -930,7 +933,7 @@
     montageVideo.play().catch(() => {});
   }
 
-  const startLabel = $derived(`${recapAt === null ? "Start" : "Resume"} Episode ${view?.episode.number ?? ""}`);
+  const startLabel = $derived(ended ? "Close" : `${recapAt === null ? "Start" : "Resume"} Episode ${view?.episode.number ?? ""}`);
   /** The language Claude writes the recap in (Settings → Claude), so Japanese is drawn with Japanese, not Chinese, kanji. */
   const recapLang = $derived(settings["claude.language"] === "ja" ? "ja" : "en");
 

@@ -636,15 +636,106 @@ pub fn scene(backend: &Backend, episode_id: i64, line: usize) -> Result<Value> {
 /// (made when the episode was got ready).
 pub fn picture(backend: &Backend, episode_id: i64, picture: usize) -> Result<Served> {
     let e = backend.db.episode(episode_id)?.ok_or_else(|| anyhow!("That episode isn’t in Telly any more"))?;
-    let sheet = image::ImageReader::open(jobs::sheet_path(backend, e.show_id, e.id))?.with_guessed_format()?.decode().context("reading the seek bar’s pictures")?;
-    let (columns, rows) = (media::SHEET_COLUMNS as u32, media::sheet_rows(e.duration) as u32);
-    let (width, height) = (sheet.width() / columns, sheet.height() / rows);
+    let sheet = std::fs::read(jobs::sheet_path(backend, e.show_id, e.id))?;
+    let bytes = cut(&sheet, media::SHEET_COLUMNS as u32, media::sheet_rows(e.duration) as u32, picture)?;
+    Ok(Served { bytes, mime: "image/jpeg", range: None })
+}
+
+/// Picture `picture` of a sheet of them `columns` across and `rows` down, as a JPEG.
+fn cut(sheet: &[u8], columns: u32, rows: u32, picture: usize) -> Result<Vec<u8>> {
     // As the seek bar does: a line said after the last picture has the last one.
     let picture = (picture as u32).min(columns * rows - 1);
     let (column, row) = (picture % columns, picture / columns);
+    let frame = jpeg_frame(sheet);
+    // A JPEG is decoded top to bottom, so only as much of the sheet as the
+    // picture needs is: on average half of it, which is most of the work.
+    let top = frame.and_then(|f| f.cut_short(sheet, (row + 1) * (f.height / rows)));
+    let pictures = match top {
+        Some(top) => image::load_from_memory_with_format(&top, image::ImageFormat::Jpeg),
+        None => image::load_from_memory(sheet),
+    }
+    .context("reading the seek bar’s pictures")?;
+    // The pictures' size goes by the whole sheet, which may be taller than what was read of it.
+    let (sheet_width, sheet_height) = frame.map_or((pictures.width(), pictures.height()), |f| (f.width, f.height));
+    let (width, height) = (sheet_width / columns, sheet_height / rows);
     let mut bytes = Vec::new();
-    sheet.crop_imm(column * width, row * height, width, height).to_rgb8().write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 85))?;
-    Ok(Served { bytes, mime: "image/jpeg", range: None })
+    pictures.crop_imm(column * width, row * height, width, height).to_rgb8().write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 85))?;
+    Ok(bytes)
+}
+
+/// What a baseline JPEG's header says of its frame: its size, where its height
+/// is written, and how tall a row of its blocks is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct JpegFrame {
+    width: u32,
+    height: u32,
+    height_at: usize,
+    block_rows: u32,
+}
+
+/// The frame of a baseline JPEG (as ffmpeg writes the seek bar's sheets) whose
+/// one scan has every component, which is decoded top to bottom a row of
+/// blocks at a time. Nothing for any other kind.
+fn jpeg_frame(jpeg: &[u8]) -> Option<JpegFrame> {
+    if !jpeg.starts_with(&[0xFF, 0xD8]) {
+        return None;
+    }
+    let (mut at, mut frame) = (2, None);
+    loop {
+        if *jpeg.get(at)? != 0xFF {
+            return None;
+        }
+        // A marker may have more 0xFF before it.
+        let mut marker = at + 1;
+        while *jpeg.get(marker)? == 0xFF {
+            marker += 1;
+        }
+        let length = u16::from_be_bytes([*jpeg.get(marker + 1)?, *jpeg.get(marker + 2)?]) as usize;
+        let body = jpeg.get(marker + 3..marker + 1 + length)?;
+        match jpeg[marker] {
+            // Baseline and extended, Huffman-coded.
+            0xC0 | 0xC1 => {
+                let components = *body.get(5)? as usize;
+                let sampling: Vec<u32> = (0..components).map(|c| body.get(7 + 3 * c).map(|s| u32::from(s & 0x0F))).collect::<Option<_>>()?;
+                // One component is decoded a block at a time, whatever its sampling says.
+                let tallest = if components == 1 { 1 } else { sampling.into_iter().max()? };
+                frame = Some((
+                    components,
+                    JpegFrame {
+                        width: u32::from(u16::from_be_bytes([*body.get(3)?, *body.get(4)?])),
+                        height: u32::from(u16::from_be_bytes([*body.get(1)?, *body.get(2)?])),
+                        height_at: marker + 4,
+                        block_rows: 8 * tallest,
+                    },
+                ));
+            }
+            // Progressive, lossless or arithmetic-coded frames.
+            0xC2 | 0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF => return None,
+            0xDA => {
+                let (components, frame) = frame?;
+                return (body.first() == Some(&(components as u8)) && frame.height > 0).then_some(frame);
+            }
+            0xD0..=0xD9 | 0x01 => return None,
+            _ => {}
+        }
+        at = marker + 1 + length;
+    }
+}
+
+impl JpegFrame {
+    /// The JPEG cut short to what's decoded of it down to row `bottom` of its
+    /// pixels, with a row of blocks after that row's: a row's colours are
+    /// smoothed from the row below, as there's half as many rows of them.
+    /// Nothing when that's the whole of it.
+    fn cut_short(&self, jpeg: &[u8], bottom: u32) -> Option<Vec<u8>> {
+        let height = (bottom.div_ceil(self.block_rows) + 1) * self.block_rows;
+        if height >= self.height {
+            return None;
+        }
+        let mut top = jpeg.to_vec();
+        top[self.height_at..self.height_at + 2].copy_from_slice(&(height as u16).to_be_bytes());
+        Some(top)
+    }
 }
 
 #[cfg(test)]
@@ -876,5 +967,102 @@ mod tests {
         let far = [Kept { line: 0, start: 10.0, end: 12.0, ..around[0].clone() }, Kept { line: 1, start: 40.0, end: 42.0, ..around[1].clone() }];
         let (start, end, lines, which) = scene_of(&far, 0).unwrap();
         assert_eq!((start, end, lines.len(), which), (9.5, 12.5, 1, 0));
+    }
+
+    /// Bits of a JPEG's coded picture, with a 0 after each 0xFF byte.
+    #[derive(Default)]
+    struct Bits {
+        bytes: Vec<u8>,
+        byte: u32,
+        count: u32,
+    }
+
+    impl Bits {
+        fn put(&mut self, value: u32, count: u32) {
+            for i in (0..count).rev() {
+                self.byte = (self.byte << 1) | ((value >> i) & 1);
+                self.count += 1;
+                if self.count == 8 {
+                    self.bytes.push(self.byte as u8);
+                    if self.byte == 0xFF {
+                        self.bytes.push(0);
+                    }
+                    (self.byte, self.count) = (0, 0);
+                }
+            }
+        }
+    }
+
+    /// A baseline JPEG with its colour at half the width and half the height
+    /// (4:2:0), as ffmpeg makes the seek bar's sheets, of flat 8×8 blocks:
+    /// `shade` gives each block's level by component (Y, Cb, Cr), column and row.
+    fn flat_jpeg(width: u16, height: u16, shade: impl Fn(usize, usize, usize) -> u8) -> Vec<u8> {
+        let mut jpeg = vec![0xFF, 0xD8];
+        let mut segment = |marker: u8, body: &[u8]| {
+            jpeg.extend([0xFF, marker]);
+            jpeg.extend(((body.len() + 2) as u16).to_be_bytes());
+            jpeg.extend(body);
+        };
+        segment(0xDB, &[[0].as_slice(), &[1; 64]].concat());
+        let ([h0, h1], [w0, w1]) = (height.to_be_bytes(), width.to_be_bytes());
+        segment(0xC0, &[8, h0, h1, w0, w1, 3, 1, 0x22, 0, 2, 0x11, 0, 3, 0x11, 0]);
+        // A DC difference's size in four bits, and one AC code: the block's end, "0".
+        let mut tables = vec![0x00, 0, 0, 0, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        tables.extend(0..12);
+        tables.extend([0x10, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x00]);
+        segment(0xC4, &tables);
+        segment(0xDA, &[3, 1, 0x00, 2, 0x00, 3, 0x00, 0, 63, 0]);
+        let mut bits = Bits::default();
+        let mut last = [0i32; 3];
+        for y in 0..usize::from(height).div_ceil(16) {
+            for x in 0..usize::from(width).div_ceil(16) {
+                for (c, bx, by) in [(0, 2 * x, 2 * y), (0, 2 * x + 1, 2 * y), (0, 2 * x, 2 * y + 1), (0, 2 * x + 1, 2 * y + 1), (1, x, y), (2, x, y)] {
+                    let dc = 8 * (i32::from(shade(c, bx, by)) - 128);
+                    let difference = dc - last[c];
+                    last[c] = dc;
+                    let size = 32 - difference.unsigned_abs().leading_zeros();
+                    bits.put(size, 4);
+                    bits.put((if difference < 0 { difference - 1 } else { difference }) as u32 & ((1 << size) - 1), size);
+                    bits.put(0, 1);
+                }
+            }
+        }
+        while bits.count != 0 {
+            bits.put(1, 1);
+        }
+        jpeg.extend(bits.bytes);
+        jpeg.extend([0xFF, 0xD9]);
+        jpeg
+    }
+
+    #[test]
+    fn a_picture_cut_from_the_top_of_its_sheet_is_the_one_cut_from_all_of_it() {
+        // 10 columns of pictures 16 wide, 12 rows of them 9 high: their edges fall inside rows of blocks.
+        let shade = |c: usize, x: usize, y: usize| ((c * 7919 + x * 104_729 + y * 1_299_709).wrapping_mul(2_654_435_761) >> 13) as u8;
+        let sheet = flat_jpeg(160, 108, shade);
+        let frame = jpeg_frame(&sheet).unwrap();
+        assert_eq!(frame, JpegFrame { width: 160, height: 108, height_at: frame.height_at, block_rows: 16 });
+        // The first row of pictures needs the first two rows of blocks; the last, all of them.
+        let top = frame.cut_short(&sheet, 9).unwrap();
+        assert_eq!(image::load_from_memory(&top).unwrap().height(), 32);
+        assert_eq!(frame.cut_short(&sheet, 108), None);
+        let whole = image::load_from_memory(&sheet).unwrap();
+        for picture in 0..125 {
+            let p = picture.min(119) as u32;
+            let mut expected = Vec::new();
+            whole
+                .crop_imm(p % 10 * 16, p / 10 * 9, 16, 9)
+                .to_rgb8()
+                .write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(&mut expected, 85))
+                .unwrap();
+            assert!(cut(&sheet, 10, 12, picture).unwrap() == expected, "picture {picture}");
+        }
+        // Not a JPEG that can be cut short: decoded whole.
+        let mut png = Vec::new();
+        whole.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        assert_eq!(jpeg_frame(&png), None);
+        let mut expected = Vec::new();
+        whole.crop_imm(16, 9, 16, 9).to_rgb8().write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(&mut expected, 85)).unwrap();
+        assert!(cut(&png, 10, 12, 11).unwrap() == expected);
     }
 }

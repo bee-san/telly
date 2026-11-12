@@ -13,6 +13,7 @@ pub mod claude;
 pub mod clip;
 pub mod covers;
 pub mod db;
+pub mod drives;
 mod hachidori;
 pub mod jimaku;
 pub mod heard;

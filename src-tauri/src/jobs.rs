@@ -76,15 +76,32 @@ type Place = (u8, usize, i64);
 /// a time on a busy laptop: episode 1's rip was read first in 3 runs of 3
 /// (its subtitles in 6.0, 7.0 and 23.4 s), where with turns in the order
 /// asked it was read second or third in 5 runs of 7 (8.5, 31.2 and 51.6 s).
-#[derive(Default)]
+///
+/// A drive without a seek penalty (an SSD) gives `READS_AT_ONCE` turns at once.
 struct Turns {
+    /// How many rips are read from the drive at once.
+    at_once: usize,
     queue: Mutex<Queue>,
     changed: Condvar,
 }
 
+/// How many rips are read at once from a drive without a seek penalty: on an
+/// NVMe SSD, Telly's read of 3 rips at once took 1.3 to 1.9 times less time
+/// than one after the other, its cores busier. From a hard drive, two at
+/// once take longer than one after the other (see `Jobs::drive`).
+const READS_AT_ONCE: usize = 3;
+
+/// One rip at a time, as from a hard drive.
+impl Default for Turns {
+    fn default() -> Self {
+        Turns { at_once: 1, queue: Mutex::default(), changed: Condvar::new() }
+    }
+}
+
 #[derive(Default)]
 struct Queue {
-    reading: bool,
+    /// How many rips are being read.
+    reading: usize,
     /// The episodes waiting for a turn or about to ask for one (see
     /// `Waiting`), by place, then in the order they came.
     waiting: std::collections::BTreeSet<(Place, u64)>,
@@ -105,6 +122,15 @@ struct Waiting<'a> {
 struct Turn<'a>(&'a Turns);
 
 impl Turns {
+    /// Turns at the drive whose root is `root`: a few at once on one without
+    /// a seek penalty; one at a time on a hard drive, and when it can't be told.
+    fn for_drive(root: &Path) -> Turns {
+        match crate::drives::seek_penalty(root) {
+            Some(false) => Turns { at_once: READS_AT_ONCE, ..Turns::default() },
+            _ => Turns::default(),
+        }
+    }
+
     fn queue(&self) -> std::sync::MutexGuard<'_, Queue> {
         self.queue.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -129,11 +155,13 @@ impl<'a> Waiting<'a> {
     fn take(self) -> Turn<'a> {
         let turns = self.turns;
         let mut queue = turns.queue();
-        while queue.reading || queue.waiting.first() != Some(&self.key) {
+        while queue.reading >= turns.at_once || queue.waiting.first() != Some(&self.key) {
             queue = turns.changed.wait(queue).unwrap_or_else(|e| e.into_inner());
         }
         queue.waiting.remove(&self.key);
-        queue.reading = true;
+        queue.reading += 1;
+        // The next in line may read too, on a drive giving several turns.
+        turns.changed.notify_all();
         Turn(turns)
     }
 }
@@ -148,7 +176,7 @@ impl Drop for Waiting<'_> {
 
 impl Drop for Turn<'_> {
     fn drop(&mut self) {
-        self.0.queue().reading = false;
+        self.0.queue().reading -= 1;
         self.0.changed.notify_all();
     }
 }
@@ -260,10 +288,17 @@ impl Jobs {
     /// end to end: two rips read at once from one hard drive take longer than
     /// one after the other, as the drive spends its time moving between them.
     /// Measured on a USB hard drive, with 8 episodes of four shows: 38 and
-    /// 48 MB/s one at a time, 23 MB/s two at a time, 21 and 23 MB/s four at a time.
+    /// 48 MB/s one at a time, 23 MB/s two at a time, 21 and 23 MB/s four at a
+    /// time. A drive without a seek penalty gives a few turns at once (see `Turns`).
     fn drive(&self, rip: &Path) -> Arc<Turns> {
         let root = rip.ancestors().last().unwrap_or(rip).to_path_buf();
-        self.drives.lock().map(|mut drives| drives.entry(root).or_default().clone()).unwrap_or_default()
+        let drives = || self.drives.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(turns) = drives().get(&root) {
+            return turns.clone();
+        }
+        // Asked of Windows once a drive, without the other drives waiting.
+        let turns = Arc::new(Turns::for_drive(&root));
+        drives().entry(root).or_insert(turns).clone()
     }
 }
 
@@ -2468,6 +2503,26 @@ mod tests {
         let gone = turns.wait_at((0, 0, 4));
         drop(gone);
         drop(turns.take((2, 0, 8)));
+    }
+
+    #[test]
+    fn a_drive_without_a_seek_penalty_is_read_a_few_rips_at_once() {
+        // One that can't be told about (any here, but on Windows) is read one rip at a time.
+        assert_eq!(Jobs::default().drive(Path::new("/anime/Show/01.mkv")).at_once, 1);
+        let turns = Turns { at_once: READS_AT_ONCE, ..Turns::default() };
+        let reading: Vec<Turn> = (1..=3).map(|n| turns.take((1, 0, n))).collect();
+        std::thread::scope(|scope| {
+            // A fourth waits for one of the three to end.
+            let fourth = scope.spawn(|| drop(turns.take((1, 0, 4))));
+            while turns.queue().waiting.is_empty() {
+                std::thread::yield_now();
+            }
+            std::thread::sleep(Duration::from_millis(20));
+            assert!(!fourth.is_finished());
+            drop(reading);
+            fourth.join().unwrap();
+        });
+        assert_eq!(turns.queue().reading, 0);
     }
 
     #[test]

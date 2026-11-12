@@ -42,6 +42,10 @@ firered-vad = "0.1.0"
 # Splits Japanese into words for premining (IPADIC, built into the app).
 lindera = { version = "6", default-features = false, features = ["embed-ipadic"] }
 
+# Whether a drive is a hard drive (drives.rs): the version Tauri brings already.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl"] }
+
 [profile.release]
 codegen-units = 1
 lto = true

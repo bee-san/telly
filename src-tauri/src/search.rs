@@ -70,17 +70,17 @@ const LEAD: f64 = 0.5;
 
 /// A word in a line: as Hachidori has it, and its bytes in the line's text
 /// (with its endings, for a verb or an adjective).
-#[derive(Clone, Debug, PartialEq)]
-struct Word {
-    headword: String,
-    reading: String,
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Word<'a> {
+    headword: &'a str,
+    reading: &'a str,
     from: usize,
     to: usize,
 }
 
-impl Word {
+impl Word<'_> {
     fn is_one_of(&self, forms: &[String]) -> bool {
-        forms.iter().any(|f| *f == self.headword || *f == self.reading)
+        forms.iter().any(|f| f == self.headword || f == self.reading)
     }
 }
 
@@ -90,21 +90,20 @@ fn pack(words: &[Word]) -> String {
     let spaced = |s: &str| s.is_empty() || s.contains(char::is_whitespace);
     let rows: Vec<String> = words
         .iter()
-        .filter(|w| !spaced(&w.headword) && !w.reading.contains(char::is_whitespace))
-        .map(|w| format!("{} {} {} {}", w.headword, if w.reading.is_empty() { &w.headword } else { &w.reading }, w.from, w.to))
+        .filter(|w| !spaced(w.headword) && !w.reading.contains(char::is_whitespace))
+        .map(|w| format!("{} {} {} {}", w.headword, if w.reading.is_empty() { w.headword } else { w.reading }, w.from, w.to))
         .collect();
     rows.join("\n")
 }
 
-fn unpack(words: &str) -> Vec<Word> {
-    words
-        .lines()
-        .filter_map(|row| {
-            let mut parts = row.split(' ');
-            let word = Word { headword: parts.next()?.to_string(), reading: parts.next()?.to_string(), from: parts.next()?.parse().ok()?, to: parts.next()?.parse().ok()? };
-            parts.next().is_none().then_some(word)
-        })
-        .collect()
+/// A line's words, read from where the index keeps them as they're needed:
+/// a common word's tens of thousands of lines have ten or so each.
+fn unpack(words: &str) -> impl Iterator<Item = Word<'_>> {
+    words.lines().filter_map(|row| {
+        let mut parts = row.split(' ');
+        let word = Word { headword: parts.next()?, reading: parts.next()?, from: parts.next()?.parse().ok()?, to: parts.next()?.parse().ok()? };
+        parts.next().is_none().then_some(word)
+    })
 }
 
 /// A line as the index keeps it.
@@ -266,7 +265,7 @@ fn entries(lines: &[Line], uses: &[SavedUse]) -> Result<Vec<Entry>> {
         let words: Vec<Word> = of_line
             .iter()
             .zip(&spans)
-            .filter_map(|(u, (from, to))| Some(Word { headword: u.headword.clone(), reading: u.reading.clone(), from: from - breaks(*from)?, to: to - breaks(*to)? }))
+            .filter_map(|(u, (from, to))| Some(Word { headword: &u.headword, reading: &u.reading, from: from - breaks(*from)?, to: to - breaks(*to)? }))
             .collect();
         out.push(Entry { words: pack(&words), text: line.text.replace('\n', ""), start: line.start, end: line.end });
     }
@@ -345,7 +344,6 @@ fn forms(q: &str) -> Vec<String> {
 /// A line found, and the bytes of its text that were looked for.
 struct Hit {
     kept: Kept,
-    words: Vec<Word>,
     from: usize,
     to: usize,
 }
@@ -373,10 +371,9 @@ fn by_text(q: &str) -> bool {
 fn word_hits(kept: Vec<Kept>, forms: &[String], name: Option<&str>) -> Vec<Hit> {
     kept.into_iter()
         .filter_map(|kept| {
-            let words = unpack(&kept.words);
-            let is_it = |w: &Word| w.is_one_of(forms) || name.is_some_and(|n| with_honorific(&w.headword, n));
-            let (from, to) = words.iter().find(|w| is_it(w)).map(|w| (w.from, w.to))?;
-            Some(Hit { kept, words, from, to })
+            let is_it = |w: &Word| w.is_one_of(forms) || name.is_some_and(|n| with_honorific(w.headword, n));
+            let (from, to) = unpack(&kept.words).find(is_it).map(|w| (w.from, w.to))?;
+            Some(Hit { kept, from, to })
         })
         .collect()
 }
@@ -417,7 +414,7 @@ fn text_hits(kept: Vec<Kept>, q: &str) -> Vec<Hit> {
     kept.into_iter()
         .filter_map(|kept| {
             let from = kept.text.find(q)?;
-            Some(Hit { words: unpack(&kept.words), from, to: from + q.len(), kept })
+            Some(Hit { from, to: from + q.len(), kept })
         })
         .collect()
 }
@@ -439,14 +436,20 @@ fn outside_words(kept: Vec<Kept>, q: &str) -> Vec<Hit> {
 /// `known` by their headword or reading.
 fn unknown(hit: &Hit, forms: &[String], known: &HashSet<String>, cast: &HashSet<String>) -> usize {
     let text = &hit.kept.text;
-    let mut others: HashSet<&str> = HashSet::new();
-    for w in &hit.words {
-        let found = w.is_one_of(forms) || (w.from < hit.to && hit.from < w.to);
+    // Each line found is asked, so the cheaper questions go first: a line has
+    // ten words or so, and seldom brackets.
+    let brackets = text.contains(['（', '(']);
+    let mut others: Vec<&str> = Vec::new();
+    for w in unpack(&hit.kept.words) {
         let Some(written) = text.get(w.from..w.to) else { continue };
-        let name = cast.contains(&w.headword) || cast.contains(written);
-        let have = known.contains(&w.headword) || known.contains(&w.reading);
-        if !found && !name && !have && !premine::bracketed(text, w.from) {
-            others.insert(&w.headword);
+        let found = w.is_one_of(forms) || (w.from < hit.to && hit.from < w.to);
+        if found || others.contains(&w.headword) {
+            continue;
+        }
+        let name = cast.contains(w.headword) || cast.contains(written);
+        let have = known.contains(w.headword) || known.contains(w.reading);
+        if !name && !have && !(brackets && premine::bracketed(text, w.from)) {
+            others.push(w.headword);
         }
     }
     others.len()
@@ -805,6 +808,21 @@ mod tests {
         assert_eq!(unknown(&hits[0], &forms, &known, &none), 0);
         let cast: HashSet<String> = ["倒れる".to_string()].into();
         assert_eq!(unknown(&hits[0], &forms, &none, &cast), 1);
+    }
+
+    #[test]
+    fn a_word_said_twice_counts_once_and_one_in_brackets_not_at_all() {
+        let text = "（ため息）ちゃんと食べて、ちゃんと寝て。";
+        let at = |surface: &str, nth: usize| text.match_indices(surface).nth(nth).unwrap().0;
+        let w = |surface: &'static str, nth: usize, headword: &'static str| Word { headword, reading: headword, from: at(surface, nth), to: at(surface, nth) + surface.len() };
+        let words = [w("ため息", 0, "ため息"), w("ちゃんと", 0, "ちゃんと"), w("食べ", 0, "食べる"), w("ちゃんと", 1, "ちゃんと"), w("寝", 0, "寝る")];
+        let kept = Kept { episode_id: 7, line: 0, words: pack(&words), text: text.to_string(), start: 0.0, end: 1.0 };
+        let hit = Hit { kept, from: at("食べ", 0), to: at("食べ", 0) + "食べ".len() };
+        let none = HashSet::new();
+        // ちゃんと and 寝る: ため息 is a caption's note.
+        assert_eq!(unknown(&hit, &forms("食べる"), &none, &none), 2);
+        let known: HashSet<String> = ["寝る".to_string()].into();
+        assert_eq!(unknown(&hit, &forms("食べる"), &known, &none), 1);
     }
 
     #[test]

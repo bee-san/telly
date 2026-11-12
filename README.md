@@ -127,6 +127,8 @@ When Jimaku has nothing for an episode (or there's no key yet), its show's page 
 
 With an OpenRouter API key in Settings, a model on [OpenRouter](https://openrouter.ai) makes them instead, and the button names it: ElevenLabs Scribe v2 (the default) or Whisper large v3, chosen in Settings. Each episode's Japanese audio is sent to OpenRouter in pieces of about 5 minutes, cut where the audio is quietest, because a provider gives a request 60 seconds. An episode costs about $0.09 with ElevenLabs and $0.01 to $0.04 with Whisper (OpenRouter's prices in November 2026). How well either hears Japanese hasn't been measured here.
 
+With that key, Telly also asks OpenRouter by itself, without the button. An episode no subtitle file fits has its subtitles made this way. And when a file's timing fit is doubtful, four 90-second stretches of the episode are sent: if at least 12 of the lines heard, from at least 3 stretches, read like the file's lines and agree on one shift, the file is moved there (the episode's details say “matched to what Whisper heard”); if not, the timing's own answer stands. On one episode, with whisper.cpp's small model listening, a file thrown out by 1.1, 7.3 and 42 seconds came back within 0.08 s.
+
 ## Getting a library ready
 
 Telly works through a library in the background: each show's next episode first, then the 10 after it, then the rest. Several episodes are worked on at once, and the title bar says which show is being got ready, or how many shows (point at it to see what each episode is at).

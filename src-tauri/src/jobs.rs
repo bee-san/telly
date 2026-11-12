@@ -24,7 +24,7 @@ use crate::media::{self, Plan};
 use crate::subs::{self, Line};
 use crate::sync;
 use crate::jimaku;
-use crate::{anilist, matching, openrouter, scan};
+use crate::{anilist, heard, matching, openrouter, scan};
 use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -632,6 +632,7 @@ fn subs_worker(backend: &Backend, n: usize) {
         let tools = backend.tools();
         if n == 0 {
             keep_own_files(backend);
+            hear_again(backend);
         }
         let (Some(ffmpeg), Some(ffprobe)) = (tools.ffmpeg.clone(), tools.ffprobe.clone()) else { continue };
         while let Some((show, episode, count)) = take(backend, "subs") {
@@ -1435,6 +1436,73 @@ pub fn pick_subtitles(files: &[jimaku::Local], pool: &[jimaku::Local], timing: &
     (best, tried)
 }
 
+/// Once OpenRouter has a key, looks once more for subtitles for the episodes
+/// Telly found none for or wasn't sure of, now that it can listen to them.
+fn hear_again(backend: &Backend) {
+    if backend.db.setting_i64("subs.heard", 0) >= 1 || openrouter::chosen(backend).is_none() {
+        return;
+    }
+    for show in shows_in_order(backend) {
+        for episode in backend.db.episodes(show.id).unwrap_or_default() {
+            if matches!(episode.subs_state.as_str(), "none" | "check") && !episode.subs_detail.contains(BY_HAND) {
+                let _ = backend.db.set_subs_state(episode.id, "pending", "");
+            }
+        }
+    }
+    let _ = backend.db.set_setting("subs.heard", &serde_json::json!(1));
+}
+
+/// Settles an episode no subtitle file fits: OpenRouter makes its subtitles
+/// when Settings has a key for it; else it has none, and `detail` says why.
+fn no_subtitles(backend: &Backend, episode_id: i64, detail: &str, score: Option<f64>) -> Result<()> {
+    let (state, detail) = if openrouter::chosen(backend).is_some() { ("whisper", "") } else { ("none", detail) };
+    backend.db.set_subs(episode_id, state, detail, "", score, None)?;
+    Ok(())
+}
+
+/// What a model on OpenRouter hears in a few stretches of an episode (see
+/// heard.rs), timed to the episode. Each stretch is a file in the subtitles
+/// folder for a moment.
+fn listen(backend: &Backend, ffmpeg: &Path, probe: &media::Probe, key: &str, model: &str, episode: &Episode) -> Result<Vec<Vec<Line>>> {
+    let source = Path::new(&episode.path);
+    let track = media::japanese_audio(probe);
+    std::fs::create_dir_all(backend.dirs.subs())?;
+    let piece = backend.dirs.subs().join(format!("{}.stretch.flac", episode.id));
+    let api = openrouter::api_address();
+    heard::stretches(probe.duration)
+        .into_iter()
+        .map(|(start, length)| {
+            media::write_flac(ffmpeg, source, track, start, length, &piece)?;
+            let flac = std::fs::read(&piece);
+            let _ = std::fs::remove_file(&piece);
+            let mut lines = openrouter::transcribe(&api, key, model, &flac.context("reading a piece of the audio")?)?;
+            for line in &mut lines {
+                line.start += start;
+                line.end += start;
+            }
+            Ok(lines)
+        })
+        .collect()
+}
+
+/// The file among those tried whose words are the ones heard, moved to where
+/// they're said: its lines, how surely, and its name.
+fn place_by_words(tried: &[Tried], heard: &[Vec<Line>]) -> Option<(Vec<Line>, heard::Placed, String)> {
+    let (mut lines, placed, name) = tried
+        .iter()
+        .filter_map(|t| {
+            let lines = japanese_lines(Path::new(&t.path), &t.name).ok()?;
+            let placed = heard::place(&lines, heard)?;
+            Some((lines, placed, t.name.clone()))
+        })
+        .max_by_key(|(_, placed, _)| placed.agreeing)?;
+    for line in &mut lines {
+        line.start = (line.start + placed.shift).max(0.0);
+        line.end = (line.end + placed.shift).max(line.start + 0.05);
+    }
+    Some((lines, placed, name))
+}
+
 fn find_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &Path, ffprobe: &Path, show: &Show, episode: &Episode, count: usize) -> Result<()> {
     let own = beside(episode);
     if !own.is_empty() {
@@ -1526,6 +1594,9 @@ fn find_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &Path, 
         } else {
             ("none", "Jimaku has nothing for this episode")
         };
+        if state == "none" {
+            return no_subtitles(backend, episode.id, detail, None);
+        }
         backend.db.set_subs(episode.id, state, detail, "", None, None)?;
         return Ok(());
     }
@@ -1538,15 +1609,34 @@ fn find_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &Path, 
     });
     std::fs::create_dir_all(backend.dirs.subs())?;
     std::fs::write(tried_path(backend, episode.id), serde_json::to_vec(&tried)?)?;
+    // A doubtful fit, or none: what OpenRouter hears in a few stretches says
+    // whose words these are, and where they're said. If it can't be asked, or
+    // what it hears places no file, the timing's own answer stands.
+    if best.as_ref().is_none_or(|b| b.synced.score < GOOD_SYNC) {
+        if let Some((key, model)) = openrouter::chosen(backend) {
+            let maker = openrouter::maker(&model);
+            let heard = {
+                let _turn = reading();
+                update_task(slot, Some(&format!("{maker} is listening to {} {}", show.title, episode.number)), 0.0);
+                listen(backend, ffmpeg, &probe, &key, &model, episode)
+            };
+            if let Some((lines, placed, name)) = heard.ok().and_then(|heard| place_by_words(&tried, &heard)) {
+                write_lines(backend, episode.id, &lines)?;
+                let detail = format!("shifted {:+.1} s · matched to what {maker} heard", placed.shift);
+                let score = (placed.agreeing as f64 / placed.heard as f64).max(GOOD_SYNC);
+                backend.db.set_subs(episode.id, "synced", &detail, &name, Some(score), Some((placed.shift * 1000.0).round() as i64))?;
+                crate::premine::prepare(backend, episode.id);
+                return Ok(());
+            }
+        }
+    }
     let Some(Pick { synced, name, filed_as, .. }) = best else {
-        backend.db.set_subs(episode.id, "none", "None of Jimaku’s files for this episode are Japanese subtitles Telly can read", "", None, None)?;
-        return Ok(());
+        return no_subtitles(backend, episode.id, "None of Jimaku’s files for this episode are Japanese subtitles Telly can read", None);
     };
     if synced.score < FITS_NOT {
         // Every file is another episode's, or another cut's: none is better than wrong ones.
         let _ = std::fs::remove_file(lines_path(backend, episode.id));
-        backend.db.set_subs(episode.id, "none", &format!("None of Jimaku’s {} files fit this episode", tried.len()), "", Some(synced.score), None)?;
-        return Ok(());
+        return no_subtitles(backend, episode.id, &format!("None of Jimaku’s {} files fit this episode", tried.len()), Some(synced.score));
     }
     // The numbering that fitted, for the rest of this season folder.
     if synced.score >= GREAT_SYNC {

@@ -109,7 +109,22 @@ CREATE TABLE openings (
 -- When AniSkip was asked (unix ms). An answer of none is asked again a week
 -- on: people mark an episode's opening in the days after it airs.
 ALTER TABLE openings ADD COLUMN asked_at INTEGER NOT NULL DEFAULT 0;
+", "
+-- The last show and episode ids given out. A removed show's ids aren't given
+-- out again: what's kept by id (settings, the files in subtitles, line
+-- search) would otherwise go to the show added next.
+CREATE TABLE last_ids (name TEXT PRIMARY KEY, id INTEGER NOT NULL);
+INSERT INTO last_ids (name, id) SELECT 'shows', IFNULL(MAX(id), 0) FROM shows;
+INSERT INTO last_ids (name, id) SELECT 'episodes', IFNULL(MAX(id), 0) FROM episodes;
+CREATE TRIGGER shows_last_id AFTER INSERT ON shows
+  BEGIN UPDATE last_ids SET id = MAX(id, NEW.id) WHERE name = 'shows'; END;
+CREATE TRIGGER episodes_last_id AFTER INSERT ON episodes
+  BEGIN UPDATE last_ids SET id = MAX(id, NEW.id) WHERE name = 'episodes'; END;
 "];
+
+/// The next id for a show or an episode: after every one given out, removed or not.
+const NEXT_SHOW_ID: &str = "(SELECT id + 1 FROM last_ids WHERE name = 'shows')";
+const NEXT_EPISODE_ID: &str = "(SELECT id + 1 FROM last_ids WHERE name = 'episodes')";
 
 /// Something Claude said, kept so it's there instantly next time.
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -379,9 +394,11 @@ impl Db {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
         tx.execute(
-            "INSERT INTO shows (folder, title, title_native, title_english, title_romaji, anilist_id, anilist_episodes,
-               format, year, cover_url, cover_color, added_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            &format!(
+                "INSERT INTO shows (id, folder, title, title_native, title_english, title_romaji, anilist_id, anilist_episodes,
+                   format, year, cover_url, cover_color, added_at)
+                 VALUES ({NEXT_SHOW_ID}, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"
+            ),
             params![
                 s.folder,
                 s.title,
@@ -400,7 +417,7 @@ impl Db {
         let id = tx.last_insert_rowid();
         for e in &s.episodes {
             tx.execute(
-                "INSERT INTO episodes (show_id, number, path, size, duration) VALUES (?1, ?2, ?3, ?4, ?5)",
+                &format!("INSERT INTO episodes (id, show_id, number, path, size, duration) VALUES ({NEXT_EPISODE_ID}, ?1, ?2, ?3, ?4, ?5)"),
                 params![id, e.number, e.path, e.size, e.duration],
             )?;
         }
@@ -414,7 +431,7 @@ impl Db {
         let tx = conn.transaction()?;
         for e in episodes {
             tx.execute(
-                "INSERT INTO episodes (show_id, number, path, size, duration) VALUES (?1, ?2, ?3, ?4, ?5)",
+                &format!("INSERT INTO episodes (id, show_id, number, path, size, duration) VALUES ({NEXT_EPISODE_ID}, ?1, ?2, ?3, ?4, ?5)"),
                 params![show_id, e.number, e.path, e.size, e.duration],
             )?;
         }
@@ -436,9 +453,23 @@ impl Db {
     }
 
     pub fn remove_show(&self, id: i64) -> Result<()> {
-        let conn = self.conn()?;
-        conn.execute("DELETE FROM mine_jobs WHERE episode_id IN (SELECT id FROM episodes WHERE show_id = ?1)", params![id])?;
-        conn.execute("DELETE FROM shows WHERE id = ?1", params![id])?;
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        // Settings kept by the show's id, and by its episodes' (backend.rs,
+        // jobs.rs, anilist_list.rs, the player's picture filter).
+        for key in ["audio.track.{id}", "cover.frame.{id}", "player.filter.{id}"] {
+            tx.execute("DELETE FROM settings WHERE key = ?1", params![key.replace("{id}", &id.to_string())])?;
+        }
+        for prefix in ["anilist.group", "jimaku.group", "subs.numbering"] {
+            tx.execute("DELETE FROM settings WHERE key LIKE ?1", params![format!("{prefix}.{id}.%")])?;
+        }
+        tx.execute(
+            "DELETE FROM settings WHERE key IN (SELECT 'convert.force.' || id FROM episodes WHERE show_id = ?1)",
+            params![id],
+        )?;
+        tx.execute("DELETE FROM mine_jobs WHERE episode_id IN (SELECT id FROM episodes WHERE show_id = ?1)", params![id])?;
+        tx.execute("DELETE FROM shows WHERE id = ?1", params![id])?;
+        tx.commit()?;
         Ok(())
     }
 

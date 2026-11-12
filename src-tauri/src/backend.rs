@@ -790,10 +790,17 @@ impl Backend {
         self.db.remove_show(id)?;
         // Only Telly's own files go; your rips stay where they are.
         let _ = std::fs::remove_dir_all(self.media_dir().join(id.to_string()));
-        for e in episodes {
-            let _ = std::fs::remove_file(jobs::lines_path(self, e.id));
-            let _ = std::fs::remove_file(jobs::translation_path(self, e.id));
-            let _ = std::fs::remove_file(premine::words_path(self, e.id));
+        // Everything kept in subtitles by an episode's id: its lines, translation,
+        // words, the files tried, a rip's text tracks and Whisper's transcripts.
+        let prefixes: Vec<String> = episodes.iter().map(|e| format!("{}.", e.id)).collect();
+        for entry in std::fs::read_dir(self.dirs.subs()).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if prefixes.iter().any(|prefix| name.starts_with(prefix.as_str())) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+        for e in &episodes {
+            let _ = self.lines.forget(e.id);
         }
         self.remove_cover(id);
         Ok(json!({}))
@@ -1358,6 +1365,41 @@ mod tests {
         assert!(!is_movie("", false, &[1440.0]));
         assert!(!is_movie("", false, &[6060.0, 660.0, 1440.0]));
         assert!(!is_movie("TV", true, &[7200.0]));
+    }
+
+    #[test]
+    fn a_removed_show_leaves_nothing_for_the_next_one() {
+        let dir = std::env::temp_dir().join(format!("telly-remove-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let add = |title: &str| {
+            let episodes = vec![crate::db::NewEpisode { number: 1, path: format!("{title}.mkv"), size: 1, duration: 1400.0 }];
+            let show = backend.db.add_show(&crate::db::NewShow { folder: title.into(), title: title.into(), episodes, ..Default::default() }).unwrap();
+            (show, backend.db.episodes(show).unwrap()[0].id)
+        };
+        let (kept_show, kept_episode) = add("Kept");
+        let (show, episode) = add("Removed");
+        for key in [format!("audio.track.{show}"), format!("anilist.group.{show}.Season 2"), format!("jimaku.group.{show}.x"), format!("convert.force.{episode}")] {
+            backend.db.set_setting(&key, &json!(1)).unwrap();
+        }
+        backend.db.set_setting(&format!("audio.track.{kept_show}"), &json!(1)).unwrap();
+        let subs = backend.dirs.subs();
+        std::fs::create_dir_all(&subs).unwrap();
+        for name in [format!("{episode}.json"), format!("{episode}.tried.json"), format!("{episode}.track2.ass"), format!("{episode}.whisper.small.srt"), format!("{kept_episode}.json")] {
+            std::fs::write(subs.join(name), b"[]").unwrap();
+        }
+
+        backend.remove_show(show).unwrap();
+        let (again, again_episode) = add("Added after");
+        // Its ids are new, and nothing of the removed show's is left.
+        assert!(again > show && again_episode > episode, "{again} {again_episode}");
+        let settings = backend.db.settings().unwrap();
+        assert!(settings.keys().all(|k| !k.ends_with(&format!(".{show}")) && !k.contains(&format!(".{show}.")) && !k.ends_with(&format!(".{episode}"))), "{settings:?}");
+        assert!(settings.contains_key(&format!("audio.track.{kept_show}")));
+        let left: Vec<String> = std::fs::read_dir(&subs).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(left, vec![format!("{kept_episode}.json")]);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -173,7 +173,7 @@ impl Index {
     }
 
     /// Takes out an episode that isn't in Telly any more.
-    fn forget(&self, episode_id: i64) -> Result<()> {
+    pub(crate) fn forget(&self, episode_id: i64) -> Result<()> {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM lines WHERE rowid >= ?1 AND rowid < ?2", params![episode_id * PER_EPISODE, (episode_id + 1) * PER_EPISODE])?;

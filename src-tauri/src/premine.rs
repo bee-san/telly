@@ -1109,7 +1109,8 @@ fn make_card(backend: &Backend, url: &str, format: &CardFormat, deck: &str, word
     note.as_i64().ok_or_else(|| anyhow!("Anki didn’t make the card"))
 }
 
-fn make_cards(backend: &Backend, words: &[Word], step: &dyn Fn(&str, f64)) -> Result<(usize, Vec<String>)> {
+/// Makes a card for each of `words`; returns the words that got one, and why the rest didn't.
+fn make_cards(backend: &Backend, words: &[Word], step: &dyn Fn(&str, f64)) -> Result<(HashSet<(String, String)>, Vec<String>)> {
     step("Reading your card format", 0.0);
     let format = card_format(backend)?;
     let episode = words.first().map(|w| w.episode_id).unwrap_or_default();
@@ -1120,12 +1121,12 @@ fn make_cards(backend: &Backend, words: &[Word], step: &dyn Fn(&str, f64)) -> Re
     anki::invoke(&url, "createDeck", json!({ "deck": deck }))?;
     let padding = backend.db.setting_str("clip.padding");
     let mut lines: HashMap<i64, Vec<Line>> = HashMap::new();
-    let (mut added, mut skipped) = (0, Vec::new());
+    let (mut made, mut skipped) = (HashSet::new(), Vec::new());
     for (i, word) in words.iter().enumerate() {
         step(&format!("Making cards · {} of {}", i + 1, words.len()), i as f64 / words.len().max(1) as f64);
         match make_card(backend, &url, &format, &deck, word) {
             Ok(note) => {
-                added += 1;
+                made.insert((word.headword.clone(), word.reading.clone()));
                 // The moving picture and the audio, by the card finisher, from the line as it plays.
                 let nudge = cards::nudge(backend, word.episode_id);
                 let episode_lines = lines.entry(word.episode_id).or_insert_with(|| cards::played_lines(backend, word.episode_id));
@@ -1137,7 +1138,7 @@ fn make_cards(backend: &Backend, words: &[Word], step: &dyn Fn(&str, f64)) -> Re
         }
     }
     backend.cards.poke();
-    Ok((added, skipped))
+    Ok((made, skipped))
 }
 
 /// The line a word was found in, among an episode's lines as they play
@@ -1210,8 +1211,8 @@ pub fn start_list(backend: &Arc<Backend>, show_id: i64) -> Result<Status> {
     Ok(status(backend))
 }
 
-/// Starts making cards for `words`. When it's done, they drop out of the list
-/// and count as known.
+/// Starts making cards for `words`. When it's done, those that got one drop
+/// out of the list and count as known.
 pub fn start_cards(backend: &Arc<Backend>, words: Vec<Word>) -> Result<Status> {
     {
         let mut status = backend.premining.status.lock().map_err(|_| anyhow!("premining stopped"))?;
@@ -1227,15 +1228,15 @@ pub fn start_cards(backend: &Arc<Backend>, words: Vec<Word>) -> Result<Status> {
     std::thread::spawn(move || {
         let step = |text: &str, progress: f64| set(&worker, |s| (s.step, s.progress) = (text.to_string(), progress));
         let result = make_cards(&worker, &words, &step);
-        let made: HashSet<(String, String)> = words.iter().map(|w| (w.headword.clone(), w.reading.clone())).collect();
-        if let (Ok(mut all), Ok(_)) = (worker.premining.made.lock(), result.as_ref()) {
+        // Only the words that got a card: one skipped stays on the list.
+        if let (Ok(mut all), Ok((made, _))) = (worker.premining.made.lock(), result.as_ref()) {
             all.extend(made.iter().cloned());
         }
         set(&worker, |s| {
             s.working = false;
             match result {
-                Ok((added, skipped)) => {
-                    (s.added, s.skipped) = (added, skipped);
+                Ok((made, skipped)) => {
+                    (s.added, s.skipped) = (made.len(), skipped);
                     if let Some(list) = s.list.as_mut() {
                         let mined = |w: &Word| made.contains(&(w.headword.clone(), w.reading.clone()));
                         list.known_uses += list.words.iter().filter(|w| mined(w)).map(|w| w.count).sum::<usize>();
@@ -1341,6 +1342,80 @@ mod tests {
         assert_eq!(scored(), ids.len());
         // 腹 and 減る: が and た aren't words.
         assert!(shares(&backend).0.values().all(|s| s.uses == 2), "{:?}", shares(&backend).0);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_word_whose_card_wasn_t_made_stays_on_the_list() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let dir = std::env::temp_dir().join(format!("telly-premine-cards-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Arc::new(Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap());
+        // No dictionaries to install.
+        std::fs::create_dir_all(dir.join("dictionaries")).unwrap();
+        backend.db.set_setting(own_hachidori::FOLDER, &json!(dir.join("dictionaries").to_string_lossy())).unwrap();
+        // A stand-in for AnkiConnect, which makes every note it's asked to.
+        let anki = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        backend.db.set_setting("anki.url", &json!(format!("http://{}", anki.server_addr().to_ip().unwrap()))).unwrap();
+        std::thread::spawn(move || {
+            for mut request in anki.incoming_requests() {
+                let mut body = String::new();
+                let _ = std::io::Read::read_to_string(request.as_reader(), &mut body);
+                let _ = request.respond(tiny_http::Response::from_string(json!({ "result": 1_700_000_000_000i64, "error": null }).to_string()));
+            }
+        });
+        // Telly's Hachidori, with a card format and an entry for 悪意 but none for 魔導士.
+        let stop = Arc::new(AtomicBool::new(false));
+        let page = {
+            let (backend, stop) = (backend.clone(), stop.clone());
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let next = backend.own_hachidori.next_request(Duration::from_millis(100));
+                    let Some(id) = next["id"].as_u64() else { continue };
+                    let result = match next["request"]["type"].as_str() {
+                        Some("hd_api_anki_card_formats") => {
+                            json!({ "cardFormats": [{ "deck": "Mining", "model": "Kiku", "fields": { "Word": { "value": "{expression}" }, "Sentence": { "value": "{sentence}" } } }] })
+                        }
+                        _ if next["request"]["text"] == "悪意" => json!({ "fields": [{ "expression": "悪意" }] }),
+                        _ => json!({ "fields": [] }),
+                    };
+                    backend.own_hachidori.answer(&format!("id={id}"), json!({ "ok": true, "result": result }).to_string().as_bytes()).unwrap();
+                }
+            })
+        };
+        let episodes = vec![crate::db::NewEpisode { number: 1, path: "1.mkv".into(), size: 1, duration: 1400.0 }];
+        let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let episode = backend.db.episodes(show).unwrap()[0].id;
+        let word = |headword: &str| Word {
+            headword: headword.into(),
+            reading: String::new(),
+            rank: None,
+            count: 2,
+            episode_id: episode,
+            number: 1,
+            start: 0.0,
+            end: 1.0,
+            before: String::new(),
+            word: headword.into(),
+            after: String::new(),
+        };
+        set(&backend, |s| (s.show, s.list) = (show, Some(List { words: vec![word("悪意"), word("魔導士")], uses: 10, ..Default::default() })));
+
+        start_cards(&backend, vec![word("悪意"), word("魔導士")]).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while status(&backend).working && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        stop.store(true, Ordering::Relaxed);
+        page.join().unwrap();
+        let done = status(&backend);
+        assert_eq!((done.added, done.skipped.len()), (1, 1), "{:?}", done.skipped);
+        // 魔導士 has no card: it's still to premine, and not counted as known.
+        let list = done.list.unwrap();
+        assert_eq!(list.words.iter().map(|w| w.headword.as_str()).collect::<Vec<_>>(), ["魔導士"]);
+        assert_eq!(list.known_uses, 2);
+        assert!(!backend.premining.made.lock().unwrap().contains(&("魔導士".to_string(), String::new())));
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

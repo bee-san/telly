@@ -1,0 +1,71 @@
+# Builds Telly's Windows installer for each release and attaches it.
+#
+# Publish a release whose tag is the app's version with a v before it
+# (v0.1.0 for 0.1.0, as in src-tauri/tauri.conf.json): this builds
+# Telly_<version>_x64-setup.exe with `npm run release` and adds it to the
+# release. Run it by hand (Actions → Release → Run workflow) to build an
+# installer without a release; it's kept with the run, under Artifacts.
+
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: The release's tag is the app's version
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version=$(node -p 'require("./src-tauri/tauri.conf.json").version')
+          if [ "${TAG#v}" != "$version" ]; then
+            echo "::error::The release is tagged $TAG, but src-tauri/tauri.conf.json says $version. Tag it v$version, or change the version first."
+            exit 1
+          fi
+
+      - run: npm ci
+
+      # Downloads Hachidori, then builds the app and its NSIS installer.
+      - run: npm run release
+
+      - name: Keep the installer with the run
+        uses: actions/upload-artifact@v7
+        with:
+          name: telly-windows-installer
+          path: src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+
+      - name: Attach the installer to the release
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" src-tauri/target/release/bundle/nsis/*.exe --clobber

@@ -110,9 +110,17 @@
   const lines = $derived(view?.lines ?? []);
   const dialogue = $derived(lines.filter((l) => !l.sign));
   const t = $derived(now - nudge / 1000);
-  const active = $derived(dialogue.filter((l) => l.start <= t && t < l.end));
+  /** `next`, or `last` when it holds the same lines: the time moves every frame, the lines on screen don't. */
+  function same(last: Line[], next: Line[]): Line[] {
+    return next.length === last.length && next.every((l, i) => l === last[i]) ? last : next;
+  }
+  let lastActive: Line[] = [];
+  let lastTranslated: Line[] = [];
+  const active = $derived((lastActive = same(lastActive, dialogue.filter((l) => l.start <= t && t < l.end))));
   /** The rip's English lines showing now. They're timed to the rip, so the nudge doesn't move them. */
-  const translated = $derived(showTranslation ? (translation ?? []).filter((l) => l.start <= now && now < l.end) : []);
+  const translated = $derived(
+    (lastTranslated = same(lastTranslated, showTranslation ? (translation ?? []).filter((l) => l.start <= now && now < l.end) : [])),
+  );
   /** Chapter starts to mark on the seek bar. */
   const chapterMarks = $derived((view?.chapters ?? []).filter((c) => c.start > 0.5 && c.start < duration));
   const inOpening = $derived(!!view?.opening && now >= view.opening.start && now < view.opening.end - 1);
@@ -1296,11 +1304,11 @@
   {/if}
 
   <div class="pctl">
-    <div class="seek" role="slider" tabindex="-1" aria-label="Seek" aria-valuemin={0} aria-valuemax={duration} aria-valuenow={now}
+    <div class="seek" role="slider" tabindex="-1" aria-label="Seek" aria-valuemin={0} aria-valuemax={Math.round(duration)} aria-valuenow={Math.floor(now)}
       onpointerdown={(e) => { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); seekTo(pointerTime(e)); }}
       onpointermove={(e) => { hoverAt = pointerTime(e); if (e.buttons === 1) seekTo(hoverAt); }}
       onpointerleave={() => (hoverAt = null)}>
-      <span class="track"><i style:width="{duration ? (100 * now) / duration : 0}%"></i></span>
+      <span class="track"><i style:transform="scaleX({duration ? Math.min(1, now / duration) : 0})"></i></span>
       {#each chapterMarks as c (c.start)}<span class="chapter" style:left="{(100 * c.start) / duration}%"></span>{/each}
       <span class="knob" style:left="{duration ? (100 * now) / duration : 0}%"></span>
       <!-- Always there, so the pictures stay decoded and the first one shows at once. -->
@@ -1586,7 +1594,8 @@
   .seek { position: relative; height: 22px; cursor: pointer; margin: 0 6px; touch-action: none; }
   .seek .track { position: absolute; left: 0; right: 0; top: 10px; height: 3px; border-radius: 2px; background: rgba(255, 255, 255, .22); overflow: hidden; }
   .seek:hover .track { height: 5px; top: 9px; }
-  .seek .track i { display: block; height: 100%; background: var(--vid-ink); }
+  /* Scaled, not sized: it changes every frame, and a transform needs no layout. */
+  .seek .track i { display: block; width: 100%; height: 100%; background: var(--vid-ink); transform-origin: 0 0; }
   .seek .knob { position: absolute; top: 6px; width: 11px; height: 11px; margin-left: -5.5px; border-radius: 50%; background: var(--vid-ink); }
   .seek .chapter { position: absolute; top: 8px; width: 2px; height: 7px; margin-left: -1px; background: var(--vid); pointer-events: none; }
   .seek-time { position: absolute; left: var(--at); bottom: 24px; transform: translateX(-50%); padding: 5px 8px; border-radius: 6px; font: 500 12.5px/1 var(--font-mono); font-variant-numeric: tabular-nums; background: var(--vid-panel); border: 1px solid var(--vid-edge); pointer-events: none; white-space: nowrap; text-align: center; }

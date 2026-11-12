@@ -106,7 +106,7 @@ The 10 episodes of Cyberpunk: Edgerunners season 2 (5,300 lines, 3,300 different
 
 Text typed in the Library's search that has Japanese in it is also looked for in the subtitles. Lines are listed under their shows, each with its picture and episode; pressing one plays its scene over the Library (the line with the one before and after it), and **Watch from here** opens the player there.
 
-- **A word** finds every form of itself: 食べる, たべる and 食べた all find 食べた, 食べて and 食べられる, and the whole form is marked. It goes by the words premining saves for each episode. A name finds itself with an honorific after it too (フリーレン finds フリーレン様), which Telly's character dictionary makes one word.
+- **A word** finds every form of itself: 食べる, たべる and 食べた all find 食べた, 食べて and 食べられる, and the whole form is marked. Kana find it in either script: だめ finds ダメ. It goes by the words premining saves for each episode. A name finds itself with an honorific after it too (フリーレン finds フリーレン様), which Telly's character dictionary makes one word.
 - **Anything else** (a phrase, a name no episode has as a word) is looked for in the lines' text. So are the lines of episodes whose words aren't saved yet, listed after the rest. A single kana isn't: it's in nearly every line.
 - **The lines you can read first** lead: those that are said (not sung, not a caption's note), then those with the fewest other words you don't know. A show lists up to 100 of its lines, with how many it has.
 - The lines are kept in `telly-lines.sqlite`, made from the files in `subtitles` when they sync and in a pass as Telly starts (about three minutes for 2,700 episodes the first time).

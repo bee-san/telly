@@ -25,7 +25,7 @@
 
 use crate::backend::{Backend, Served};
 use crate::db::{open_migrated, Episode};
-use crate::names::kana::{contains_japanese, contains_kanji, kata_to_hira};
+use crate::names::kana::{contains_japanese, contains_kanji, hira_to_kata, kata_to_hira};
 use crate::names::name_parser::HONORIFIC_SUFFIXES;
 use crate::premine::{self, SavedUse};
 use crate::subs::Line;
@@ -448,10 +448,12 @@ fn catch_up(backend: &Backend) -> Result<()> {
 
 // ---- Finding lines ----
 
-/// What to look for as a word: the text as typed, in hiragana (readings are
-/// kept in it), and its dictionary form when it's a word in some other form.
+/// What to look for as a word: the text as typed, in hiragana and in katakana
+/// (Hachidori has a word's reading in hiragana, but in katakana for one
+/// written in it: だめ finds ダメ, ばか バカ), and its dictionary form when it's a
+/// word in some other form.
 fn forms(q: &str) -> Vec<String> {
-    let mut forms = vec![q.to_string(), kata_to_hira(q)];
+    let mut forms = vec![q.to_string(), kata_to_hira(q), hira_to_kata(q)];
     forms.extend(premine::dictionary_form(q));
     forms.sort();
     forms.dedup();
@@ -985,6 +987,29 @@ mod tests {
     }
 
     #[test]
+    fn a_word_hachidori_has_in_katakana_is_found_in_hiragana() {
+        let index = index();
+        // Hachidori has a word written in katakana with its reading in katakana too.
+        let lines = [line(1.0, 2.0, "カメラを持ってきた"), line(3.0, 4.0, "ダメだよ"), line(5.0, 6.0, "駄目だ"), line(7.0, 8.0, "バカだな"), line(9.0, 10.0, "来たばかりだ")];
+        let uses = [
+            word(0, &lines[0].text, "カメラ", "カメラ", "カメラ"),
+            word(1, &lines[1].text, "ダメ", "ダメ", "ダメ"),
+            word(2, &lines[2].text, "駄目", "駄目", "だめ"),
+            word(3, &lines[3].text, "バカ", "バカ", "バカ"),
+            word(4, &lines[4].text, "来", "来る", "くる"),
+        ];
+        index.replace(8, &entries(&lines, &uses).unwrap(), "now", true).unwrap();
+        assert_eq!(found_in(&index, "かめら"), [(8, 0, "カメラ".to_string())]);
+        assert_eq!(found_in(&index, "カメラ"), [(8, 0, "カメラ".to_string())]);
+        // In either kana, ダメ and 駄目 alike.
+        for q in ["だめ", "ダメ"] {
+            assert_eq!(found_in(&index, q), [(8, 1, "ダメ".to_string()), (8, 2, "駄目".to_string())], "{q}");
+        }
+        // ばか is バカ, not the ばか in ばかり.
+        assert_eq!(found_in(&index, "ばか"), [(8, 3, "バカ".to_string())]);
+    }
+
+    #[test]
     fn text_is_found_as_it_s_written() {
         let index = index();
         let lines = [line(1.0, 2.0, "全品50%オフ！"), line(3.0, 4.0, "50_50だね"), line(5.0, 6.0, "Abcの歌")];
@@ -1377,7 +1402,7 @@ mod tests {
 
     /// What a search for `q` finds, read off every line as the module's doc says.
     fn plainly(plain: &[Plain], saved: &HashSet<i64>, q: &str) -> Vec<(i64, usize, usize, usize)> {
-        let mut forms = vec![q.to_string(), kata_to_hira(q)];
+        let mut forms = vec![q.to_string(), kata_to_hira(q), hira_to_kata(q)];
         forms.extend(premine::dictionary_form(q));
         let honorific = |headword: &str| q.chars().count() >= 2 && headword.strip_prefix(q).is_some_and(|rest| HONORIFIC_SUFFIXES.iter().any(|h| h.0 == rest));
         let is_it = |(headword, reading, _, _): &&(String, String, usize, usize)| forms.contains(headword) || forms.contains(reading) || honorific(headword);
@@ -1415,7 +1440,7 @@ mod tests {
     fn queries(rng: &mut Rng, plain: &[Plain]) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for (headword, reading, written) in SAID {
-            out.extend([headword.to_string(), reading.to_string(), names::kana::hira_to_kata(reading), kata_to_hira(headword)]);
+            out.extend([headword.to_string(), reading.to_string(), hira_to_kata(reading), kata_to_hira(headword)]);
             out.extend(written.iter().map(|w| w.to_string()));
         }
         out.extend(BETWEEN.iter().map(|b| b.to_string()));

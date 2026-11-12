@@ -37,25 +37,33 @@ pub fn mal_id(anilist_id: i64) -> Result<Option<i64>> {
     Ok(answer.pointer("/data/Media/idMal").and_then(Value::as_i64))
 }
 
-/// Where the opening of episode `number` is, as (start, end) in seconds, in a
-/// video `length` seconds long. None: AniSkip has none for it.
-pub fn opening(mal_id: i64, number: i64, length: f64) -> Result<Option<(f64, f64)>> {
-    let url = format!("{API}/skip-times/{mal_id}/{number}?types=op&episodeLength={length:.3}");
+/// Where an episode's opening and ending are, as (start, end) in seconds.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Skips {
+    pub opening: Option<(f64, f64)>,
+    pub ending: Option<(f64, f64)>,
+}
+
+/// Where the opening and the ending of episode `number` are, in a video
+/// `length` seconds long: none where AniSkip has none. An ending mixed with
+/// the episode (mixed-ed) isn't asked for: skipping it would skip the story.
+pub fn skips(mal_id: i64, number: i64, length: f64) -> Result<Skips> {
+    let url = format!("{API}/skip-times/{mal_id}/{number}?types=op&types=ed&episodeLength={length:.3}");
     let mut response = agent().get(&url).header("User-Agent", USER_AGENT).call().map_err(|e| anyhow!("AniSkip isn’t reachable ({e})"))?;
     match response.status().as_u16() {
         200 => {}
-        404 => return Ok(None),
+        404 => return Ok(Skips::default()),
         status => return Err(anyhow!("AniSkip answered {status}")),
     }
     let answer: Value = response.body_mut().read_json().context("AniSkip sent something unexpected")?;
-    Ok(first_opening(&answer))
+    Ok(Skips { opening: first_of(&answer, "op"), ending: first_of(&answer, "ed") })
 }
 
-/// The opening in AniSkip's answer: its first, the one with the most votes.
-fn first_opening(answer: &Value) -> Option<(f64, f64)> {
-    let op = answer["results"].as_array()?.iter().find(|r| r["skipType"] == "op")?;
-    let start = op.pointer("/interval/startTime")?.as_f64()?;
-    let end = op.pointer("/interval/endTime")?.as_f64()?;
+/// The first skip of a type in AniSkip's answer, the one with the most votes.
+fn first_of(answer: &Value, kind: &str) -> Option<(f64, f64)> {
+    let found = answer["results"].as_array()?.iter().find(|r| r["skipType"] == kind)?;
+    let start = found.pointer("/interval/startTime")?.as_f64()?;
+    let end = found.pointer("/interval/endTime")?.as_f64()?;
     (end > start).then_some((start, end))
 }
 
@@ -76,7 +84,8 @@ mod tests {
             "message": "Successfully found skip times",
             "statusCode": 200
         });
-        assert_eq!(first_opening(&answer), Some((116.748, 206.748)));
-        assert_eq!(first_opening(&json!({ "found": false, "results": [], "statusCode": 404 })), None);
+        assert_eq!(first_of(&answer, "op"), Some((116.748, 206.748)));
+        assert_eq!(first_of(&answer, "ed"), Some((1417.135, 1507.135)));
+        assert_eq!(first_of(&json!({ "found": false, "results": [], "statusCode": 404 }), "op"), None);
     }
 }

@@ -1388,7 +1388,7 @@ impl Openings {
                 };
                 // Kept only if Change match or Fix order hasn't come between.
                 let own = show.anilist_id.unwrap_or_default();
-                backend.db.set_opening_if(id, episode.number, own, aniskip::opening(mal_id, number, probe.duration)?)?;
+                backend.db.set_opening_if(id, episode.number, own, aniskip::skips(mal_id, number, probe.duration)?)?;
                 std::thread::sleep(aniskip::PACE);
             }
         }

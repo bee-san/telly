@@ -263,9 +263,14 @@ pub fn plan(probe: &Probe, path: &Path, audio: usize) -> Plan {
     }
 }
 
-/// Where the ending starts: a chapter called that, else the first chapter
-/// after 70% of the episode that's an ending's length.
+/// Where the ending starts (see `ending`).
 pub fn ending_at(probe: &Probe) -> Option<f64> {
+    ending(probe).map(|(start, _)| start)
+}
+
+/// The ending, as (start, end): a chapter called that, else the first chapter
+/// after 70% of the episode that's an ending's length.
+pub fn ending(probe: &Probe) -> Option<(f64, f64)> {
     let d = probe.duration;
     if d <= 0.0 || probe.chapters.len() < 3 {
         return None;
@@ -274,14 +279,9 @@ pub fn ending_at(probe: &Probe) -> Option<f64> {
         let t = c.title.to_lowercase();
         t.contains("ending") || t == "ed" || t.starts_with("ed ") || c.title.contains("エンディング")
     });
-    if let Some(c) = named {
-        return Some(c.start);
-    }
-    probe
-        .chapters
-        .iter()
-        .find(|c| c.start > 0.7 * d && (55.0..=150.0).contains(&(c.end - c.start)))
-        .map(|c| c.start)
+    named
+        .or_else(|| probe.chapters.iter().find(|c| c.start > 0.7 * d && (55.0..=150.0).contains(&(c.end - c.start))))
+        .map(|c| (c.start, c.end))
 }
 
 /// The opening, as (start, end): a chapter called that, else the chapter in

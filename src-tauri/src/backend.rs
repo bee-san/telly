@@ -1055,6 +1055,7 @@ impl Backend {
             "show": show,
             "chapters": probe.chapters,
             "opening": media::opening(&probe).or(self.db.opening(id)?).map(|(start, end)| json!({ "start": start, "end": end })),
+            "ending": media::ending(&probe).or(self.db.ending(id)?).map(|(start, end)| json!({ "start": start, "end": end })),
             "audio": audio,
             "audioTrack": jobs::playing_track(&episode, &probe),
             "listedAudio": jobs::listed_track(&episode, &probe),

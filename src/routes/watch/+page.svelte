@@ -125,6 +125,9 @@
   /** Chapter starts to mark on the seek bar. */
   const chapterMarks = $derived((view?.chapters ?? []).filter((c) => c.start > 0.5 && c.start < duration));
   const inOpening = $derived(!!view?.opening && now >= view.opening.start && now < view.opening.end - 1);
+  const inEnding = $derived(!!view?.ending && now >= view.ending.start && now < view.ending.end - 1);
+  /** Where the ending starts, for skipping endings: the chapters', else AniSkip's. */
+  const endingStart = $derived(view?.episode.endingAt ?? view?.ending?.start ?? null);
   /** The last line that has started: what ← → and ↓ move from. */
   const current = $derived.by(() => {
     let found = -1;
@@ -365,7 +368,7 @@
       if (!video.paused) sat.seconds += d / video.playbackRate;
     }
     lastT = cur;
-    if (skipEndings && !endingFired && view?.episode.endingAt && duration > 0 && view.episode.endingAt > duration * 0.5 && cur >= view.episode.endingAt) {
+    if (skipEndings && !endingFired && endingStart && duration > 0 && endingStart > duration * 0.5 && cur >= endingStart) {
       endingFired = true;
       finish();
     }
@@ -1280,6 +1283,9 @@
   {#if note}<span class="flash">{note}</span>{/if}
   {#if inOpening && view?.opening && !recap && !ended}
     <button type="button" class="skip" class:aside={transcript || filterPanel || !!explaining} onclick={() => view?.opening && seekTo(view.opening.end)}>Skip opening</button>
+  {:else if inEnding && view?.ending && !recap && !ended}
+    <!-- To what comes after it (a preview, a scene after the credits), or the end, which moves on to the next episode. -->
+    <button type="button" class="skip" class:aside={transcript || filterPanel || !!explaining} onclick={() => view?.ending && seekTo(Math.min(view.ending.end, duration))}>Skip ending</button>
   {/if}
 
   <div class="ptop">

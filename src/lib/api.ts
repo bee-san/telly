@@ -220,6 +220,8 @@ export interface PlayerView {
   /** The rip's chapters. */
   chapters: { start: number; end: number; title: string }[];
   opening: { start: number; end: number } | null;
+  /** The ending, from the rip's chapters or AniSkip. */
+  ending: { start: number; end: number } | null;
   /** The rip's audio tracks, by name, and which one plays. */
   audio: string[];
   audioTrack: number;

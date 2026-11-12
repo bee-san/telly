@@ -120,6 +120,12 @@ CREATE TRIGGER shows_last_id AFTER INSERT ON shows
   BEGIN UPDATE last_ids SET id = MAX(id, NEW.id) WHERE name = 'shows'; END;
 CREATE TRIGGER episodes_last_id AFTER INSERT ON episodes
   BEGIN UPDATE last_ids SET id = MAX(id, NEW.id) WHERE name = 'episodes'; END;
+", "
+-- Where AniSkip says the ending is, asked with the opening. ed_asked 0: asked
+-- before endings were, so asked again once.
+ALTER TABLE openings ADD COLUMN ed_start REAL;
+ALTER TABLE openings ADD COLUMN ed_end REAL;
+ALTER TABLE openings ADD COLUMN ed_asked INTEGER NOT NULL DEFAULT 0;
 "];
 
 /// The next id for a show or an episode: after every one given out, removed or not.
@@ -831,13 +837,23 @@ impl Db {
         Ok(found.and_then(|(start, end)| Some((start?, end?))))
     }
 
+    /// Where AniSkip says an episode's ending is.
+    pub fn ending(&self, episode_id: i64) -> Result<Option<(f64, f64)>> {
+        let found: Option<(Option<f64>, Option<f64>)> = self
+            .conn()?
+            .query_row("SELECT ed_start, ed_end FROM openings WHERE episode_id = ?1", params![episode_id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?;
+        Ok(found.and_then(|(start, end)| Some((start?, end?))))
+    }
+
     /// A show's episodes that ffprobe has read and AniSkip is to be asked
     /// about: never asked, or it had none for them when asked before `again` (unix ms).
     pub fn unasked_openings(&self, show_id: i64, again: i64) -> Result<Vec<i64>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare_cached(
             "SELECT id FROM episodes e WHERE show_id = ?1 AND probe != ''
-               AND NOT EXISTS (SELECT 1 FROM openings o WHERE o.episode_id = e.id AND (o.start IS NOT NULL OR o.asked_at >= ?2))
+               AND NOT EXISTS (SELECT 1 FROM openings o WHERE o.episode_id = e.id AND o.ed_asked = 1
+                               AND (o.start IS NOT NULL OR o.ed_start IS NOT NULL OR o.asked_at >= ?2))
              ORDER BY number",
         )?;
         let rows = stmt.query_map(params![show_id, again], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -847,7 +863,7 @@ impl Db {
     /// What AniSkip said about an episode's opening just now; None: it has none.
     pub fn set_opening(&self, episode_id: i64, opening: Option<(f64, f64)>) -> Result<()> {
         self.conn()?.execute(
-            "INSERT OR REPLACE INTO openings (episode_id, start, end, asked_at) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT OR REPLACE INTO openings (episode_id, start, end, asked_at, ed_asked) VALUES (?1, ?2, ?3, ?4, 1)",
             params![episode_id, opening.map(|o| o.0), opening.map(|o| o.1), now_ms()],
         )?;
         Ok(())
@@ -856,12 +872,13 @@ impl Db {
     /// AniSkip's answer for an episode, kept only if the episode still has the
     /// number, and its show the AniList match, it was asked about: Change
     /// match or Fix order meanwhile makes it another episode's answer.
-    pub fn set_opening_if(&self, episode_id: i64, number: i64, anilist_id: i64, opening: Option<(f64, f64)>) -> Result<bool> {
+    pub fn set_opening_if(&self, episode_id: i64, number: i64, anilist_id: i64, skips: crate::aniskip::Skips) -> Result<bool> {
+        let (op, ed) = (skips.opening, skips.ending);
         let kept = self.conn()?.execute(
-            "INSERT OR REPLACE INTO openings (episode_id, start, end, asked_at)
-             SELECT e.id, ?2, ?3, ?4 FROM episodes e JOIN shows s ON s.id = e.show_id
+            "INSERT OR REPLACE INTO openings (episode_id, start, end, asked_at, ed_start, ed_end, ed_asked)
+             SELECT e.id, ?2, ?3, ?4, ?7, ?8, 1 FROM episodes e JOIN shows s ON s.id = e.show_id
              WHERE e.id = ?1 AND e.number = ?5 AND s.anilist_id = ?6",
-            params![episode_id, opening.map(|o| o.0), opening.map(|o| o.1), now_ms(), number, anilist_id],
+            params![episode_id, op.map(|o| o.0), op.map(|o| o.1), now_ms(), number, anilist_id, ed.map(|o| o.0), ed.map(|o| o.1)],
         )?;
         Ok(kept > 0)
     }
@@ -891,19 +908,37 @@ mod tests {
     }
 
     #[test]
+    fn an_opening_found_before_endings_were_asked_for_is_asked_again_once() {
+        let (db, dir) = temp_db("ending");
+        let episodes = vec![NewEpisode { number: 1, path: "1.mkv".into(), size: 1, duration: 1400.0 }];
+        let show = db.add_show(&NewShow { folder: "Show".into(), title: "Show".into(), anilist_id: Some(100), episodes, ..Default::default() }).unwrap();
+        let id = db.episodes(show).unwrap()[0].id;
+        db.set_probe(id, "{}", 1400.0, None, "direct").unwrap();
+        // Kept as it was before: the opening, no ending, not asked about one.
+        db.conn().unwrap().execute("INSERT INTO openings (episode_id, start, end, asked_at) VALUES (?1, 90, 180, 1)", params![id]).unwrap();
+        assert_eq!(db.unasked_openings(show, 0).unwrap(), vec![id]);
+        let skips = crate::aniskip::Skips { opening: Some((90.0, 180.0)), ending: Some((1300.0, 1390.0)) };
+        assert!(db.set_opening_if(id, 1, 100, skips).unwrap());
+        assert!(db.unasked_openings(show, 0).unwrap().is_empty());
+        assert_eq!(db.ending(id).unwrap(), Some((1300.0, 1390.0)));
+        drop(db);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn aniskip_s_answer_is_kept_only_for_the_episode_it_was_asked_about() {
         let (db, dir) = temp_db("opening");
         let episodes = vec![NewEpisode { number: 2, path: "2.mkv".into(), size: 1, duration: 1400.0 }];
         let show = db.add_show(&NewShow { folder: "Show".into(), title: "Show".into(), anilist_id: Some(100), episodes, ..Default::default() }).unwrap();
         let id = db.episodes(show).unwrap()[0].id;
-        assert!(db.set_opening_if(id, 2, 100, Some((90.0, 180.0))).unwrap());
+        assert!(db.set_opening_if(id, 2, 100, crate::aniskip::Skips { opening: Some((90.0, 180.0)), ending: Some((1300.0, 1390.0)) }).unwrap());
         // Fix order made it episode 3 while AniSkip was asked about episode 2.
         db.renumber(show, &[(id, 3)]).unwrap();
-        assert!(!db.set_opening_if(id, 2, 100, None).unwrap());
+        assert!(!db.set_opening_if(id, 2, 100, Default::default()).unwrap());
         // Change match made it another show's.
         db.set_show_anilist(show, &NewShow { folder: "Show".into(), title: "Other".into(), anilist_id: Some(200), ..Default::default() }).unwrap();
-        assert!(!db.set_opening_if(id, 3, 100, None).unwrap());
-        assert!(db.set_opening_if(id, 3, 200, None).unwrap());
+        assert!(!db.set_opening_if(id, 3, 100, Default::default()).unwrap());
+        assert!(db.set_opening_if(id, 3, 200, Default::default()).unwrap());
         drop(db);
         let _ = std::fs::remove_dir_all(dir);
     }

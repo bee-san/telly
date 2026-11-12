@@ -328,6 +328,9 @@ pub struct Db {
 impl Db {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = open_migrated(path, MIGRATIONS)?;
+        // The Library, the workers' choice of work and every page ask the same
+        // few queries again and again: each is parsed once.
+        conn.set_prepared_statement_cache_capacity(64);
         // Work cut short when Telly last closed starts again.
         conn.execute_batch(
             "UPDATE episodes SET media_state = 'pending', media_progress = 0 WHERE media_state = 'working';
@@ -376,7 +379,7 @@ impl Db {
 
     pub fn settings(&self) -> Result<serde_json::Map<String, Value>> {
         let conn = self.conn()?;
-        let mut stmt = conn.prepare("SELECT key, value FROM settings")?;
+        let mut stmt = conn.prepare_cached("SELECT key, value FROM settings")?;
         let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
         let mut map = serde_json::Map::new();
         for row in rows {
@@ -447,7 +450,7 @@ impl Db {
     pub fn shows(&self) -> Result<Vec<Show>> {
         let conn = self.conn()?;
         let sql = format!("SELECT {SHOW_COLUMNS} FROM shows ORDER BY last_watched_at IS NULL, last_watched_at DESC, added_at DESC");
-        let mut stmt = conn.prepare(&sql)?;
+        let mut stmt = conn.prepare_cached(&sql)?;
         let rows = stmt.query_map([], show_from_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -537,7 +540,7 @@ impl Db {
     pub fn episodes(&self, show_id: i64) -> Result<Vec<Episode>> {
         let conn = self.conn()?;
         let sql = format!("SELECT {EPISODE_COLUMNS} FROM episodes WHERE show_id = ?1 ORDER BY number, id");
-        let mut stmt = conn.prepare(&sql)?;
+        let mut stmt = conn.prepare_cached(&sql)?;
         let rows = stmt.query_map(params![show_id], episode_from_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -545,7 +548,7 @@ impl Db {
     pub fn all_episodes(&self) -> Result<Vec<Episode>> {
         let conn = self.conn()?;
         let sql = format!("SELECT {EPISODE_COLUMNS} FROM episodes ORDER BY show_id, number, id");
-        let mut stmt = conn.prepare(&sql)?;
+        let mut stmt = conn.prepare_cached(&sql)?;
         let rows = stmt.query_map([], episode_from_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -766,7 +769,7 @@ impl Db {
     pub fn pending_mine_jobs(&self) -> Result<Vec<MineJob>> {
         let conn = self.conn()?;
         let sql = format!("SELECT {MINE_COLUMNS} FROM mine_jobs WHERE state = 'pending' ORDER BY id");
-        let mut stmt = conn.prepare(&sql)?;
+        let mut stmt = conn.prepare_cached(&sql)?;
         let rows = stmt.query_map([], mine_job_from_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -774,7 +777,7 @@ impl Db {
     pub fn recent_mine_jobs(&self, limit: i64) -> Result<Vec<MineJob>> {
         let conn = self.conn()?;
         let sql = format!("SELECT {MINE_COLUMNS} FROM mine_jobs ORDER BY id DESC LIMIT ?1");
-        let mut stmt = conn.prepare(&sql)?;
+        let mut stmt = conn.prepare_cached(&sql)?;
         let rows = stmt.query_map(params![limit], mine_job_from_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -799,7 +802,7 @@ impl Db {
     /// Each scored episode's uses of words, how many are of known words, and the stamp it was scored at.
     pub fn word_scores(&self) -> Result<std::collections::HashMap<i64, (i64, i64, String)>> {
         let conn = self.conn()?;
-        let mut stmt = conn.prepare("SELECT episode_id, uses, known, stamp FROM word_scores")?;
+        let mut stmt = conn.prepare_cached("SELECT episode_id, uses, known, stamp FROM word_scores")?;
         let rows = stmt
             .query_map([], |r| Ok((r.get::<_, i64>(0)?, (r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?))))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -832,7 +835,7 @@ impl Db {
     /// about: never asked, or it had none for them when asked before `again` (unix ms).
     pub fn unasked_openings(&self, show_id: i64, again: i64) -> Result<Vec<i64>> {
         let conn = self.conn()?;
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT id FROM episodes e WHERE show_id = ?1 AND probe != ''
                AND NOT EXISTS (SELECT 1 FROM openings o WHERE o.episode_id = e.id AND (o.start IS NOT NULL OR o.asked_at >= ?2))
              ORDER BY number",
@@ -865,7 +868,7 @@ impl Db {
 
     pub fn cards_per_show(&self) -> Result<std::collections::HashMap<i64, i64>> {
         let conn = self.conn()?;
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT e.show_id, COUNT(DISTINCT m.note_id) FROM mine_jobs m JOIN episodes e ON e.id = m.episode_id
              WHERE m.state IN ('done', 'pending') GROUP BY e.show_id",
         )?;

@@ -94,6 +94,9 @@
   let noteTimer: ReturnType<typeof setTimeout> | null = null;
   let tickTimer: ReturnType<typeof setInterval> | null = null;
   let countTimer: ReturnType<typeof setInterval> | null = null;
+  let waitTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Goes up when the episode changes or the player is left, so a wait for the next episode stops. */
+  let waitRun = 0;
   let frame = 0;
   let lastEvent = 0;
   let lastT = 0;
@@ -211,7 +214,7 @@
     error = "";
     videoError = "";
     ended = false;
-    countdown = null;
+    stopWaiting();
     endingFired = false;
     counted.clear();
     sat = { lines: 0, chars: 0, cards: 0, seconds: 0 };
@@ -897,18 +900,20 @@
   function finish() {
     ended = true;
     if (!view?.next || !autoplay) return;
-    waitForNext();
+    stopWaiting();
+    waitForNext(waitRun);
   }
 
-  async function waitForNext() {
-    if (!view?.next || !ended) return;
+  async function waitForNext(run: number) {
+    if (run !== waitRun || !view?.next || !ended) return;
     if (!view.next.ready) {
       try {
         const v = await call<PlayerView>("episode", { id: view.episode.id });
-        if (view && v.next) view.next = v.next;
+        if (run === waitRun && view && v.next) view.next = v.next;
       } catch {}
+      if (run !== waitRun) return;
       if (!view?.next?.ready) {
-        setTimeout(waitForNext, 2000);
+        waitTimer = setTimeout(() => waitForNext(run), 2000);
         return;
       }
     }
@@ -927,8 +932,16 @@
     countTimer = null;
   }
 
-  async function playNext() {
+  /** Stops waiting for the next episode to be ready, and its countdown. */
+  function stopWaiting() {
+    waitRun++;
+    if (waitTimer) clearTimeout(waitTimer);
+    waitTimer = null;
     stopCountdown();
+  }
+
+  async function playNext() {
+    stopWaiting();
     const next = view?.next;
     if (!next) return;
     await close();
@@ -945,7 +958,7 @@
   }
 
   async function leave(to = "/") {
-    stopCountdown();
+    stopWaiting();
     await close();
     if (app.fullscreen) await toggleFull();
     goto(to);
@@ -1149,7 +1162,7 @@
     recapRun++;
     cancelAnimationFrame(frame);
     if (tickTimer) clearInterval(tickTimer);
-    stopCountdown();
+    stopWaiting();
     clearResume();
     window.removeEventListener("keydown", onKey);
     window.removeEventListener("keyup", onKeyUp);

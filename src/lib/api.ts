@@ -18,17 +18,19 @@ export async function call<T>(cmd: string, args: Record<string, unknown> = {}): 
   return answer.ok as T;
 }
 
-const answers = new Map<string, { text: string; answer: unknown }>();
+const answers = new Map<string, { text: string; answer: unknown; tag?: string }>();
 
 /** `call`, keeping the answer for `kept`. The same answer as last time is the
  *  same object, so a page that asks again and again has nothing to draw again. */
 export async function callKept<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
-  const answer = await call<T>(cmd, args);
   const key = cmd + JSON.stringify(args);
-  const text = JSON.stringify(answer);
   const last = answers.get(key);
+  // A tagged answer (the Library, a show's page) isn't sent again when it hasn't changed.
+  const answer = await call<T & { unchanged?: boolean; tag?: string }>(cmd, last?.tag ? { ...args, tag: last.tag } : args);
+  if (answer?.unchanged && last) return last.answer as T;
+  const text = JSON.stringify(answer);
   if (last?.text === text) return last.answer as T;
-  answers.set(key, { text, answer });
+  answers.set(key, { text, answer, tag: answer?.tag });
   return answer;
 }
 

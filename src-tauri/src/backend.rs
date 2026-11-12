@@ -278,6 +278,23 @@ fn ahead_max() -> u64 {
     })
 }
 
+/// A page's answer with a tag that stands for it, or {"unchanged": true}
+/// when the page has that answer already (it sends its tag): a show's page
+/// asks every few seconds, and a show of hundreds of episodes is a big answer.
+fn tagged(mut answer: Value, args: &Value) -> Value {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    answer.to_string().hash(&mut hasher);
+    let tag = format!("{:016x}", hasher.finish());
+    if args.get("tag").and_then(Value::as_str) == Some(tag.as_str()) {
+        return json!({ "unchanged": true });
+    }
+    if let Some(fields) = answer.as_object_mut() {
+        fields.insert("tag".into(), json!(tag));
+    }
+    answer
+}
+
 /// The copies folder's size as last worked out (Backend::space_used): when, of which folder, and the bytes.
 static SPACE_USED: Mutex<Option<(Instant, PathBuf, u64)>> = Mutex::new(None);
 
@@ -1223,9 +1240,9 @@ impl Backend {
     /// Answers one of the UI's requests.
     pub fn call(self: &Arc<Self>, cmd: &str, args: Value) -> Result<Value> {
         match cmd {
-            "library" => self.library(),
+            "library" => self.library().map(|v| tagged(v, &args)),
             "activity" => to_value(self.activity()),
-            "show" => self.show_view(arg(&args, "id")?),
+            "show" => self.show_view(arg(&args, "id")?).map(|v| tagged(v, &args)),
             "scan" => self.scan(&arg::<String>(&args, "folder")?),
             "searchAnilist" => {
                 let mut found = anilist::search(&arg::<String>(&args, "query")?)?;
@@ -1626,6 +1643,16 @@ mod tests {
         }
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_page_that_has_the_answer_already_is_told_it_s_unchanged() {
+        let first = tagged(json!({ "episodes": [1, 2] }), &json!({ "id": 1 }));
+        let tag = first["tag"].as_str().unwrap().to_string();
+        assert_eq!(tagged(json!({ "episodes": [1, 2] }), &json!({ "id": 1, "tag": tag })), json!({ "unchanged": true }));
+        let changed = tagged(json!({ "episodes": [1, 2, 3] }), &json!({ "id": 1, "tag": tag }));
+        assert_eq!(changed["episodes"], json!([1, 2, 3]));
+        assert_ne!(changed["tag"], json!(tag));
     }
 
     #[test]

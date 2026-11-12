@@ -10,7 +10,7 @@
   import { toast } from "$lib/toast-store.svelte";
 
   const id = $derived(Number(page.url.searchParams.get("id")));
-  let view = $state.raw<ShowView | null>(kept<ShowView>("show", { id: Number(page.url.searchParams.get("id")) }));
+  let view = $state.raw<ShowView | null>(null);
   let error = $state("");
   let menu = $state<{ ep: EpisodeRow; x: number; y: number } | null>(null);
   let matching = $state(false);
@@ -19,16 +19,45 @@
   let busy = $state(false);
 
   async function load() {
+    const show = id;
     try {
-      view = await callKept<ShowView>("show", { id });
+      const v = await callKept<ShowView>("show", { id: show });
+      // Another show's page has opened meanwhile.
+      if (show !== id) return;
+      view = v;
       error = "";
     } catch (e) {
-      error = errorText(e);
+      if (show === id) error = errorText(e);
     }
   }
 
   onMount(() => {
     app.dark = false;
+    const close = () => (menu = null);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  });
+
+  // A long show opens as fast as a short one: its first screen of episodes is
+  // drawn at once, and the rest once that's on screen.
+  const FIRST_ROWS = 40;
+  let allRows = $state(false);
+  const episodes = $derived(allRows ? (view?.episodes ?? []) : (view?.episodes ?? []).slice(0, FIRST_ROWS));
+  $effect(() => {
+    if (!view || allRows) return;
+    const frame = requestAnimationFrame(() => setTimeout(() => (allRows = true)));
+    return () => cancelAnimationFrame(frame);
+  });
+
+  // Going from one show's page to another's (the title bar, or back) keeps this page:
+  // the last show is dropped before it's drawn again, and the new one is asked for.
+  $effect.pre(() => {
+    const show = id;
+    view = kept<ShowView>("show", { id: show });
+    error = "";
+    menu = null;
+    matching = false;
+    allRows = false;
     let timer: ReturnType<typeof setTimeout>;
     // Stopped when the page is left, even with an answer on its way.
     let stopped = false;
@@ -41,25 +70,11 @@
     };
     loop();
     // Each episode's share of known words is worked out again, from Anki as it is now.
-    call("wordShares", { show: id }).catch(() => {});
-    const close = () => (menu = null);
-    window.addEventListener("click", close);
+    call("wordShares", { show }).catch(() => {});
     return () => {
       stopped = true;
       clearTimeout(timer);
-      window.removeEventListener("click", close);
     };
-  });
-
-  // A long show opens as fast as a short one: its first screen of episodes is
-  // drawn at once, and the rest once that's on screen.
-  const FIRST_ROWS = 40;
-  let allRows = $state(false);
-  const episodes = $derived(allRows ? (view?.episodes ?? []) : (view?.episodes ?? []).slice(0, FIRST_ROWS));
-  $effect(() => {
-    if (!view || allRows) return;
-    const frame = requestAnimationFrame(() => setTimeout(() => (allRows = true)));
-    return () => cancelAnimationFrame(frame);
   });
 
   const card = $derived(view?.card ?? null);
@@ -109,12 +124,15 @@
   }
 
   async function rematch(a: Anime) {
+    if (!card) return;
+    const show = card.id;
     matching = false;
-    await act(() => call("rematch", { id, anilistId: a.id }));
+    await act(() => call("rematch", { id: show, anilistId: a.id }));
   }
 
   async function freeSpace() {
-    const r = await call<{ episodes: number; bytes: number }>("freeSpace", { show: id });
+    if (!card) return;
+    const r = await call<{ episodes: number; bytes: number }>("freeSpace", { show: card.id });
     toast({ key: "free", state: "done", title: r.episodes ? `Freed ${bytes(r.bytes)}` : "Nothing to free", text: r.episodes ? `Removed Telly’s copies of ${plural(r.episodes, "watched episode")}. The rips are untouched.` : "Telly only removes its copies of watched episodes." });
     load();
   }
@@ -125,7 +143,8 @@
   const maker = $derived(view?.whisper.maker ?? "Whisper");
 
   async function whisperAll() {
-    const r = await call<{ queued: number }>("whisperSubs", { show: id });
+    if (!card) return;
+    const r = await call<{ queued: number }>("whisperSubs", { show: card.id });
     toast({ key: "whisper", state: "info", title: `${maker} will make subtitles for ${plural(r.queued, "episode")}`, text: "One at a time, a few minutes each. They’re marked as machine-made." });
     load();
   }
@@ -136,9 +155,11 @@
   }
 
   async function lookAgain() {
-    toast({ key: "rescan", state: "working", title: "Looking for new episodes", text: card?.folder ?? "" });
+    if (!card) return;
+    const show = card;
+    toast({ key: "rescan", state: "working", title: "Looking for new episodes", text: show.folder });
     try {
-      const r = await call<{ added: number }>("rescan", { id });
+      const r = await call<{ added: number }>("rescan", { id: show.id });
       toast({ key: "rescan", state: "done", title: r.added ? `Added ${plural(r.added, "episode")}` : "No new episodes", text: r.added ? "They’ll be ready to play soon." : "Telly checks the folder every 10 minutes too." });
     } catch (e) {
       toast({ key: "rescan", state: "failed", title: "Couldn’t read the folder", text: errorText(e) });
@@ -147,8 +168,9 @@
   }
 
   async function remove() {
-    if (!card || !confirm(`Remove ${card.title} from Telly? The video files stay where they are. Telly’s copies and subtitles are deleted.`)) return;
-    await call("removeShow", { id });
+    const show = card;
+    if (!show || !confirm(`Remove ${show.title} from Telly? The video files stay where they are. Telly’s copies and subtitles are deleted.`)) return;
+    await call("removeShow", { id: show.id });
     goto("/");
   }
 
@@ -187,7 +209,7 @@
             <span class="bar"><i style:width="{Math.round((100 * (card.subsReady < card.episodes ? card.subsReady : card.subsFound)) / Math.max(1, card.episodes))}%"></i></span>
           </span>
           <span class="grow"></span>
-          <button type="button" class="btn quiet" onclick={() => goto(`/premine?show=${id}`)} title="Make cards for the words that take you to the share of the show you choose">Premine</button>
+          <button type="button" class="btn quiet" onclick={() => card && goto(`/premine?show=${card.id}`)} title="Make cards for the words that take you to the share of the show you choose">Premine</button>
           <button type="button" class="btn quiet" onclick={() => { matching = true; query = card?.titleRomaji || card?.title || ""; found = []; search(); }}>Change match…</button>
           {#if missing > 0 && view?.whisper.ready}
             <button type="button" class="btn quiet" onclick={whisperAll} title="For the {missing} episodes without subtitles; marked as machine-made">Make subtitles with {maker}</button>
@@ -195,7 +217,7 @@
             <button type="button" class="btn quiet" onclick={getModel} title="So Whisper can make subtitles Jimaku doesn’t have">Get Whisper’s model</button>
           {/if}
           <button type="button" class="btn quiet" onclick={lookAgain}>Look for new episodes</button>
-          <button type="button" class="btn quiet" onclick={() => act(() => call("retrySubs", { show: id }))}>Find subtitles again</button>
+          <button type="button" class="btn quiet" onclick={() => card && act(() => call("retrySubs", { show: card.id }))}>Find subtitles again</button>
           <button type="button" class="btn quiet" onclick={freeSpace}>Free up space</button>
           <button type="button" class="btn danger" onclick={remove}>Remove…</button>
         </div>

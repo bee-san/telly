@@ -4,7 +4,8 @@
 //!
 //!   npm run devserver -- <data dir> [port]
 //!
-//! With TELLY_IDLE set, the background work isn't started.
+//! With TELLY_IDLE set, the background work isn't started, but for line
+//! search's index, which is made from the folder's own files.
 //!
 //!   POST /call   {"cmd": "...", "args": {...}}  →  {"ok": value} or {"error": "..."}
 //!   GET  /media/ep/<id>, /media/cover/<id>      →  what media:// serves in the app
@@ -31,6 +32,8 @@ fn main() {
     // TELLY_IDLE: no background work, to look at a copy of a library without converting its episodes.
     if std::env::var_os("TELLY_IDLE").is_none() {
         backend.start();
+    } else {
+        telly_lib::search::start(backend.clone());
     }
     if std::env::var_os("TELLY_MINING").is_some() {
         backend.start_mining();

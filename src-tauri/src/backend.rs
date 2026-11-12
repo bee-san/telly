@@ -18,6 +18,7 @@ use crate::own_hachidori::{self, Own};
 use crate::premine::{self, Premining};
 use crate::recommend;
 use crate::scan;
+use crate::search;
 use crate::subs::Line;
 use crate::sync;
 use crate::tools::{self, Tools};
@@ -107,6 +108,8 @@ pub struct Backend {
     pub premining: Premining,
     /// The work Telly's own Hachidori does for it (own_hachidori.rs).
     pub own_hachidori: Own,
+    /// Every spoken line and its words, for line search (search.rs).
+    pub lines: search::Index,
 }
 
 /// One line that just played, for the log.
@@ -297,6 +300,7 @@ impl Backend {
         let db = Db::open(&dirs.local.join("telly.sqlite"))?;
         let log = Log::open(&dirs.roaming.join("telly-log.sqlite"))?;
         let _ = log.tidy();
+        let lines = search::Index::open(&dirs.local.join("telly-lines.sqlite"))?;
         // Failed subtitles get another go each time Telly starts (Jimaku may have been down).
         let _ = db.requeue_subs(None, &["failed"]);
         // Subtitles synced by an older way of matching are synced again: since
@@ -328,6 +332,7 @@ impl Backend {
             names: Names::default(),
             premining: Premining::default(),
             own_hachidori: Own::default(),
+            lines,
         })
     }
 
@@ -346,6 +351,7 @@ impl Backend {
             premine::start_shares(&backend, None);
             names::start(backend.clone());
             anilist_list::start(backend.clone());
+            search::start(backend.clone());
         });
     }
 
@@ -1251,6 +1257,8 @@ impl Backend {
                 &arg::<Vec<ask::Exchange>>(&args, "thread")?,
                 &arg::<String>(&args, "question")?,
             ),
+            "searchLines" => search::find(self, &arg::<String>(&args, "q")?),
+            "scene" => search::scene(self, arg(&args, "id")?, arg(&args, "line")?),
             "premine" => to_value(premine::start_list(self, arg(&args, "show")?)?),
             "premineStatus" => to_value(premine::status(self)),
             "ownHachidori" => to_value(own_hachidori::report(self)),
@@ -1320,6 +1328,7 @@ impl Backend {
                 video
             }
             ["sheet", id] => self.sheet_path(&self.episode_or_err(id.parse().map_err(|_| anyhow!("bad episode"))?)?),
+            ["picture", id, n] => return search::picture(self, id.parse().map_err(|_| anyhow!("bad episode"))?, n.parse().map_err(|_| anyhow!("bad picture"))?),
             ["cover", id] => {
                 let id = id.parse().map_err(|_| anyhow!("bad show"))?;
                 // The cover as fetched, for the moments before its small copy is made.

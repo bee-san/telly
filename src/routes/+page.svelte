@@ -5,8 +5,9 @@
   import AddSheet from "$lib/AddSheet.svelte";
   import Cover from "$lib/Cover.svelte";
   import Icon from "$lib/Icon.svelte";
-  import { call, callKept, errorText, kept, pickFolder, setWindowTitle, type Library, type Settings, type ShowCard } from "$lib/api";
-  import { statusOf } from "$lib/format";
+  import Scene from "$lib/Scene.svelte";
+  import { call, callKept, errorText, kept, mediaUrl, pickFolder, setWindowTitle, type FoundLine, type Library, type Settings, type ShowCard } from "$lib/api";
+  import { clock, plural, statusOf } from "$lib/format";
   import { app } from "$lib/state.svelte";
 
   let lib = $state.raw<Library | null>(kept<Library>("library"));
@@ -58,12 +59,13 @@
   }
 
   /** NSFW shows are the ones kept in a folder named JAV. */
-  const nsfw = (s: ShowCard) => s.folder.split(/[\/]/).some((part) => part.toLowerCase() === "jav");
+  const nsfw = (s: ShowCard) => s.folder.split(/[\\/]/).some((part) => part.toLowerCase() === "jav");
 
   const shows = $derived((lib?.shows ?? []).filter((s) => matches(s) && (showNsfw || !nsfw(s))));
-  const watching = $derived(
-    shows.filter((s) => s.status === "watching" || (s.status === "getting" && (s.watched > 0 || !!s.next?.resume))).sort((a, b) => (b.lastWatchedAt ?? 0) - (a.lastWatchedAt ?? 0)),
-  );
+  const inProgress = (s: ShowCard) => s.status === "watching" || (s.status === "getting" && (s.watched > 0 || !!s.next?.resume));
+  /** The shows being watched among `list`, the last one watched first. */
+  const beingWatched = (list: ShowCard[]) => list.filter(inProgress).sort((a, b) => (b.lastWatchedAt ?? 0) - (a.lastWatchedAt ?? 0));
+  const watching = $derived(beingWatched(shows));
   const rest = $derived(shows.filter((s) => !watching.includes(s)));
 
   // Which of the Library's shows are listed, and in what order. Kept in Settings.
@@ -82,8 +84,8 @@
   /** The share of a show's words you know, in per cent; null when none of its episodes is scored yet. */
   const knownOf = (s: ShowCard) => (s.wordsUses ? (100 * s.wordsKnown) / s.wordsUses : null);
 
-  const listed = $derived.by(() => {
-    const list = rest.filter((s) => kind === "all" || (kind === "movies") === s.movie);
+  /** `list` (one made for this) in the order Sort chose. */
+  function sorted(list: ShowCard[]): ShowCard[] {
     const byName = (a: ShowCard, b: ShowCard) => a.title.localeCompare(b.title);
     if (sort === "name") return list.sort(byName);
     // Newest first; a show with no year goes last.
@@ -91,7 +93,65 @@
     // Most words known first; a show with no score yet goes last.
     if (sort === "known") return list.sort((a, b) => (knownOf(b) ?? -1) - (knownOf(a) ?? -1) || byName(a, b));
     return list;
+  }
+
+  const listed = $derived(sorted(rest.filter((s) => kind === "all" || (kind === "movies") === s.movie)));
+
+  // ---- Lines the search finds in the subtitles (search.rs) ----
+
+  const searching = $derived(q.trim() !== "");
+  let found = $state.raw<FoundLine[]>([]);
+  /** The search `found` is the answer to. */
+  let foundFor = $state("");
+  /** A word is half-typed in Japanese: it's looked for once it's chosen. */
+  let composing = $state(false);
+  /** The shows whose every line is listed. */
+  let opened = $state<Record<number, boolean>>({});
+  /** The scene playing: the lines as they were listed when it opened, and which of them it's of. */
+  let scene = $state<{ lines: FoundLine[]; at: number } | null>(null);
+
+  $effect(() => {
+    const text = q.trim();
+    if (composing) return;
+    if (!text) {
+      found = [];
+      foundFor = "";
+      return;
+    }
+    const timer = setTimeout(async () => {
+      const lines = await call<{ lines: FoundLine[] }>("searchLines", { q: text }).then((r) => r.lines, () => []);
+      if (q.trim() !== text) return;
+      found = lines;
+      foundFor = text;
+      opened = {};
+      scene = null;
+    }, 150);
+    return () => clearTimeout(timer);
   });
+
+  /** A line you can read sooner is lower: one that's said, then the fewest other words you don't know
+   *  (none is i+1), then those whose episode's words aren't saved yet. */
+  const reach = (l: FoundLine) => (l.said ? 0 : 2_000_000) + (l.unknown ?? 1_000_000);
+
+  /** The lines found, show by show. A show with a line you can read comes first, and so do such
+   *  lines in it; among equals, shows are in the page's order and lines as they come in the show. */
+  const groups = $derived.by(() => {
+    const all = (lib?.shows ?? []).filter((s) => showNsfw || !nsfw(s));
+    const now = beingWatched(all);
+    const of = new Map<number, FoundLine[]>();
+    for (const l of found) {
+      const list = of.get(l.showId);
+      if (list) list.push(l);
+      else of.set(l.showId, [l]);
+    }
+    return [...now, ...sorted(all.filter((s) => !now.includes(s)))]
+      .filter((show) => of.has(show.id))
+      .map((show) => ({ show, lines: of.get(show.id)!.sort((a, b) => reach(a) - reach(b) || a.number - b.number || a.start - b.start) }))
+      .sort((a, b) => reach(a.lines[0]) - reach(b.lines[0]));
+  });
+  const lines = $derived(groups.flatMap((g) => g.lines));
+  /** A show with many lines lists a few until it's opened. */
+  const listedOf = (g: { show: ShowCard; lines: FoundLine[] }) => (g.lines.length > 8 && !opened[g.show.id] ? g.lines.slice(0, 6) : g.lines);
 
   // The shows being watched sit in one row that scrolls sideways.
   let row = $state<HTMLElement | null>(null);
@@ -150,7 +210,7 @@
   <div class="toolbar">
     <label class="search">
       <Icon name="search" />
-      <input type="search" bind:value={q} placeholder="Search" aria-label="Search shows" />
+      <input type="search" bind:value={q} placeholder="Search" aria-label="Search shows and lines" oncompositionstart={() => (composing = true)} oncompositionend={() => (composing = false)} />
     </label>
     <span class="grow"></span>
     <a class="btn quiet" href="/recommended">Recommended</a>
@@ -173,6 +233,8 @@
       <p>Press <b>Add media…</b> and pick a folder of rips. Telly works out the show, finds Japanese subtitles, syncs them, and gets each episode ready to play. The files stay where they are.</p>
     </div>
   {:else if lib}
+    <!-- A search lists only the shelves it finds something for. -->
+    {#if !searching || watching.length}
     <div class="shelf-head">
       <h2>Currently watching</h2><span>{count(watching.length)}</span>
       {#if !(edges.start && edges.end)}
@@ -202,9 +264,11 @@
         {/each}
       </div>
     {:else}
-      <p class="empty">{q ? "No show in progress matches." : "Nothing in progress. Pick something from the library."}</p>
+      <p class="empty">Nothing in progress. Pick something from the library.</p>
+    {/if}
     {/if}
 
+    {#if !searching || rest.length}
     <div class="shelf-head">
       <h2>Library</h2><span>{count(listed.length, kind)}</span>
       <span class="grow"></span>
@@ -244,8 +308,48 @@
     {:else}
       <p class="empty">{q ? "No shows match." : kind === "movies" ? "No movies here." : kind === "series" ? "No series here." : "Every show in the library is in progress."}</p>
     {/if}
+    {/if}
+
+    {#if groups.length}
+      <div class="shelf-head">
+        <h2>Lines</h2><span>{plural(lines.length, "line")} in {count(groups.length)}</span>
+      </div>
+      {#each groups as g (g.show.id)}
+        <section class="lgroup">
+          <div class="lg-head">
+            <span class="lg-cv"><Cover cover={g.show.cover} color={g.show.coverColor} native={g.show.titleNative} title={g.show.title} /></span>
+            <a class="lg-title" lang={g.show.titleNative ? "ja" : undefined} href="/show?id={g.show.id}">{g.show.titleNative || g.show.title}</a>
+            <span class="lg-sub">{g.show.titleNative ? `${g.show.title} · ` : ""}{plural(g.lines.length, "line")}</span>
+          </div>
+          <div class="lrows">
+            {#each listedOf(g) as l (`${l.episodeId} ${l.line}`)}
+              <button type="button" class="lrow" onclick={() => (scene = { lines, at: lines.indexOf(l) })} aria-label="Play scene: {l.before}{l.word}{l.after} {g.show.title}{g.show.movie ? "" : `, Episode ${l.number}`}, {clock(l.start)}">
+                <span class="lthumb">
+                  <img src={mediaUrl(`/picture/${l.episodeId}/${l.picture}`)} alt="" loading="lazy" decoding="async" onerror={(e) => ((e.currentTarget as HTMLImageElement).hidden = true)} />
+                  <span class="lplay"><Icon name="play" /></span>
+                  <span class="ltime">{clock(l.start)}</span>
+                </span>
+                <span class="lbody">
+                  <span class="lq" lang="ja">{l.before}<mark>{l.word}</mark>{l.after}</span>
+                  {#if !g.show.movie}<span class="lmeta">Episode {l.number}</span>{/if}
+                </span>
+              </button>
+            {/each}
+          </div>
+          {#if listedOf(g).length < g.lines.length}
+            <button type="button" class="link-btn more" onclick={() => (opened = { ...opened, [g.show.id]: true })}>Show {g.lines.length - listedOf(g).length} more</button>
+          {/if}
+        </section>
+      {/each}
+    {:else if searching && !composing && foundFor === q.trim() && !watching.length && !rest.length}
+      <p class="empty">No shows or lines match.</p>
+    {/if}
   {/if}
 </div>
+
+{#if scene}
+  <Scene lines={scene.lines} bind:at={scene.at} showOf={(l) => lib?.shows.find((s) => s.id === l.showId)} {settings} onclose={() => (scene = null)} />
+{/if}
 
 {#if menu}
   <div class="menu" style:left="{menu.x}px" style:top="{menu.y}px" role="menu">
@@ -318,6 +422,28 @@
   .l-known { font-size: 12px; color: var(--ink-2); }
   .lcard .bar { margin-top: 5px; }
   .empty { font-size: 14px; color: var(--ink-2); margin-bottom: 34px; }
+  .lgroup { margin-bottom: 22px; }
+  .lg-head { display: flex; align-items: center; gap: 10px; margin: 0 0 6px; padding-left: 8px; min-width: 0; }
+  .lg-cv { width: 22px; flex: none; }
+  .lg-title { font: 800 15px/1.3 var(--font-jp-title); color: inherit; text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lg-title:hover { text-decoration: underline; }
+  .lg-sub { font-size: 12.5px; color: var(--ink-3); white-space: nowrap; }
+  .lrows { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 2px 16px; }
+  .lrow { all: unset; box-sizing: border-box; display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 14px; align-items: center; min-width: 0; padding: 8px; border-radius: 8px; cursor: pointer; }
+  .lrow:hover { background: var(--sunk); }
+  .lrow:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
+  .lthumb { position: relative; display: block; aspect-ratio: 16 / 9; border-radius: 4px; overflow: hidden; background: var(--sunk); }
+  .lrow:hover .lthumb { background: var(--rule-2); }
+  .lthumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+  .lplay { position: absolute; left: 50%; top: 50%; width: 30px; height: 30px; margin: -15px 0 0 -15px; border-radius: 50%; display: grid; place-items: center; background: rgba(0, 0, 0, .62); color: #fff; opacity: 0; transition: opacity .15s; }
+  .lplay :global(svg) { width: 14px; height: 14px; margin-left: 2px; }
+  .lrow:hover .lplay, .lrow:focus-visible .lplay { opacity: 1; }
+  .ltime { position: absolute; right: 4px; bottom: 4px; padding: 2px 4px; border-radius: 3px; background: rgba(0, 0, 0, .66); color: #f2f2f0; font: 500 11px/1 var(--font-mono); font-variant-numeric: tabular-nums; }
+  .lbody { display: grid; gap: 3px; min-width: 0; }
+  .lq { font: 500 15.5px/1.45 var(--font-jp); display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .lq mark { font-weight: 700; color: inherit; background: linear-gradient(transparent 58%, var(--mark-soft) 58%); }
+  .lmeta { font-size: 12.5px; color: var(--ink-3); }
+  .more { margin: 6px 0 0 8px; }
   .menu { position: fixed; z-index: 80; min-width: 190px; display: grid; padding: 5px; background: var(--surface); border: 1px solid var(--rule-2); border-radius: 8px; box-shadow: var(--shadow-lg); }
   .menu button { all: unset; padding: 8px 10px; border-radius: 5px; font-size: 13.5px; cursor: pointer; }
   .menu button:hover, .menu button:focus-visible { background: var(--sunk); }

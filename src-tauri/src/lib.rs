@@ -28,6 +28,7 @@ pub mod premine;
 pub mod recommend;
 pub mod relay;
 pub mod scan;
+pub mod search;
 pub mod subs;
 pub mod sync;
 pub mod tools;

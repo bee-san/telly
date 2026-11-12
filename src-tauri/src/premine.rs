@@ -239,6 +239,46 @@ fn is_word(token: &Token) -> bool {
     kept && contains_japanese(&token.base) && (contains_kanji(&token.base) || token.base.chars().count() > 1)
 }
 
+/// Whether a token carries on the verb or adjective before it: an auxiliary
+/// (た, ない, たい), a suffix (られる, させる), or て, で and ば.
+fn is_ending(token: &Token) -> bool {
+    let at = |i: usize| token.pos.get(i).map(String::as_str).unwrap_or("");
+    match at(0) {
+        "助動詞" => true,
+        "動詞" => at(1) == "接尾",
+        "助詞" => at(1) == "接続助詞" && matches!(token.surface.as_str(), "て" | "で" | "ば"),
+        _ => false,
+    }
+}
+
+/// Stretches each word's byte range in `text` over the endings that inflect
+/// it, so the whole form is one stretch: 食べ in 食べられなくて, 食べれ in
+/// 食べれば. A word that isn't a verb or an adjective stays as it is.
+pub(crate) fn with_endings(text: &str, spans: &mut [(usize, usize)]) -> Result<()> {
+    let tokens = tokens(text)?;
+    for span in spans {
+        let Some(last) = tokens.iter().position(|t| t.to == span.1) else { continue };
+        if !matches!(tokens[last].pos.first().map(String::as_str), Some("動詞" | "形容詞")) {
+            continue;
+        }
+        for t in &tokens[last + 1..] {
+            if t.from != span.1 || !is_ending(t) {
+                break;
+            }
+            span.1 = t.to;
+        }
+    }
+    Ok(())
+}
+
+/// The dictionary form of `text` when it's one word in some form: 食べる for
+/// 食べた and 食べられる.
+pub(crate) fn dictionary_form(text: &str) -> Option<String> {
+    let tokens = tokens(text).ok()?;
+    let (first, rest) = tokens.split_first()?;
+    (is_word(first) && rest.iter().all(is_ending)).then(|| first.base.clone())
+}
+
 /// A word in a line: one token, or nouns that run together, which may hold a
 /// longer word than any of them.
 #[derive(Clone, Debug, PartialEq)]
@@ -463,13 +503,13 @@ struct Use {
 
 /// One use of a word in an episode, as Hachidori sees it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-struct SavedUse {
+pub(crate) struct SavedUse {
     /// Its line, counting only spoken lines (not signs), and its byte range there.
-    line: usize,
-    from: usize,
-    to: usize,
-    headword: String,
-    reading: String,
+    pub(crate) line: usize,
+    pub(crate) from: usize,
+    pub(crate) to: usize,
+    pub(crate) headword: String,
+    pub(crate) reading: String,
     rank: Option<i64>,
 }
 
@@ -495,7 +535,7 @@ fn fingerprint(lines: &[Line]) -> u64 {
     hasher.finish()
 }
 
-fn spoken_lines(backend: &Backend, episode_id: i64) -> Vec<Line> {
+pub(crate) fn spoken_lines(backend: &Backend, episode_id: i64) -> Vec<Line> {
     jobs::read_lines(backend, episode_id).into_iter().filter(|l| !l.sign).collect()
 }
 
@@ -505,7 +545,7 @@ fn counts(text: &str, u: &SavedUse, cast: &HashSet<String>) -> bool {
 }
 
 /// An episode's saved words, when they were worked out for these very lines.
-fn saved_uses(backend: &Backend, episode_id: i64, lines: &[Line]) -> Option<Vec<SavedUse>> {
+pub(crate) fn saved_uses(backend: &Backend, episode_id: i64, lines: &[Line]) -> Option<Vec<SavedUse>> {
     let saved = std::fs::read(words_path(backend, episode_id)).ok().and_then(|b| serde_json::from_slice::<Saved>(&b).ok())?;
     (saved.lines == fingerprint(lines)).then_some(saved.uses)
 }
@@ -537,6 +577,7 @@ fn episode_uses(backend: &Backend, episode_id: i64, lines: &[Line]) -> Result<Ve
     drop(terms);
     std::fs::create_dir_all(backend.dirs.subs())?;
     std::fs::write(&path, serde_json::to_vec(&Saved { lines: print, uses: uses.clone() })?)?;
+    crate::search::index(backend, episode_id);
     Ok(uses)
 }
 
@@ -544,6 +585,8 @@ fn episode_uses(backend: &Backend, episode_id: i64, lines: &[Line]) -> Result<Ve
 /// premining doesn't have to.
 pub fn prepare(backend: &Backend, episode_id: i64) {
     let lines = spoken_lines(backend, episode_id);
+    // Line search has the lines as they are now, whether or not their words can be worked out.
+    crate::search::index(backend, episode_id);
     if lines.is_empty() {
         return;
     }
@@ -561,7 +604,12 @@ pub fn prepare(backend: &Backend, episode_id: i64) {
 /// Whether the word at byte `at` of a caption is said: not in brackets, where
 /// captions describe a sound （爆発音） or name the speaker, and not in a
 /// line of a song (♪).
-fn said(text: &str, at: usize) -> bool {
+pub(crate) fn said(text: &str, at: usize) -> bool {
+    !bracketed(text, at) && !text.contains('♪')
+}
+
+/// Whether byte `at` of a caption is inside brackets.
+pub(crate) fn bracketed(text: &str, at: usize) -> bool {
     let mut depth = 0;
     for c in text[..at].chars() {
         match c {
@@ -570,7 +618,7 @@ fn said(text: &str, at: usize) -> bool {
             _ => {}
         }
     }
-    depth == 0 && !text.contains('♪')
+    depth > 0
 }
 
 /// The words to premine in `show`.

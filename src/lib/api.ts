@@ -262,6 +262,41 @@ export interface Moment {
   nudgeMs: number;
 }
 
+/** A line a search found (search.rs). */
+export interface FoundLine {
+  episodeId: number;
+  showId: number;
+  number: number;
+  /** Which of the episode's spoken lines it is. */
+  line: number;
+  start: number;
+  end: number;
+  /** The line around what was found. */
+  before: string;
+  word: string;
+  after: string;
+  /** How many of its other words you don't know; null when its episode's words aren't saved yet. */
+  unknown: number | null;
+  /** Whether what was found is said: not sung, and not a caption's note. */
+  said: boolean;
+  /** Which of the seek bar's pictures shows it. */
+  picture: number;
+}
+
+/** The scene around a line: the stretch of its episode to play, and what's said in it. */
+export interface SceneView {
+  episodeId: number;
+  start: number;
+  end: number;
+  lines: { start: number; end: number; text: string }[];
+  /** Which of `lines` was asked for. */
+  line: number;
+  src: string;
+  /** As PlayerView's. */
+  listedAudio: number;
+  playable: boolean;
+}
+
 /** A part of the story in a recap, and the episodes it covers. */
 export interface StoryArc {
   title: string;

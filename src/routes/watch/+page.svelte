@@ -8,8 +8,11 @@
   import { clock } from "$lib/format";
   import { app } from "$lib/state.svelte";
   import { toast } from "$lib/toast-store.svelte";
+  import { pickAudio } from "$lib/video";
 
   const epId = $derived(Number(page.url.searchParams.get("ep")));
+  /** Where to start: the episode was opened at a scene line search found (/watch?ep=4&at=1060). */
+  const fromScene = $derived(page.url.searchParams.has("at") ? Math.max(0, Number(page.url.searchParams.get("at")) || 0) : null);
 
   let view = $state<PlayerView | null>(null);
   let error = $state("");
@@ -270,7 +273,7 @@
 
   /** Whether this is coming back to a show after a while, to something there's a recap for. */
   function wantRecap(v: PlayerView, autoplayed: boolean): boolean {
-    if (autoplayed || settings["recap.enabled"] === false) return false;
+    if (autoplayed || fromScene !== null || settings["recap.enabled"] === false) return false;
     if (!v.recap?.possible && !v.resume?.possible) return false;
     const hours = Number(settings["recap.afterHours"] ?? 8) || 8;
     return v.awayMs != null && v.awayMs >= hours * 3_600_000;
@@ -290,14 +293,9 @@
   function startAt(): number {
     const e = view?.episode;
     if (!e) return 0;
+    if (fromScene !== null) return fromScene;
     if (e.watchedAt === null && e.position > 5 && (e.duration <= 0 || e.position < e.duration * 0.95)) return e.position;
     return 0;
-  }
-
-  /** Plays the audio track `listed` of those the player lists: a rip that plays as it is has all its tracks, and starts on its first. */
-  function pickAudio(el: HTMLVideoElement, listed: number) {
-    const tracks = (el as HTMLVideoElement & { audioTracks?: ArrayLike<{ enabled: boolean }> }).audioTracks;
-    if (tracks?.[listed] && !tracks[listed].enabled) tracks[listed].enabled = true;
   }
 
   function onLoaded() {

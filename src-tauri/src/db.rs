@@ -494,6 +494,11 @@ impl Db {
         let conn = self.conn()?;
         // AniSkip's openings were for the anime it was before.
         conn.execute("DELETE FROM openings WHERE episode_id IN (SELECT id FROM episodes WHERE show_id = ?1)", params![id])?;
+        // So were its season folders' own AniList and Jimaku entries, found by
+        // its title, and the numbering its Jimaku files taught them.
+        for prefix in ["anilist.group", "jimaku.group", "subs.numbering"] {
+            conn.execute("DELETE FROM settings WHERE key LIKE ?1", params![format!("{prefix}.{id}.%")])?;
+        }
         conn.execute(
             "UPDATE shows SET title = ?2, title_native = ?3, title_english = ?4, title_romaji = ?5, anilist_id = ?6,
                anilist_episodes = ?7, format = ?8, year = ?9, cover_url = ?10, cover_color = ?11, jimaku_id = NULL
@@ -966,6 +971,28 @@ mod tests {
         db.set_show_anilist(show, &NewShow { folder: "Show".into(), title: "Other".into(), anilist_id: Some(200), ..Default::default() }).unwrap();
         assert!(!db.set_opening_if(id, 3, 100, Default::default()).unwrap());
         assert!(db.set_opening_if(id, 3, 200, Default::default()).unwrap());
+        drop(db);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn another_match_forgets_the_season_folders_entries_found_for_the_last() {
+        let (db, dir) = temp_db("rematch");
+        let add = |title: &str| {
+            let episodes = vec![NewEpisode { number: 1, path: format!("{title}/Season 2/01.mkv"), size: 1, duration: 1400.0 }];
+            db.add_show(&NewShow { folder: title.into(), title: title.into(), anilist_id: Some(100), episodes, ..Default::default() }).unwrap()
+        };
+        let (show, other) = (add("Show"), add("Other"));
+        // Found while it was matched to anime 100: "Season 2" searched as that anime's second season.
+        for of in [show, other] {
+            for key in [format!("anilist.group.{of}.Season 2"), format!("jimaku.group.{of}.Season 2"), format!("subs.numbering.{of}.Season 2")] {
+                db.set_setting(&key, &serde_json::json!(555)).unwrap();
+            }
+        }
+        db.set_show_anilist(show, &NewShow { title: "Show".into(), anilist_id: Some(200), ..Default::default() }).unwrap();
+        let settings = db.settings().unwrap();
+        assert!(settings.keys().all(|k| !k.contains(&format!(".{show}."))), "{settings:?}");
+        assert_eq!(settings.keys().filter(|k| k.contains(&format!(".{other}."))).count(), 3);
         drop(db);
         let _ = std::fs::remove_dir_all(dir);
     }

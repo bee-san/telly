@@ -120,6 +120,8 @@ pub struct Jobs {
     cancel_media: AtomicBool,
     /// Jimaku's files per entry, so each episode doesn't ask again.
     jimaku_files: Mutex<HashMap<i64, (Instant, Vec<jimaku::Local>)>>,
+    /// Each show's Jimaku entries, by the AniList match they were found for.
+    jimaku_entries: Mutex<HashMap<(i64, Option<i64>, String), Vec<i64>>>,
     /// Held while Jimaku is asked, so it's asked by one worker at a time: it
     /// answers 429 when asked too fast, and what one worker fetched the next finds kept.
     jimaku: Mutex<()>,
@@ -142,6 +144,7 @@ impl Default for Jobs {
             download: Mutex::new(None),
             cancel_media: AtomicBool::new(false),
             jimaku_files: Mutex::new(HashMap::new()),
+            jimaku_entries: Mutex::new(HashMap::new()),
             jimaku: Mutex::new(()),
             drives: Mutex::new(HashMap::new()),
         }
@@ -1110,17 +1113,32 @@ fn entry_files(backend: &Backend, key: &str, id: i64) -> Result<Vec<jimaku::Loca
     Ok(files)
 }
 
-/// Jimaku's files for a show.
+/// Jimaku's files for a show: those of its first 3 entries (Jimaku can have a
+/// show under more than one: a TV and a BD release, a season of its own), for
+/// every episode, not only the first. The entries are asked for once while
+/// Telly is open, and again after Change match.
 fn jimaku_files(backend: &Backend, key: &str, show: &Show) -> Result<Vec<jimaku::Local>> {
-    let entry_ids: Vec<i64> = match show.jimaku_id {
-        Some(id) => vec![id],
-        None => {
-            let entries = jimaku::find_entries(key, show.anilist_id, &show.title_romaji)?;
-            if let Some(first) = entries.first() {
-                backend.db.set_jimaku_id(show.id, Some(first.id))?;
+    let match_key = (show.id, show.anilist_id, show.title_romaji.clone());
+    let known = backend.jobs.jimaku_entries.lock().ok().and_then(|e| e.get(&match_key).cloned());
+    let entry_ids: Vec<i64> = match known {
+        Some(ids) => ids,
+        None => match jimaku::find_entries(key, show.anilist_id, &show.title_romaji) {
+            Ok(entries) => {
+                if let Some(first) = entries.first().filter(|f| show.jimaku_id != Some(f.id)) {
+                    backend.db.set_jimaku_id(show.id, Some(first.id))?;
+                }
+                let ids: Vec<i64> = entries.into_iter().take(3).map(|e| e.id).collect();
+                if let Ok(mut known) = backend.jobs.jimaku_entries.lock() {
+                    known.insert(match_key, ids.clone());
+                }
+                ids
             }
-            entries.into_iter().take(3).map(|e| e.id).collect()
-        }
+            // Jimaku can't be asked: the entry found before, if any.
+            Err(e) => match show.jimaku_id {
+                Some(id) => vec![id],
+                None => return Err(e),
+            },
+        },
     };
     let mut all = Vec::new();
     for id in entry_ids {

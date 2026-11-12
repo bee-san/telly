@@ -71,6 +71,22 @@ impl Anime {
         })
     }
 
+    fn names(&self) -> impl Iterator<Item = &str> {
+        [self.romaji.as_str(), self.english.as_str(), self.native.as_str()]
+            .into_iter()
+            .chain(self.synonyms.iter().map(String::as_str))
+    }
+
+    /// The season its titles name. A first season's name none.
+    fn season(&self) -> i64 {
+        self.names().find_map(season).unwrap_or(1)
+    }
+
+    /// A TV series: what a season folder holds.
+    fn is_series(&self) -> bool {
+        matches!(self.format.as_str(), "TV" | "TV_SHORT" | "ONA")
+    }
+
     /// The name for cards and the window title: English if it has one and it's
     /// short, else romaji.
     pub fn short_title(&self) -> String {
@@ -304,12 +320,7 @@ pub fn rank(results: &mut [Anime], title: &str, count: usize) {
     let wanted = format_hint(title);
     let wanted_season = season(title);
     for (i, a) in results.iter_mut().enumerate() {
-        let names = || {
-            [a.romaji.as_str(), a.english.as_str(), a.native.as_str()]
-                .into_iter()
-                .chain(a.synonyms.iter().map(String::as_str))
-        };
-        let title_fit = names().map(|name| likeness(title, name)).fold(0.0, f64::max);
+        let title_fit = a.names().map(|name| likeness(title, name)).fold(0.0, f64::max);
         let format_fit = match (wanted, a.format.as_str()) {
             (w, f) if w == f => 1.0,
             ("TV", "TV_SHORT" | "ONA") => 0.6,
@@ -325,14 +336,60 @@ pub fn rank(results: &mut [Anime], title: &str, count: usize) {
         };
         let order = 1.0 - i as f64 / n;
         let score = 0.55 * title_fit + 0.15 * format_fit + 0.2 * episode_fit + 0.1 * order;
-        // A folder that names its season wants the entry for that season. A
-        // first season's titles rarely name it.
+        // A folder that names its season wants the entry for that season.
         a.score = match wanted_season {
-            Some(s) => 0.8 * score + if names().find_map(season).unwrap_or(1) == s { 0.2 } else { 0.0 },
+            Some(s) => 0.8 * score + if a.season() == s { 0.2 } else { 0.0 },
             None => score,
         };
     }
     results.sort_by(|a, b| b.score.total_cmp(&a.score));
+}
+
+/// The entries AniList says a show goes on in ("SEQUEL").
+fn sequels(id: i64) -> Result<Vec<Anime>> {
+    let q = format!("query ($id: Int) {{ Media(id: $id, type: ANIME) {{ relations {{ edges {{ relationType node {{ type {FIELDS} }} }} }} }} }}");
+    let answer = query(&q, json!({ "id": id }))?;
+    Ok(answer
+        .pointer("/data/Media/relations/edges")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|e| e["relationType"] == "SEQUEL" && e["node"]["type"] == "ANIME")
+        .filter_map(|e| Anime::from_api(&e["node"]))
+        .collect())
+}
+
+/// When `title` names a later season ("Season 4") that no result's title
+/// names, puts first the series that many seasons along AniList's sequels
+/// from the first season. Its title often doesn't say ("Sword Art Online:
+/// Alicization - War of Underworld"), and films can come between (Rascal Does
+/// Not Dream of Bunny Girl Senpai goes on in three before its second series).
+pub fn follow_sequels(results: &mut Vec<Anime>, title: &str) -> Result<()> {
+    walk_sequels(results, title, sequels)
+}
+
+fn walk_sequels(results: &mut Vec<Anime>, title: &str, sequels: impl Fn(i64) -> Result<Vec<Anime>>) -> Result<()> {
+    let Some(wanted) = season(title).filter(|&s| s > 1) else { return Ok(()) };
+    if results.iter().any(|a| a.season() == wanted) {
+        return Ok(());
+    }
+    let Some(mut current) = results.iter().find(|a| a.season() == 1 && a.is_series()).cloned() else { return Ok(()) };
+    let mut seen = std::collections::HashSet::from([current.id]);
+    let mut reached = 1;
+    while reached < wanted {
+        // A show can go on in more than one way (a series and a special): the series, then the earliest.
+        let next = sequels(current.id)?.into_iter().filter(|a| !seen.contains(&a.id)).min_by_key(|a| (!a.is_series(), a.year.unwrap_or(i64::MAX), a.id));
+        let Some(next) = next else { return Ok(()) };
+        seen.insert(next.id);
+        if next.is_series() {
+            reached += 1;
+        }
+        current = next;
+    }
+    current.score = 1.0;
+    results.retain(|a| a.id != current.id);
+    results.insert(0, current);
+    Ok(())
 }
 
 /// An image from AniList's CDN (a cover or a character's portrait).
@@ -403,6 +460,34 @@ mod tests {
         assert_eq!(season("Sword Art Online II"), Some(2));
         assert_eq!(season("Pokémon Concierge Part 2"), None);
         assert_eq!(season("FAIRY TAIL (2014)"), None);
+    }
+
+    #[test]
+    fn a_season_no_title_names_is_found_along_the_sequels() {
+        let dated = |id, romaji: &str, format: &str, year| Anime { year: Some(year), ..anime(id, romaji, "", format, None) };
+        // AniList's sequels, as it gave them on 12 November 2026.
+        let sequels = |id: i64| -> Result<Vec<Anime>> {
+            Ok(match id {
+                11757 => vec![dated(20021, "Sword Art Online: Extra Edition", "SPECIAL", 2013), dated(20594, "Sword Art Online II", "TV", 2014)],
+                20594 => vec![dated(21403, "Sword Art Online: Ordinal Scale", "MOVIE", 2017)],
+                21403 => vec![dated(100182, "Sword Art Online: Alicization", "TV", 2018)],
+                100182 => vec![dated(108759, "Sword Art Online: Alicization - War of Underworld", "TV", 2019)],
+                101291 => vec![dated(104157, "Seishun Buta Yarou wa Yumemiru Shoujo no Yume wo Minai", "MOVIE", 2019)],
+                104157 => vec![dated(154967, "Seishun Buta Yarou wa Odekake Sister no Yume wo Minai", "MOVIE", 2023)],
+                154967 => vec![dated(161474, "Seishun Buta Yarou wa Randoseru Girl no Yume wo Minai", "MOVIE", 2023)],
+                161474 => vec![dated(171046, "Seishun Buta Yarou wa Santa Claus no Yume wo Minai", "TV", 2025)],
+                _ => Vec::new(),
+            })
+        };
+        let mut sao = vec![anime(11757, "Sword Art Online", "", "TV", Some(25)), anime(20594, "Sword Art Online II", "", "TV", Some(24))];
+        walk_sequels(&mut sao, "Sword Art Online Season 4", sequels).unwrap();
+        assert_eq!(sao[0].id, 108759);
+        let mut rascal = vec![anime(101291, "Seishun Buta Yarou wa Bunny Girl Senpai no Yume wo Minai", "", "TV", Some(13))];
+        walk_sequels(&mut rascal, "Rascal Does Not Dream of Bunny Girl Senpai Season 2", sequels).unwrap();
+        assert_eq!(rascal[0].id, 171046);
+        // A season some title names needs no walk.
+        let mut konosuba = vec![anime(21699, "Kono Subarashii Sekai ni Shukufuku wo! 2", "", "TV", Some(10))];
+        walk_sequels(&mut konosuba, "KonoSuba Season 2", |_| panic!("asked AniList")).unwrap();
     }
 
     #[test]

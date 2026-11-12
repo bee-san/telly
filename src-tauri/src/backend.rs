@@ -657,7 +657,8 @@ impl Backend {
         let (matches, error) = match anilist::search_loosely(&scan.guess) {
             Ok(mut found) => {
                 anilist::rank(&mut found, &scan.guess, count);
-                (found, None)
+                let error = anilist::follow_sequels(&mut found, &scan.guess).err().map(|e| format!("{e:#}"));
+                (found, error)
             }
             Err(e) => (Vec::new(), Some(format!("{e:#}"))),
         };
@@ -1090,6 +1091,7 @@ impl Backend {
                 let mut found = anilist::search(&arg::<String>(&args, "query")?)?;
                 let count = arg::<Option<usize>>(&args, "count")?.unwrap_or(0);
                 anilist::rank(&mut found, &arg::<String>(&args, "query")?, count);
+                anilist::follow_sequels(&mut found, &arg::<String>(&args, "query")?)?;
                 to_value(found)
             }
             "addShow" => self.add_show(&args),

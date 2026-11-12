@@ -549,10 +549,12 @@ fn recap_view(backend: &Backend, show_id: i64, source: &Source, recap: &Recap) -
                 &read
             }
         };
+        // Played where its lines are heard: with the episode's nudge, as the player shows them.
+        let nudge = e.subs_nudge_ms as f64 / 1000.0;
         for m in moments(lines, &[pick.line]) {
             clips.push(json!({
-                "start": m.start,
-                "end": m.end,
+                "start": (m.start + nudge).max(0.0),
+                "end": m.end + nudge,
                 "lines": m.lines,
                 "caption": pick.caption,
                 "episodeId": e.id,
@@ -740,6 +742,45 @@ mod tests {
         // Part-way through Episode 5: the story so far in it, up to where it was left.
         let p = recap_prompt("『FAIRY TAIL』", 5, &window, Some(&earlier), true, "", "English");
         assert!(p.contains("coming back to Episode 5") && p.contains("what has happened so far in Episode 5") && p.contains("the last near where I stopped"));
+    }
+
+    /// A show of `count` episodes in a scratch data folder, each with `lines` as its subtitles.
+    fn library(name: &str, count: i64, lines: &[Line]) -> (Arc<Backend>, Vec<Episode>, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("telly-recap-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Arc::new(Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap());
+        let episodes = (1..=count).map(|n| crate::db::NewEpisode { number: n, path: format!("{n}.mkv"), size: 1, duration: 1400.0 }).collect();
+        let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let episodes = backend.db.episodes(show).unwrap();
+        for e in &episodes {
+            jobs::write_lines(&backend, e.id, lines).unwrap();
+        }
+        (backend, episodes, dir)
+    }
+
+    /// Keeps `recap` as the one before `episode`, as if Claude had just written it.
+    fn keep(backend: &Backend, episode: &Episode, recap: &Recap) {
+        let about = recap_about(&source(backend, episode, None).unwrap());
+        backend.db.save_answer(episode.id, "recap", -1, &about, &serde_json::to_string(recap).unwrap(), "").unwrap();
+    }
+
+    #[test]
+    fn a_moment_plays_where_its_lines_are_heard_in_an_episode_with_its_subtitles_nudged() {
+        let lines: Vec<Line> = (0..30).map(|i| line(100.0 + i as f64 * 3.0, 102.0 + i as f64 * 3.0, &format!("台詞{i}"))).collect();
+        let (backend, episodes, dir) = library("nudge", 2, &lines);
+        // Episode 1's subtitles were nudged 2 s later (Z and X): line 10, at 130 s in the file, is heard at 132 s.
+        backend.db.set_nudge(episodes[0].id, 2000).unwrap();
+        let recap = Recap { arcs: Vec::new(), last: "Roman runs.".into(), moments: vec![Pick { episode: 1, line: 10, caption: "Roman runs.".into() }] };
+        keep(&backend, &episodes[1], &recap);
+        let view = super::recap(&backend, episodes[1].id, false, None).unwrap();
+        let clip = &view["moments"][0];
+        let tenths = |v: &Value| (v.as_f64().unwrap() * 10.0).round() as i64;
+        // From just before line 10 is heard to just after line 11 ends: 132 - 0.6 to 137 + 0.5.
+        assert_eq!((tenths(&clip["start"]), tenths(&clip["end"])), (1314, 1375), "{clip}");
+        // Its lines are as the file has them, and the player shows them nudged, as in the episode.
+        assert_eq!((clip["lines"][0]["start"].as_f64(), clip["nudgeMs"].as_i64()), (Some(130.0), Some(2000)));
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

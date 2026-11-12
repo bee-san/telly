@@ -1405,7 +1405,8 @@ impl Backend {
                 // The cover as fetched, for the moments before its small copy is made.
                 Some(self.small_cover_path(id)).filter(|small| small.is_file()).unwrap_or_else(|| self.cover_path(id))
             }
-            ["clip", name] if !name.contains("..") => self.dirs.clips().join(name),
+            // A clip's file name alone: on Windows "C:\…" joined to the folder would be anywhere.
+            ["clip", name] if !name.contains("..") && !name.contains(['/', '\\', ':']) => self.dirs.clips().join(name),
             ["names", "telly-characters.zip"] => names::zip_path(self),
             ["hd", "dictionaries", "file", name] => own_hachidori::dictionary_file(self, name)?,
             _ => return Err(anyhow!("nothing at {path}")),
@@ -1549,6 +1550,21 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(moved.is_file() && !sheet.exists());
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_clip_is_served_from_the_clips_folder_only() {
+        let dir = std::env::temp_dir().join(format!("telly-clip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        std::fs::create_dir_all(backend.dirs.clips()).unwrap();
+        std::fs::write(backend.dirs.clips().join("a.webm"), b"clip").unwrap();
+        assert_eq!(backend.serve("/clip/a.webm", None).unwrap().bytes, b"clip");
+        for name in ["C:%5CWindows%5Cwin.ini", "..%2Ftelly.sqlite", "%2Fetc%2Fpasswd", "sub%5Ca.webm"] {
+            assert!(backend.serve(&format!("/clip/{name}"), None).is_err(), "{name}");
+        }
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

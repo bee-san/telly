@@ -707,10 +707,27 @@ impl Backend {
                 .collect()
         })?;
         let mut next_number = existing.iter().map(|e| e.number).max().unwrap_or(0) + 1;
+        // Numbered as their names say: the folder as a whole is, or the show's
+        // episodes are (a second release of one makes the folder's numbers
+        // repeat, but its own number is still in its name).
+        let parsed: std::collections::HashMap<&str, Option<i64>> = scan.files.iter().map(|f| (f.path.as_str(), f.parsed)).collect();
+        let by_names = scan.numbering == "names" || {
+            let mut named = existing.iter().filter_map(|e| parsed.get(e.path.as_str()).map(|p| *p == Some(e.number))).peekable();
+            named.peek().is_some() && named.all(|by_name| by_name)
+        };
+        // Episodes whose rip isn't there any more: a new file of the same number replaces it.
+        let mut gone: std::collections::HashMap<i64, i64> =
+            existing.iter().filter(|e| !Path::new(&e.path).is_file()).map(|e| (e.number, e.id)).collect();
         let mut new = Vec::new();
+        let mut replaced = 0;
         for f in scan.files.iter().filter(|f| f.reason.is_empty() && !known.contains_key(&f.path)) {
             let number = match f.parsed {
-                Some(n) if scan.numbering == "names" => {
+                Some(n) if by_names => {
+                    if let Some(episode) = gone.remove(&n) {
+                        self.replace_rip(id, episode, f)?;
+                        replaced += 1;
+                        continue;
+                    }
                     if taken.contains(&n) || new.iter().any(|e: &crate::db::NewEpisode| e.number == n) {
                         continue; // another copy of an episode Telly has
                     }
@@ -725,9 +742,36 @@ impl Backend {
         }
         if !new.is_empty() {
             self.db.add_episodes(id, &new)?;
+        }
+        if replaced + new.len() > 0 {
             self.jobs.poke();
         }
-        Ok(new.len())
+        Ok(new.len() + replaced)
+    }
+
+    /// Puts a new rip in place of an episode's that's gone. What Telly made
+    /// from the old one (its copy, seek-bar pictures, the files in subtitles)
+    /// goes, so the new one is read and synced from the start.
+    fn replace_rip(&self, show_id: i64, episode_id: i64, file: &scan::ScannedFile) -> Result<()> {
+        self.db.replace_rip(episode_id, &file.path, file.size, file.duration)?;
+        let _ = std::fs::remove_file(jobs::copy_path(self, show_id, episode_id));
+        let _ = std::fs::remove_file(jobs::sheet_path(self, show_id, episode_id));
+        self.forget_episode_files(&[episode_id]);
+        let _ = self.lines.forget(episode_id);
+        Ok(())
+    }
+
+    /// Removes everything kept in subtitles by these episodes' ids: their
+    /// lines, translation, words, the files tried, a rip's text tracks and
+    /// Whisper's transcripts.
+    fn forget_episode_files(&self, ids: &[i64]) {
+        let prefixes: Vec<String> = ids.iter().map(|id| format!("{id}.")).collect();
+        for entry in std::fs::read_dir(self.dirs.subs()).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if prefixes.iter().any(|prefix| name.starts_with(prefix.as_str())) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
     }
 
     /// Looks for new episodes in every show's folder now, and every 10 minutes.
@@ -821,15 +865,7 @@ impl Backend {
         self.db.remove_show(id)?;
         // Only Telly's own files go; your rips stay where they are.
         let _ = std::fs::remove_dir_all(self.media_dir().join(id.to_string()));
-        // Everything kept in subtitles by an episode's id: its lines, translation,
-        // words, the files tried, a rip's text tracks and Whisper's transcripts.
-        let prefixes: Vec<String> = episodes.iter().map(|e| format!("{}.", e.id)).collect();
-        for entry in std::fs::read_dir(self.dirs.subs()).into_iter().flatten().flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if prefixes.iter().any(|prefix| name.starts_with(prefix.as_str())) {
-                let _ = std::fs::remove_file(entry.path());
-            }
-        }
+        self.forget_episode_files(&episodes.iter().map(|e| e.id).collect::<Vec<_>>());
         for e in &episodes {
             let _ = self.lines.forget(e.id);
         }
@@ -1444,6 +1480,49 @@ mod tests {
         backend.move_lines(id, 11.4, -500).unwrap();
         let starts: Vec<f64> = jobs::read_lines(&backend, id).iter().map(|l| (l.start * 10.0).round() / 10.0).collect();
         assert_eq!(starts, vec![9.0, 9.4, 11.0]);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_new_release_of_an_episode_takes_the_place_of_one_that_s_gone() {
+        let dir = std::env::temp_dir().join(format!("telly-replace-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let Some(ffmpeg) = backend.tools().ffmpeg else { return }; // making rips to scan needs ffmpeg
+        let folder = dir.join("Show");
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = |name: &str| folder.join(name).to_string_lossy().into_owned();
+        let rip = |name: &str| {
+            let made = std::process::Command::new(&ffmpeg)
+                .args(["-v", "quiet", "-f", "lavfi", "-i", "color=c=black:s=64x36:r=1", "-t", "400", "-c:v", "mpeg4", "-y"])
+                .arg(path(name))
+                .status()
+                .unwrap();
+            assert!(made.success());
+        };
+        rip("[Sub] Show - 01 [720p].mkv");
+        rip("[Sub] Show - 02 [720p].mkv");
+        let episodes = (1..=2).map(|n| crate::db::NewEpisode { number: n, path: path(&format!("[Sub] Show - 0{n} [720p].mkv")), size: 1, duration: 400.0 }).collect();
+        let show = backend.db.add_show(&crate::db::NewShow { folder: folder.to_string_lossy().into_owned(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let two = backend.db.episodes(show).unwrap()[1].clone();
+        backend.db.save_position(two.id, 600.0).unwrap();
+        std::fs::create_dir_all(backend.dirs.subs()).unwrap();
+        std::fs::write(backend.dirs.subs().join(format!("{}.tried.json", two.id)), b"[]").unwrap();
+
+        // Episode 2 is replaced by a better release.
+        std::fs::remove_file(path("[Sub] Show - 02 [720p].mkv")).unwrap();
+        rip("[BD] Show - 02 [1080p].mkv");
+        assert_eq!(backend.rescan(show).unwrap(), 1);
+        let after = backend.db.episodes(show).unwrap();
+        assert_eq!(after.len(), 2);
+        let replaced = &after[1];
+        assert_eq!((replaced.id, replaced.path.as_str()), (two.id, path("[BD] Show - 02 [1080p].mkv").as_str()));
+        assert_eq!((replaced.media_state.as_str(), replaced.subs_state.as_str(), replaced.position), ("pending", "pending", 600.0));
+        assert!(!backend.dirs.subs().join(format!("{}.tried.json", two.id)).exists());
+        // A second copy of an episode whose rip is still there is left alone.
+        rip("[BD] Show - 01 [1080p].mkv");
+        assert_eq!(backend.rescan(show).unwrap(), 0);
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

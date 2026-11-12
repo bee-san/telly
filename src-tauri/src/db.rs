@@ -611,6 +611,24 @@ impl Db {
     }
 
     /// Sends an episode back to the conversion queue (Free up space, or Try again).
+    /// A new rip in place of an episode's that's gone (a better release of
+    /// it): it's read, got ready and its subtitles synced again, as if new,
+    /// but where you were in it and whether it's watched stay. Subtitles you
+    /// chose by hand stay chosen.
+    pub fn replace_rip(&self, id: i64, path: &str, size: i64, duration: f64) -> Result<()> {
+        self.conn()?.execute(
+            "UPDATE episodes SET path = ?2, size = ?3, duration = ?4,
+               media_state = 'pending', media_plan = '', media_progress = 0, media_error = '', play_path = '',
+               audio_index = 0, audio_track = NULL, probe = '', ending_at = NULL,
+               subs_state = CASE WHEN subs_state = 'manual' THEN 'manual' ELSE 'pending' END,
+               subs_detail = CASE WHEN subs_state = 'manual' THEN subs_detail ELSE '' END,
+               subs_offset_ms = NULL, subs_nudge_ms = 0
+             WHERE id = ?1",
+            params![id, path, size, duration],
+        )?;
+        Ok(())
+    }
+
     pub fn media_reset(&self, id: i64) -> Result<()> {
         self.conn()?.execute(
             "UPDATE episodes SET media_state = 'pending', media_progress = 0, media_error = '', play_path = '' WHERE id = ?1",

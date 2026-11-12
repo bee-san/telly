@@ -493,7 +493,11 @@ fn refresh(backend: &Backend) -> Result<()> {
         casts.push(cast);
     }
     let spoilers = backend.db.setting_bool("names.spoilers", false);
-    let key: Vec<String> = casts.iter().map(|c| format!("{}:{}", c.anilist_id, c.fetched_at)).collect();
+    // A portrait got since the last copy (one AniList's image server didn't send then) makes a new one.
+    let key: Vec<String> = casts
+        .iter()
+        .map(|cast| format!("{}:{}:{}", cast.anilist_id, cast.fetched_at, cast.characters.iter().filter(|c| c.image_ext.is_some()).count()))
+        .collect();
     let key = format!("{}|spoilers={spoilers}|v1", key.join(","));
     let zip = dir(backend).join(ZIP);
     if backend.db.setting_str("names.built") == key && zip.is_file() {
@@ -685,6 +689,29 @@ mod tests {
         assert!(names(&c).iter().any(|n| n.term == "ナツ・ドラグニル"));
         assert!(written_form("ナツドラグニル", "ナツ・ドラグニル") && !written_form("なつ", "ナツ・ドラグニル"));
         assert!(plausible_name("ナツ") && !plausible_name("ート") && !plausible_name("ッス") && !plausible_name(""));
+    }
+
+    #[test]
+    fn a_portrait_got_after_the_dictionary_was_made_goes_into_a_new_copy() {
+        let data = std::env::temp_dir().join(format!("telly-names-portraits-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        let backend = Backend::open(crate::backend::Dirs { local: data.clone(), roaming: data.clone() }).unwrap();
+        let episodes = vec![crate::db::NewEpisode { number: 1, path: "/rips/Fairy Tail/01.mkv".into(), size: 1, duration: 1400.0 }];
+        let show = crate::db::NewShow { folder: "/rips/Fairy Tail".into(), title: "Fairy Tail".into(), anilist_id: Some(6702), episodes, ..Default::default() };
+        let id = backend.db.add_show(&show).unwrap();
+        backend.db.touch_show(id).unwrap();
+        save_cast(&backend, &Cast { fetched_at: now_ms(), ..cast() }).unwrap();
+        refresh(&backend).unwrap();
+        let first = backend.db.setting_str("names.revision");
+        assert!(!first.is_empty());
+        // Natsu's portrait comes in at the next look (AniList's image server was away the first time).
+        std::fs::write(dir(&backend).join("img").join(ImageHandler::make_filename("1", "jpg")), b"portrait").unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        refresh(&backend).unwrap();
+        assert_ne!(backend.db.setting_str("names.revision"), first);
+        let zip = std::fs::read(zip_path(&backend)).unwrap();
+        assert!(zip::ZipArchive::new(std::io::Cursor::new(zip)).unwrap().by_name("img/c1.jpg").is_ok());
+        let _ = std::fs::remove_dir_all(data);
     }
 
     #[test]

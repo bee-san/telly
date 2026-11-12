@@ -33,8 +33,11 @@
     const folder = page.url.searchParams.get("add");
     if (folder) adding = folder;
     let timer: ReturnType<typeof setTimeout>;
+    // Stopped when the page is left, even with an answer on its way.
+    let stopped = false;
     const loop = async () => {
       await load();
+      if (stopped) return;
       const busy = lib?.shows.some((s) => s.status === "getting" || s.subsReady < s.episodes) ?? false;
       timer = setTimeout(loop, busy ? 2000 : 8000);
     };
@@ -46,6 +49,7 @@
     // Each show's share of known words is brought up to date with Anki as it is now.
     call("wordShares").catch(() => {});
     return () => {
+      stopped = true;
       clearTimeout(timer);
       window.removeEventListener("click", close);
       window.removeEventListener("resize", measure);

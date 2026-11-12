@@ -30,8 +30,11 @@
   onMount(() => {
     app.dark = false;
     let timer: ReturnType<typeof setTimeout>;
+    // Stopped when the page is left, even with an answer on its way.
+    let stopped = false;
     const loop = async () => {
       await load();
+      if (stopped) return;
       if (view) setWindowTitle(`${view.card.title} — Telly`);
       const busy = view?.episodes.some((e) => ["pending", "working"].includes(e.subsState) || e.mediaState === "working") ?? false;
       timer = setTimeout(loop, busy ? 1500 : 6000);
@@ -42,6 +45,7 @@
     const close = () => (menu = null);
     window.addEventListener("click", close);
     return () => {
+      stopped = true;
       clearTimeout(timer);
       window.removeEventListener("click", close);
     };

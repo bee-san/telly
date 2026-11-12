@@ -9,25 +9,34 @@ const sources = import.meta.glob("./shaders/*.glsl", { query: "?raw", import: "d
 const glsl = (name: string) =>
   sources[`./shaders/${name}.glsl`].replace("#version 330 core", "#version 300 es\nprecision highp float;\nprecision highp sampler2D;");
 
+// In the panel's order, which is the order they're best chained in: cleaning up, upscaling, lines, sharpening.
 export const filters = [
   { id: "none", name: "None", note: "" },
+  { id: "denoise", name: "Denoise", note: "Cleans up grain" },
   { id: "deband", name: "Deband", note: "Smooths colour bands" },
-  { id: "sharpen", name: "Sharpen", note: "Crisper lines" },
+  { id: "restore", name: "Restore", note: "Undoes blur and blocks" },
+  { id: "restore-soft", name: "Restore Soft", note: "Gentler, for clean rips" },
   { id: "anime4k-s", name: "Anime4K S", note: "Fast" },
   { id: "anime4k-m", name: "Anime4K M", note: "Balanced" },
   { id: "anime4k-l", name: "Anime4K L", note: "Best, slowest" },
+  { id: "fsr", name: "FSR", note: "AMD · sharp, fast" },
+  { id: "lanczos", name: "Lanczos", note: "Plain scaling" },
+  { id: "thin", name: "Thin Lines", note: "Slimmer outlines" },
+  { id: "darken", name: "Darken Lines", note: "Bolder outlines" },
+  { id: "sharpen", name: "Sharpen", note: "Crisper lines" },
+  { id: "rcas", name: "FSR Sharpen", note: "Stronger, spares grain" },
   { id: "crt-trinitron", name: "Trinitron", note: "Sony · 90s" },
   { id: "crt-pvm", name: "PVM-20M2", note: "Sony · broadcast" },
   { id: "crt-dorm", name: "Dorm TV", note: "13″ · early 90s" },
 ];
 
 type Size = [number, number];
-/** The video's size, the picture's as it stands in the chain, the canvas's, and the size the televisions work at. */
+/** The picture's size as it stands in the chain, and the canvas's. */
 interface Sizes {
-  source: Size;
   main: Size;
   out: Size;
-  work: Size;
+  /** For a panel's tile. */
+  preview: boolean;
 }
 interface Pass {
   shader: string;
@@ -37,7 +46,14 @@ interface Pass {
   save: string | null;
   size: (s: Sizes) => Size;
   uniforms?: (s: Sizes) => Record<string, number | number[]>;
+  /** Whether it runs, with the sizes as they stand when it comes; it always does without. */
+  when?: (s: Sizes) => boolean;
 }
+
+/** Whether the picture already fills the canvas, give or take the pixel the canvas's size is rounded to. */
+const fills = (s: Sizes) => s.main[0] + 1 >= s.out[0] && s.main[1] + 1 >= s.out[1];
+/** An upscaler runs only while the picture is smaller than the canvas. */
+const grows = (s: Sizes) => !fills(s);
 
 /** One shader over the picture, at its own size. */
 const simple = (name: string): Pass[] => [
@@ -56,11 +72,67 @@ function anime4k(model: string, lastConv: number): Pass[] {
   });
 }
 
+/** An mpv shader as it comes (Anime4K's): each pass, from one //!DESC to the next, becomes a fragment
+ *  shader, with what mpv gives a pass for each texture it binds (X_tex, X_pos, X_pt, X_size, X_texOff)
+ *  written over a plain sampler. HOOKED is the picture, and a pass that saves nothing draws it.
+ *  All of these passes are at the picture's size. */
+function mpv(name: string): Pass[] {
+  return sources[`./shaders/${name}.glsl`]
+    .split(/^(?=\/\/!DESC)/m)
+    .slice(1)
+    .map((hook) => {
+      const binds: Record<string, string> = {};
+      let names = "";
+      for (const [, tex] of hook.matchAll(/^\/\/!BIND (\w+)/gm)) {
+        binds[tex] = tex === "HOOKED" ? "MAIN" : tex;
+        names += `uniform sampler2D ${tex};
+#define ${tex}_pos v_tc
+#define ${tex}_size vec2(textureSize(${tex}, 0))
+#define ${tex}_pt (1.0 / ${tex}_size)
+#define ${tex}_tex(pos) texture(${tex}, pos)
+#define ${tex}_texOff(off) texture(${tex}, v_tc + ${tex}_pt * (off))
+`;
+      }
+      const shader = `#version 300 es
+precision highp float;
+precision highp sampler2D;
+in vec2 v_tc;
+out vec4 out_color;
+${names}
+${hook}
+void main() {
+    out_color = hook();
+}`;
+      return { shader, binds, save: /^\/\/!SAVE (\w+)/m.exec(hook)?.[1] ?? "MAIN", size: (s: Sizes) => s.main };
+    });
+}
+
+/** AMD's FSR 1: its upscaler (EASU) to the canvas's size, any ratio, then its sharpening (RCAS). */
+function fsr(upscale: boolean): Pass[] {
+  const rcas: Pass = { shader: glsl("fsr_rcas"), binds: { input_tex: "MAIN" }, save: "MAIN", size: (s) => s.main };
+  if (!upscale) return [rcas];
+  return [{ shader: glsl("fsr_easu"), binds: { input_tex: "MAIN" }, save: "MAIN", size: (s) => s.out, when: grows }, rcas];
+}
+
+/** Lanczos to the canvas's size, across and then down: bigger or smaller. */
+function lanczos(): Pass[] {
+  const shader = glsl("lanczos");
+  const differs = (s: Sizes) => Math.abs(s.main[0] - s.out[0]) > 1 || Math.abs(s.main[1] - s.out[1]) > 1;
+  const across = (s: Sizes): Size => [s.out[0], s.main[1]];
+  return [
+    { shader, binds: { input_tex: "MAIN" }, save: "Across", size: across, uniforms: (s) => ({ axis: 0, out_size: across(s) }), when: differs },
+    { shader, binds: { input_tex: "Across" }, save: "MAIN", size: (s) => s.out, uniforms: (s) => ({ axis: 1, out_size: s.out }), when: differs },
+  ];
+}
+
+/** michadame gives its televisions a picture of at least 1080 lines. */
+const work = (s: Sizes): Size => (s.preview || s.main[1] >= 1080 ? s.main : [Math.round((s.main[0] * 1080) / s.main[1]), 1080]);
+
 /** michadame's Halo television, with one of its presets. Its last three passes are at the canvas's size. */
 function halo(preset: Record<string, number>): Pass[] {
   const view = (s: Sizes) => ({
     outputResolution: s.out,
-    SourceSize: s.work,
+    SourceSize: work(s),
     horizontal_stretch: 1,
     halo_zoom: 100,
     border_crop: [0, 0, 0, 0],
@@ -71,8 +143,8 @@ function halo(preset: Record<string, number>): Pass[] {
     shader: glsl(`fs_halo_${name}`),
     binds: { video_texture: from },
     save: to,
-    size: (s) => s.work,
-    uniforms: (s) => ({ SourceSize: s.work }),
+    size: work,
+    uniforms: (s) => ({ SourceSize: work(s) }),
   });
   return [
     // The television's passes work in linear light, and the last of them puts the gamma back.
@@ -80,7 +152,7 @@ function halo(preset: Record<string, number>): Pass[] {
       shader: glsl("fs_linearize"),
       binds: { srgb_tex: "MAIN" },
       save: "Linear",
-      size: (s) => s.source,
+      size: (s) => s.main,
       uniforms: () => ({ brightness: 1, gamma: 1, overscan_offset: [0, 0], underscan_stretch: [1, 1] }),
     },
     blur("linearize", "Linear", "Linearize"),
@@ -101,11 +173,19 @@ function halo(preset: Record<string, number>): Pass[] {
 }
 
 const chains: Record<string, () => Pass[]> = {
+  "denoise": () => mpv("Anime4K_Denoise_Bilateral_Mode"),
   "deband": () => simple("deband"),
-  "sharpen": () => simple("sharpen"),
+  "restore": () => mpv("Anime4K_Restore_CNN_M"),
+  "restore-soft": () => mpv("Anime4K_Restore_CNN_Soft_M"),
   "anime4k-s": () => anime4k("small", 4),
   "anime4k-m": () => anime4k("medium", 8),
   "anime4k-l": () => anime4k("large", 9),
+  "fsr": () => fsr(true),
+  "lanczos": () => lanczos(),
+  "thin": () => mpv("Anime4K_Thin_HQ"),
+  "darken": () => mpv("Anime4K_Darken_HQ"),
+  "sharpen": () => simple("sharpen"),
+  "rcas": () => fsr(false),
   // michadame's "Sony Trinitron (90s)", "Sony PVM-20M2 (90s Broadcast)" and "Budget 13" Dorm TV (Early 90s RF)".
   "crt-trinitron": () => halo({ brightboost: 1.2, brightboost1: 1.4, beam_min: 1.7, beam_max: 1.15, beam_size: 1.35, h_sharp: 3.5, vibrance: 1.1, glow: 0.38, bloom: 0.52, halation: 0.18, shadow_mask: 6, masksize: 1, maskstr: 0.42, mcut: 0.72, slotmask: 0, slotmask1: 0, double_slot: 3, smoothmask: 0.95, halo_intensity: 0.85, corner_size: 0.025, curvature: 1 }),
   "crt-pvm": () => halo({ brightboost: 1.18, brightboost1: 1.32, beam_min: 2.05, beam_max: 1.25, beam_size: 1.15, h_sharp: 6.5, vibrance: 1.05, glow: 0.22, bloom: 0.35, halation: 0.08, shadow_mask: 6, masksize: 1, maskstr: 0.35, mcut: 0.65, slotmask: 0, slotmask1: 0, double_slot: 3, smoothmask: 0.75, halo_intensity: 0.55, corner_size: 0.018, curvature: 1 }),
@@ -243,17 +323,12 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
       // Every pass is asked for, so they all compile at once.
       const ready = passes.map((pass) => program(pass.shader));
       if (ready.includes(null)) return false;
-      const sizes: Sizes = {
-        source: [width, height],
-        main: [width, height],
-        out: [canvas.width, canvas.height],
-        // michadame gives its televisions a picture of at least 1080 lines.
-        work: preview || height >= 1080 ? [width, height] : [Math.round((width * 1080) / height), 1080],
-      };
+      const sizes: Sizes = { main: [width, height], out: [canvas.width, canvas.height], preview };
       gl.bindTexture(gl.TEXTURE_2D, frameTex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, frame);
       const textures = new Map<string, WebGLTexture>([["MAIN", frameTex]]);
       passes.forEach((pass, i) => {
+        if (pass.when && !pass.when(sizes)) return;
         const [w, h] = pass.size(sizes);
         // A pass that reads MAIN and draws it gets a texture of its own to draw to.
         const to = pass.save === null ? null : target(`${i}:${pass.save}`, w, h);

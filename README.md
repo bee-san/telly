@@ -61,9 +61,14 @@ Claude Code takes 3 to 15 seconds to start, longer than Haiku takes to answer. S
 
 **Filters** in the player (V) opens a panel of tiles, each showing the frame through one filter. The filter is drawn over the picture only, so the subtitles stay sharp, and it's remembered for each show. When an episode fills well over its own size on screen (1.5× or more) and its show has no filter picked, a note suggests Anime4K, once.
 
-- **Deband** smooths the bands in skies and dark gradients, and **Sharpen** crisps lines.
-- **Anime4K** S, M and L are [Anime4K](https://github.com/bloc97/Anime4K)'s 2× upscalers, for a rip smaller than the screen. L looks best and needs the most from the graphics card.
+- **Denoise** smooths out grain, as on DVD-era rips, and keeps lines sharp. **Deband** smooths the bands in skies and dark gradients.
+- **Restore** undoes blur and compression blocks, and **Restore Soft** does less, for a cleaner rip.
+- **Anime4K** S, M and L are [Anime4K](https://github.com/bloc97/Anime4K)'s 2× upscalers, for a rip smaller than the screen. L looks best and needs the most from the graphics card. **FSR** is AMD's FidelityFX Super Resolution 1, an upscaler to the screen's size with its own sharpening: much lighter than Anime4K. **Lanczos** scales the picture to the screen plainly.
+- **Thin Lines** and **Darken Lines** make outlines slimmer or bolder.
+- **Sharpen** crisps lines, and **FSR Sharpen** is FSR's sharpening alone: stronger, and gentler on grain.
 - **Trinitron**, **PVM-20M2** and **Dorm TV** are three of [michadame](https://github.com/Morgawr/michadame)'s televisions: its Halo shaders and presets, unchanged. They're made for a 4K screen: on a smaller one the scanlines fade and the picture comes out brighter.
+
+Denoise, Restore, Thin Lines and Darken Lines are Anime4K's too.
 
 The shaders and where they come from are in `src/lib/filters/shaders`.
 

@@ -5,7 +5,8 @@
 //! - ASS override tags ({\an8}, {\pos(…)}) go; \N becomes a line break.
 //! - Signs and songs (styles that say so, or lines placed on screen with
 //!   \pos) are kept but marked, and the player hides them by default.
-//! - Readings in brackets after kanji, 漢字(かんじ), become furigana.
+//! - Readings in brackets after kanji, 漢字(かんじ), become furigana, as does
+//!   WebVTT's <ruby>漢字<rt>かんじ</rt></ruby>.
 //! - A speaker's name in brackets at the start, （ナルト）, is kept apart.
 
 use anyhow::{anyhow, Result};
@@ -85,7 +86,41 @@ fn is_kana(c: char) -> bool {
     matches!(c, '\u{3040}'..='\u{30FF}')
 }
 
-/// Takes furigana in brackets out of `text`: 漢字(かんじ) → 漢字 with a reading.
+// WebVTT's ruby is marked with these until split_ruby takes it out: the base,
+// then its reading. They're private-use characters, so no subtitle's own text has them.
+const RUBY_BASE: char = '\u{E000}';
+const RUBY_READING: char = '\u{E001}';
+const RUBY_END: char = '\u{E002}';
+
+/// Marks WebVTT's ruby, <ruby>明日<rt>あした</rt></ruby>, for split_ruby, so
+/// the reading doesn't end up in the text.
+fn mark_ruby(text: &str) -> std::borrow::Cow<'_, str> {
+    static RUBY: OnceLock<Regex> = OnceLock::new();
+    static RT: OnceLock<Regex> = OnceLock::new();
+    static RP: OnceLock<Regex> = OnceLock::new();
+    let rt = re(&RT, r"(?is)<rt(?:[.\s][^>]*)?>(.*?)(?:</rt>|$)");
+    let rp = re(&RP, r"(?is)<rp(?:[.\s][^>]*)?>.*?</rp>");
+    re(&RUBY, r"(?is)<ruby(?:[.\s][^>]*)?>(.*?)(?:</ruby>|$)").replace_all(text, |c: &regex::Captures| {
+        let inner = rp.replace_all(&c[1], "");
+        let mut out = String::new();
+        let mut last = 0;
+        // Each reading is for the base before it.
+        for r in rt.captures_iter(&inner) {
+            let whole = r.get(0).map_or(0..0, |m| m.range());
+            out.push(RUBY_BASE);
+            out.push_str(&inner[last..whole.start]);
+            out.push(RUBY_READING);
+            out.push_str(&r[1]);
+            out.push(RUBY_END);
+            last = whole.end;
+        }
+        out.push_str(&inner[last..]);
+        out
+    })
+}
+
+/// Takes furigana out of `text`: 漢字(かんじ) → 漢字 with a reading, and the
+/// same for ruby marked by mark_ruby.
 fn split_ruby(text: &str) -> (String, Vec<(usize, usize, String)>) {
     let chars: Vec<char> = text.chars().collect();
     let mut out: Vec<char> = Vec::with_capacity(chars.len());
@@ -93,6 +128,27 @@ fn split_ruby(text: &str) -> (String, Vec<(usize, usize, String)>) {
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
+        if c == RUBY_BASE {
+            let rest = &chars[i + 1..];
+            let reading = rest.iter().position(|&x| x == RUBY_READING);
+            let end = rest.iter().position(|&x| x == RUBY_END);
+            if let (Some(reading), Some(end)) = (reading, end)
+                && reading < end
+            {
+                let base = &rest[..reading];
+                let text = rest[reading + 1..end].iter().collect::<String>().trim().to_string();
+                if !base.is_empty() && !text.is_empty() {
+                    ruby.push((out.len(), base.len(), text));
+                }
+                out.extend_from_slice(base);
+                i += end + 2;
+                continue;
+            }
+        }
+        if matches!(c, RUBY_BASE | RUBY_READING | RUBY_END) {
+            i += 1;
+            continue;
+        }
         if (c == '(' || c == '（') && out.last().is_some_and(|&p| is_kanji(p)) {
             let close = if c == '(' { ')' } else { '）' };
             if let Some(len) = chars[i + 1..].iter().position(|&x| x == close) {
@@ -128,7 +184,8 @@ fn split_speaker(text: &str) -> (String, String) {
 fn make_line(start: f64, end: f64, raw: &str, sign: bool) -> Option<Line> {
     static TAGS: OnceLock<Regex> = OnceLock::new();
     static HTML: OnceLock<Regex> = OnceLock::new();
-    let text = re(&TAGS, r"\{[^}]*\}").replace_all(raw, "");
+    let text = mark_ruby(raw);
+    let text = re(&TAGS, r"\{[^}]*\}").replace_all(&text, "");
     let text = re(&HTML, r"</?[a-zA-Z][^>]*>").replace_all(&text, "");
     let text = text.replace("\\N", "\n").replace("\\n", "\n").replace("\\h", " ").replace('\u{200B}', "");
     let text: String = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n");
@@ -407,5 +464,15 @@ mod tests {
         let lines = parse("a.vtt", vtt.as_bytes()).unwrap();
         assert_eq!(lines[0].text, "こんにちは");
         assert_eq!(lines[0].end, 2.5);
+    }
+
+    #[test]
+    fn webvtt_ruby_is_furigana_not_text() {
+        let vtt = "WEBVTT\n\n00:01.000 --> 00:02.500\n<ruby>明日<rt>あした</rt></ruby>の試験\n\n00:03.000 --> 00:04.000\n<ruby.big>ＡＩ<rp>(</rp><rt>エーアイ</rt><rp>)</rp></ruby>の<ruby>未<rt>み</rt>来<rt>らい</rt></ruby>\n";
+        let lines = parse("a.vtt", vtt.as_bytes()).unwrap();
+        assert_eq!(lines[0].text, "明日の試験");
+        assert_eq!(lines[0].ruby, vec![(0, 2, "あした".into())]);
+        assert_eq!(lines[1].text, "ＡＩの未来");
+        assert_eq!(lines[1].ruby, vec![(0, 2, "エーアイ".into()), (3, 1, "み".into()), (4, 1, "らい".into())]);
     }
 }

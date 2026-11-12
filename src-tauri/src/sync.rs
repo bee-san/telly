@@ -753,10 +753,20 @@ pub fn score_with(z: Standing, cal: &Calibration) -> f64 {
     if z.alone < 0.3 { score.min(0.45) } else { score }
 }
 
-/// Shifts every line from `from` seconds on by `ms` ("Late from here").
-pub fn shift_from(lines: &mut [Line], from: f64, ms: i64) {
-    let d = ms as f64 / 1000.0;
-    for l in lines.iter_mut().filter(|l| l.start >= from - 0.01) {
+/// The first line at or after `at` seconds: where "Earlier/Later from here" starts.
+pub fn first_from(lines: &[Line], at: f64) -> usize {
+    lines.iter().position(|l| l.start >= at - 0.01).unwrap_or(lines.len())
+}
+
+/// Moves line `first` and every line after it by `ms` ("Earlier/Later from
+/// here"). Lines moved earlier stop at the start of the line before them, so
+/// the lines stay in order.
+pub fn shift_from(lines: &mut [Line], first: usize, ms: i64) {
+    let mut d = ms as f64 / 1000.0;
+    if let (Some(before), Some(moved)) = (first.checked_sub(1).and_then(|i| lines.get(i)), lines.get(first)) {
+        d = d.max(before.start - moved.start);
+    }
+    for l in lines.iter_mut().skip(first) {
         l.start = (l.start + d).max(0.0);
         l.end = (l.end + d).max(l.start + 0.05);
     }
@@ -768,6 +778,23 @@ mod tests {
 
     fn line(start: f64, end: f64) -> Line {
         Line { start, end, text: "せりふ".into(), ruby: vec![], speaker: String::new(), sign: false }
+    }
+
+    #[test]
+    fn lines_moved_from_here_again_and_again_stay_in_order() {
+        let mut lines: Vec<Line> = [9.0, 10.4, 10.7, 11.0, 12.0, 14.0].iter().map(|&s| line(s, s + 0.2)).collect();
+        let first = first_from(&lines, 10.4);
+        assert_eq!(first, 1);
+        // Earlier four times at the same spot: the same lines move, until they reach the line before.
+        for _ in 0..4 {
+            shift_from(&mut lines, first, -500);
+        }
+        let starts: Vec<f64> = lines.iter().map(|l| (l.start * 100.0).round() / 100.0).collect();
+        assert_eq!(starts, vec![9.0, 9.0, 9.3, 9.6, 10.6, 12.6]);
+        assert!(lines.windows(2).all(|w| w[0].start <= w[1].start));
+        // Later moves them back.
+        shift_from(&mut lines, first, 1000);
+        assert_eq!((lines[1].start * 100.0).round() / 100.0, 10.0);
     }
 
     /// Speech in irregular bursts, like dialogue.

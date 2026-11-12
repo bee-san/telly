@@ -110,6 +110,18 @@ pub struct Backend {
     pub own_hachidori: Own,
     /// Every spoken line and its words, for line search (search.rs).
     pub lines: search::Index,
+    /// The lines last moved by "Earlier/Later from here" (move_lines).
+    moved: Mutex<Option<Moved>>,
+}
+
+/// Where "Earlier/Later from here" last moved an episode's lines from, so
+/// pressing it again at the same spot moves the same lines again, though
+/// they now start before it.
+struct Moved {
+    episode: i64,
+    at: f64,
+    first: usize,
+    when: Instant,
 }
 
 /// One line that just played, for the log.
@@ -333,6 +345,7 @@ impl Backend {
             premining: Premining::default(),
             own_hachidori: Own::default(),
             lines,
+            moved: Mutex::new(None),
         })
     }
 
@@ -784,6 +797,24 @@ impl Backend {
         self.show_view(id)
     }
 
+    /// "Earlier/Later from here": moves an episode's lines from `at` seconds
+    /// into the video (the player's time, your nudge in it) by `ms`.
+    fn move_lines(&self, id: i64, at: f64, ms: i64) -> Result<Value> {
+        let mut lines = jobs::read_lines(self, id);
+        let mut moved = self.moved.lock().map_err(|_| anyhow!("the lines are being moved already"))?;
+        let first = match moved.as_ref() {
+            Some(m) if m.episode == id && (m.at - at).abs() < 2.0 && m.when.elapsed() < Duration::from_secs(60) => m.first,
+            _ => sync::first_from(&lines, at - cards::nudge(self, id)),
+        };
+        sync::shift_from(&mut lines, first, ms);
+        *moved = Some(Moved { episode: id, at, first, when: Instant::now() });
+        drop(moved);
+        jobs::write_lines(self, id, &lines)?;
+        // Line search plays scenes at the lines' times.
+        search::index(self, id);
+        to_value(lines)
+    }
+
     fn remove_show(&self, id: i64) -> Result<Value> {
         self.jobs.cancel_show(id);
         let episodes = self.db.episodes(id)?;
@@ -1173,11 +1204,7 @@ impl Backend {
                 Ok(json!({}))
             }
             "lateFromHere" => {
-                let id: i64 = arg(&args, "id")?;
-                let mut lines = jobs::read_lines(self, id);
-                sync::shift_from(&mut lines, arg(&args, "from")?, arg(&args, "ms")?);
-                jobs::write_lines(self, id, &lines)?;
-                to_value(lines)
+                self.move_lines(arg(&args, "id")?, arg(&args, "from")?, arg(&args, "ms")?)
             }
             "retryMedia" => {
                 let id: i64 = arg(&args, "id")?;
@@ -1397,6 +1424,26 @@ mod tests {
         assert!(settings.contains_key(&format!("audio.track.{kept_show}")));
         let left: Vec<String> = std::fs::read_dir(&subs).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
         assert_eq!(left, vec![format!("{kept_episode}.json")]);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn earlier_from_here_moves_the_lines_from_where_the_player_is() {
+        let dir = std::env::temp_dir().join(format!("telly-move-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let episodes = vec![crate::db::NewEpisode { number: 1, path: "1.mkv".into(), size: 1, duration: 1400.0 }];
+        let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let id = backend.db.episodes(show).unwrap()[0].id;
+        let line = |start: f64| Line { start, end: start + 0.2, text: "せりふ".into(), ruby: vec![], speaker: String::new(), sign: false };
+        jobs::write_lines(&backend, id, &[line(9.0), line(10.4), line(12.0)]).unwrap();
+        // The subtitles are nudged 1 s later, so the player is at 11.4 where the file says 10.4.
+        backend.db.set_nudge(id, 1000).unwrap();
+        backend.move_lines(id, 11.4, -500).unwrap();
+        backend.move_lines(id, 11.4, -500).unwrap();
+        let starts: Vec<f64> = jobs::read_lines(&backend, id).iter().map(|l| (l.start * 10.0).round() / 10.0).collect();
+        assert_eq!(starts, vec![9.0, 9.4, 11.0]);
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

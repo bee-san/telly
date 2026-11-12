@@ -489,53 +489,96 @@ pub fn find(backend: &Backend, q: &str) -> Result<Value> {
     let known = known::words(backend).known;
     let with_words = backend.lines.with_words()?;
     let mut casts: HashMap<i64, HashSet<String>> = HashMap::new();
-    let mut found = Vec::with_capacity(hits.len());
-    for hit in hits {
+    // Every line is ranked, but only the best of each show is written out:
+    // a common word is in tens of thousands of lines.
+    let mut ranked = Vec::with_capacity(hits.len());
+    for (at, hit) in hits.iter().enumerate() {
         let Some(e) = episodes.get(&hit.kept.episode_id) else { continue };
         let text = &hit.kept.text;
-        let (Some(before), Some(word), Some(after)) = (text.get(..hit.from), text.get(hit.from..hit.to), text.get(hit.to..)) else { continue };
+        if text.get(..hit.from).is_none() || text.get(hit.from..hit.to).is_none() || text.get(hit.to..).is_none() {
+            continue;
+        }
         if !casts.contains_key(&e.show_id) {
             let show = backend.db.show(e.show_id)?;
             casts.insert(e.show_id, show.map(|s| names::show_names(backend, &s).into_iter().map(|n| n.term).collect()).unwrap_or_default());
         }
-        let nudge = e.subs_nudge_ms as f64 / 1000.0;
-        found.push(Found {
-            episode_id: e.id,
+        ranked.push(Ranked {
+            at,
             show_id: e.show_id,
             number: e.number,
-            line: hit.kept.line,
-            start: hit.kept.start + nudge,
-            end: hit.kept.end + nudge,
-            before: before.to_string(),
-            word: word.to_string(),
-            after: after.to_string(),
-            unknown: with_words.contains(&e.id).then(|| unknown(&hit, &forms, &known, &casts[&e.show_id])),
+            start: hit.kept.start + e.subs_nudge_ms as f64 / 1000.0,
+            unknown: with_words.contains(&e.id).then(|| unknown(hit, &forms, &known, &casts[&e.show_id])),
             said: premine::said(text, hit.from),
-            picture: ((hit.kept.start + nudge).max(0.0) / media::SHEET_EVERY).round() as usize,
         });
     }
-    let shows = best_of_each_show(&mut found);
+    let (best, shows) = best_of_each_show(ranked);
+    let found: Vec<Found> = best
+        .iter()
+        .map(|r| {
+            let (hit, e) = (&hits[r.at], &episodes[&hits[r.at].kept.episode_id]);
+            let text = &hit.kept.text;
+            Found {
+                episode_id: e.id,
+                show_id: e.show_id,
+                number: e.number,
+                line: hit.kept.line,
+                start: r.start,
+                end: hit.kept.end + e.subs_nudge_ms as f64 / 1000.0,
+                before: text[..hit.from].to_string(),
+                word: text[hit.from..hit.to].to_string(),
+                after: text[hit.to..].to_string(),
+                unknown: r.unknown,
+                said: r.said,
+                picture: (r.start.max(0.0) / media::SHEET_EVERY).round() as usize,
+            }
+        })
+        .collect();
     Ok(json!({ "lines": found, "shows": shows }))
+}
+
+/// A line found, ranked: which of the hits it is, and what the Library orders by.
+#[derive(Clone, Debug, PartialEq)]
+struct Ranked {
+    at: usize,
+    show_id: i64,
+    number: i64,
+    /// When it's said, your nudges counted.
+    start: f64,
+    unknown: Option<usize>,
+    said: bool,
 }
 
 /// How soon you can read a line, as the Library ranks them: one that's said,
 /// then the fewest other words you don't know (none: i+1), then one whose
 /// episode's words aren't saved yet.
-fn reach(f: &Found) -> usize {
-    (if f.said { 0 } else { 2_000_000 }) + f.unknown.unwrap_or(1_000_000)
+fn reach(r: &Ranked) -> usize {
+    (if r.said { 0 } else { 2_000_000 }) + r.unknown.unwrap_or(1_000_000)
 }
 
-/// Keeps the `PER_SHOW` lines of each show you can read soonest, in the order
-/// the Library lists them; returns how many each show had.
-fn best_of_each_show(found: &mut Vec<Found>) -> HashMap<i64, usize> {
-    found.sort_by(|a, b| reach(a).cmp(&reach(b)).then(a.number.cmp(&b.number)).then(a.start.total_cmp(&b.start)));
-    let mut totals: HashMap<i64, usize> = HashMap::new();
-    found.retain(|f| {
-        let n = totals.entry(f.show_id).or_insert(0);
-        *n += 1;
-        *n <= PER_SHOW
-    });
-    totals
+/// The order the Library lists lines in: those you can read soonest, then by
+/// episode and time; lines alike stay in the order they were found.
+fn soonest(a: &Ranked, b: &Ranked) -> std::cmp::Ordering {
+    reach(a).cmp(&reach(b)).then(a.number.cmp(&b.number)).then(a.start.total_cmp(&b.start)).then(a.at.cmp(&b.at))
+}
+
+/// The `PER_SHOW` lines of each show you can read soonest, in the order the
+/// Library lists them, and how many each show had.
+fn best_of_each_show(ranked: Vec<Ranked>) -> (Vec<Ranked>, HashMap<i64, usize>) {
+    let mut of_show: HashMap<i64, Vec<Ranked>> = HashMap::new();
+    for r in ranked {
+        of_show.entry(r.show_id).or_default().push(r);
+    }
+    let totals = of_show.iter().map(|(show, lines)| (*show, lines.len())).collect();
+    let mut best = Vec::new();
+    for mut lines in of_show.into_values() {
+        if lines.len() > PER_SHOW {
+            lines.select_nth_unstable_by(PER_SHOW - 1, soonest);
+            lines.truncate(PER_SHOW);
+        }
+        best.append(&mut lines);
+    }
+    best.sort_unstable_by(soonest);
+    (best, totals)
 }
 
 // ---- A line's scene ----
@@ -717,32 +760,37 @@ mod tests {
 
     #[test]
     fn keeps_the_lines_of_each_show_you_can_read_soonest() {
-        let f = |show_id: i64, number: i64, unknown: Option<usize>, said: bool| Found {
-            episode_id: number,
-            show_id,
-            number,
-            line: 0,
-            start: 0.0,
-            end: 1.0,
-            before: String::new(),
-            word: String::new(),
-            after: String::new(),
-            unknown,
-            said,
-            picture: 0,
-        };
-        let mut found: Vec<Found> = (0..PER_SHOW as i64 + 20).map(|n| f(1, n, Some(3), true)).collect();
-        found.push(f(1, 500, Some(0), true));
-        found.push(f(1, 501, None, true));
-        found.push(f(1, 502, Some(0), false));
-        found.push(f(2, 1, Some(1), true));
-        let totals = best_of_each_show(&mut found);
+        let r = |show_id: i64, number: i64, unknown: Option<usize>, said: bool| Ranked { at: 0, show_id, number, start: 0.0, unknown, said };
+        let mut ranked: Vec<Ranked> = (0..PER_SHOW as i64 + 20).map(|n| r(1, n, Some(3), true)).collect();
+        ranked.push(r(1, 500, Some(0), true));
+        ranked.push(r(1, 501, None, true));
+        ranked.push(r(1, 502, Some(0), false));
+        ranked.push(r(2, 1, Some(1), true));
+        // Found in reverse, so the order they're found in can't be what lists them.
+        ranked.reverse();
+        for (at, r) in ranked.iter_mut().enumerate() {
+            r.at = at;
+        }
+        let (best, totals) = best_of_each_show(ranked.clone());
         assert_eq!(totals, HashMap::from([(1, PER_SHOW + 23), (2, 1)]));
-        let one: Vec<&Found> = found.iter().filter(|l| l.show_id == 1).collect();
+        let one: Vec<&Ranked> = best.iter().filter(|l| l.show_id == 1).collect();
         assert_eq!(one.len(), PER_SHOW);
         // The i+1 line first; the rest by episode; one not yet scored and one sung don't make it.
         assert_eq!((one[0].number, one[1].number, one[PER_SHOW - 1].number), (500, 0, PER_SHOW as i64 - 2));
-        assert!(found.iter().any(|l| l.show_id == 2));
+        assert!(best.iter().any(|l| l.show_id == 2));
+        // The same lines in the same order as sorting every line and keeping each show's first ones:
+        // lines alike (here, two said at once, the last place between them) stay in the order they were found.
+        let last = ranked.iter().find(|l| l.show_id == 1 && l.number == PER_SHOW as i64 - 2).unwrap().clone();
+        ranked.push(Ranked { at: ranked.len(), ..last });
+        let mut all = ranked.clone();
+        all.sort_by(|a, b| reach(a).cmp(&reach(b)).then(a.number.cmp(&b.number)).then(a.start.total_cmp(&b.start)));
+        let mut kept: HashMap<i64, usize> = HashMap::new();
+        all.retain(|l| {
+            let n = kept.entry(l.show_id).or_insert(0);
+            *n += 1;
+            *n <= PER_SHOW
+        });
+        assert_eq!(best_of_each_show(ranked).0, all);
     }
 
     #[test]

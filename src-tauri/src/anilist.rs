@@ -271,7 +271,7 @@ fn format_hint(title: &str) -> &'static str {
 
 /// The season a title names: "Season 2", "2nd Season", "Second Season", or a
 /// number ending it ("Konosuba 2", "Overlord II", but not "Part 2").
-fn season(title: &str) -> Option<i64> {
+pub(crate) fn season(title: &str) -> Option<i64> {
     let words = words(title);
     let ordinal = |w: &str| -> Option<i64> {
         match w {

@@ -157,17 +157,49 @@ fn from_one(entry_episodes: Option<i64>, listing: &[(i64, String)], number: i64)
     }
 }
 
+/// Kept for a season folder AniList has no entry for. -1 was kept before a
+/// folder named only by its season was searched by the show's title, so
+/// it's asked again.
+pub(crate) const NO_ENTRY: i64 = -2;
+pub(crate) const NO_ENTRY_BEFORE: i64 = -1;
+
+/// What a later season folder is searched for on AniList: its name without
+/// the release's words, with the season it names ("Fairy Tail Season 2"). A
+/// folder named by its season alone ("Season 2", "2nd Season", "Final
+/// Season") goes by the show's title; "Season 0" is the show's specials.
+pub(crate) fn group_title(show: &Show, group: &str) -> String {
+    let folder = group.rsplit('/').next().unwrap_or(group);
+    let cleaned = scan::clean_title(folder);
+    let ordinal = |w: &str| {
+        let w = w.to_lowercase();
+        matches!(w.as_str(), "first" | "second" | "third" | "fourth" | "fifth" | "final" | "ii" | "iii" | "iv" | "v")
+            || w.trim_end_matches(|c: char| c.is_ascii_alphabetic()).chars().all(|c| c.is_ascii_digit())
+                && w.chars().next().is_some_and(|c| c.is_ascii_digit())
+    };
+    let named = cleaned.split_whitespace().any(|w| !ordinal(w));
+    let show_title = if show.title_romaji.trim().is_empty() { show.title.clone() } else { show.title_romaji.clone() };
+    let base = if named { cleaned } else { show_title };
+    let lower = folder.to_lowercase();
+    match anilist::season(folder) {
+        Some(0) => format!("{base} Specials"),
+        Some(s) if s > 1 && anilist::season(&base) != Some(s) => format!("{base} Season {s}"),
+        _ if !named && lower.contains("final season") => format!("{base} Final Season"),
+        _ => base,
+    }
+}
+
 /// A later season folder's own AniList entry, worked out once and kept.
 pub(crate) fn group_entry(backend: &Backend, show: &Show, group: &str, count: usize) -> Result<Option<i64>> {
     let setting = format!("anilist.group.{}.{group}", show.id);
     let id = match backend.db.setting(&setting)?.and_then(|v| v.as_i64()) {
-        Some(id) => id,
-        None => {
-            let title = scan::clean_title(group.rsplit('/').next().unwrap_or(group));
+        Some(id) if id != NO_ENTRY_BEFORE => id,
+        _ => {
+            let title = group_title(show, group);
             let mut found = anilist::search_loosely(&title)?;
             anilist::rank(&mut found, &title, count);
+            anilist::follow_sequels(&mut found, &title)?;
             // The show's own entry again would mean the folders aren't seasons of their own.
-            let id = found.first().filter(|a| a.score >= SURE && Some(a.id) != show.anilist_id).map_or(-1, |a| a.id);
+            let id = found.first().filter(|a| a.score >= SURE && Some(a.id) != show.anilist_id).map_or(NO_ENTRY, |a| a.id);
             backend.db.set_setting(&setting, &json!(id))?;
             id
         }
@@ -255,6 +287,20 @@ mod tests {
         // Two cours in one folder against the first's 13 episodes: the second's don't fit either way.
         let both: Vec<Episode> = (1..=25).map(|n| ep(n, &format!("Spy x Family - {n}.mkv"))).collect();
         assert_eq!(place(&s, &both, &both[13], none).unwrap(), Some((158927, 14)));
+    }
+
+    #[test]
+    fn a_folder_named_by_its_season_alone_is_searched_by_the_show_s_title() {
+        let s = Show { title_romaji: "Fairy Tail".into(), ..show() };
+        assert_eq!(group_title(&s, "Season 2"), "Fairy Tail Season 2");
+        assert_eq!(group_title(&s, "Fairy Tail/2nd Season"), "Fairy Tail Season 2");
+        assert_eq!(group_title(&s, "Season 03 [BD 1080p]"), "Fairy Tail Season 3");
+        assert_eq!(group_title(&s, "Final Season"), "Fairy Tail Final Season");
+        assert_eq!(group_title(&s, "Season 00"), "Fairy Tail Specials");
+        // A folder with a name of its own keeps it, and its season.
+        assert_eq!(group_title(&s, "Fairy Tail 2014"), "Fairy Tail 2014");
+        assert_eq!(group_title(&s, "Fairy Tail Season 2 [BD]"), "Fairy Tail Season 2");
+        assert_eq!(group_title(&s, "Konosuba 2"), "Konosuba 2");
     }
 
     #[test]

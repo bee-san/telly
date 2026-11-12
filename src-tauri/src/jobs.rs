@@ -1139,16 +1139,17 @@ fn group_files(backend: &Backend, key: &str, show: &Show, group: &str, in_group:
     }
     let setting = format!("jimaku.group.{}.{group}", show.id);
     let entry = match backend.db.setting(&setting)?.and_then(|v| v.as_i64()) {
-        Some(id) => id,
-        None => {
-            let title = scan::clean_title(group.rsplit('/').next().unwrap_or(group));
+        Some(id) if id != crate::anilist_list::NO_ENTRY_BEFORE => id,
+        _ => {
+            let title = crate::anilist_list::group_title(show, group);
             let mut found = anilist::search_loosely(&title).unwrap_or_default();
             anilist::rank(&mut found, &title, in_group);
+            let _ = anilist::follow_sequels(&mut found, &title);
             let id = match found.first() {
                 Some(a) if Some(a.id) != show.anilist_id && a.score >= 0.5 => {
-                    jimaku::find_entries(key, Some(a.id), &a.romaji)?.first().map(|e| e.id).unwrap_or(-1)
+                    jimaku::find_entries(key, Some(a.id), &a.romaji)?.first().map(|e| e.id).unwrap_or(crate::anilist_list::NO_ENTRY)
                 }
-                _ => -1,
+                _ => crate::anilist_list::NO_ENTRY,
             };
             backend.db.set_setting(&setting, &serde_json::json!(id))?;
             id

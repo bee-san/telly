@@ -1138,7 +1138,23 @@
 
   // ---- the end of an episode -----------------------------------------------------
 
+  /** Jumps past the credits, or finishes the episode if the credits run to the end. */
+  function skipOutro() {
+    const end = view?.ending?.end;
+    if (!video || end === undefined || !(duration > 0)) return;
+    if (end < duration - 0.1) {
+      seekTo(end);
+      return;
+    }
+    video.pause();
+    video.currentTime = duration;
+    lastT = video.currentTime;
+    now = lastT;
+    finish();
+  }
+
   function finish() {
+    if (ended) return;
     ended = true;
     if (!view?.next || !autoplay || countdownStopped) return;
     stopWaiting();
@@ -1513,8 +1529,7 @@
   {#if inOpening && view?.opening && !recap && !ended}
     <button type="button" class="skip" class:aside={transcript || filterPanel || !!explaining} onclick={() => view?.opening && seekTo(view.opening.end)}>Skip opening</button>
   {:else if inEnding && view?.ending && !recap && !ended}
-    <!-- To what comes after it (a preview, a scene after the credits), or the end, which moves on to the next episode. -->
-    <button type="button" class="skip" class:aside={transcript || filterPanel || !!explaining} onclick={() => view?.ending && seekTo(Math.min(view.ending.end, duration))}>Skip ending</button>
+    <button type="button" class="skip" class:aside={transcript || filterPanel || !!explaining} onclick={skipOutro}>Skip outro</button>
   {/if}
 
   <div class="ptop">

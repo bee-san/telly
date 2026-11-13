@@ -270,19 +270,28 @@ pub fn ending_at(probe: &Probe) -> Option<f64> {
     ending(probe).map(|(start, _)| start)
 }
 
-/// The ending, as (start, end): a chapter called that, else the first chapter
-/// after 70% of the episode that's an ending's length.
+/// The ending, as (start, end): a named chapter, else the first chapter after
+/// 70% of the episode that's an ending's length, in a rip with at least three chapters.
 pub fn ending(probe: &Probe) -> Option<(f64, f64)> {
     let d = probe.duration;
-    if d <= 0.0 || probe.chapters.len() < 3 {
+    if d <= 0.0 {
         return None;
     }
     let named = probe.chapters.iter().find(|c| {
-        let t = c.title.to_lowercase();
-        t.contains("ending") || t == "ed" || t.starts_with("ed ") || c.title.contains("エンディング")
+        let t = c.title.trim().to_lowercase();
+        t.contains("ending")
+            || matches!(t.as_str(), "ed" | "outro" | "end credits" | "closing credits")
+            || (t == "credits" && c.start > d * 0.5)
+            || t.starts_with("ed ")
+            || c.title.contains("エンディング")
     });
     named
-        .or_else(|| probe.chapters.iter().find(|c| c.start > 0.7 * d && (55.0..=150.0).contains(&(c.end - c.start))))
+        .or_else(|| {
+            if probe.chapters.len() < 3 {
+                return None;
+            }
+            probe.chapters.iter().find(|c| c.start > 0.7 * d && (55.0..=150.0).contains(&(c.end - c.start)))
+        })
         .map(|c| (c.start, c.end))
 }
 
@@ -954,6 +963,21 @@ mod tests {
         assert_eq!(opening(&parse_probe(&j)), Some((130.0, 220.0)));
         j["chapters"][0]["tags"]["title"] = json!("Opening");
         assert_eq!(opening(&parse_probe(&j)), Some((0.0, 130.0)));
+    }
+
+    #[test]
+    fn finds_a_named_outro_in_a_rip_with_two_chapters() {
+        let mut j = dvd();
+        j["chapters"] = json!([
+            {"start_time": "0.0", "end_time": "1300.0", "tags": {"title": "Episode"}},
+            {"start_time": "1300.0", "end_time": "1421.5", "tags": {"title": "Outro"}}
+        ]);
+        for title in ["Outro", "End Credits", "Ending", "Credits"] {
+            j["chapters"][1]["tags"]["title"] = json!(title);
+            assert_eq!(ending(&parse_probe(&j)), Some((1300.0, 1421.5)));
+        }
+        j["chapters"][1]["tags"]["title"] = json!("Post Credits");
+        assert_eq!(ending(&parse_probe(&j)), None);
     }
 
     #[test]

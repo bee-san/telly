@@ -79,6 +79,8 @@ struct Playing {
     at: Instant,
     saved_at: Instant,
     session: Option<i64>,
+    /// The first reads of a resumed episode are for its index and the frame it was left at.
+    starting_midway: bool,
     /// Where this sitting began playing (its first tick that plays: the player
     /// starts an episode you've watched from its beginning, wherever it was
     /// left), and whether it has reached the point that makes the episode
@@ -1236,10 +1238,13 @@ impl Backend {
         }
         let mut view = self.episode_view(id)?;
         view["awayMs"] = json!(away);
-        view["recap"] = ask::recap_state(self, &episode, None);
         // Picking up part-way through: a recap that runs up to there.
         if ask::resuming(&episode, episode.position) {
             view["resume"] = ask::recap_state(self, &episode, Some(episode.position));
+        }
+        // The player uses the recap of the episode before only when there's no recap up to here.
+        if view["resume"]["possible"] != true {
+            view["recap"] = ask::recap_state(self, &episode, None);
         }
         Ok(view)
     }
@@ -1275,6 +1280,15 @@ impl Backend {
         if let Ok(mut p) = self.playing.lock() {
             self.end_sitting(p.take());
             let now = Instant::now();
+            let starting_midway = episode.watched_at.is_none()
+                && episode.position > 5.0
+                && (episode.duration <= 0.0 || episode.position < episode.duration * 0.95);
+            if starting_midway {
+                // Let the seek use the drive before any reader from the previous sitting.
+                if let Ok(mut at) = self.ahead.at.lock() {
+                    *at = (PathBuf::new(), 0, 0, at.3 + 1);
+                }
+            }
             *p = Some(Playing {
                 episode_id: episode.id,
                 show_id: episode.show_id,
@@ -1283,6 +1297,7 @@ impl Backend {
                 at: now,
                 saved_at: now,
                 session: None,
+                starting_midway,
                 from: None,
                 reached_end: false,
             });
@@ -1343,6 +1358,7 @@ impl Backend {
                     at: now,
                     saved_at: now,
                     session: None,
+                    starting_midway: false,
                     from: None,
                     reached_end: false,
                 });
@@ -1710,8 +1726,13 @@ impl Backend {
             ["ep", id] => {
                 let e = self.episode_or_err(id.parse().map_err(|_| anyhow!("bad episode"))?)?;
                 let video = if e.media_state == "ready" && !e.play_path.is_empty() { PathBuf::from(e.play_path) } else { PathBuf::from(e.path) };
-                let from = range.and_then(|r| r.trim().strip_prefix("bytes=")).and_then(|r| r.split('-').next()?.trim().parse().ok());
-                self.read_ahead(&video, from.unwrap_or(0));
+                let can_read_ahead = self.playing.try_lock().is_ok_and(|p| {
+                    !p.as_ref().is_some_and(|p| p.episode_id == e.id && p.starting_midway && p.from.is_none())
+                });
+                if can_read_ahead {
+                    let from = range.and_then(|r| r.trim().strip_prefix("bytes=")).and_then(|r| r.split('-').next()?.trim().parse().ok());
+                    self.read_ahead(&video, from.unwrap_or(0));
+                }
                 video
             }
             ["sheet", id] => self.sheet_path(&self.episode_or_err(id.parse().map_err(|_| anyhow!("bad episode"))?)?),
@@ -1734,6 +1755,39 @@ impl Backend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_ahead_only_after_a_resumed_episode_starts_playing() {
+        let dir = std::env::temp_dir().join(format!("telly-resume-ahead-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let path = dir.join("episode.mkv");
+        std::fs::write(&path, b"0123456789").unwrap();
+        let episodes = vec![crate::db::NewEpisode { number: 1, path: path.to_string_lossy().into_owned(), size: 10, duration: 1400.0 }];
+        let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let id = backend.db.episodes(show).unwrap()[0].id;
+        let src = format!("/ep/{id}");
+        let read = |range| backend.serve(&src, Some(range)).unwrap().bytes;
+
+        assert_eq!(read("bytes=0-1"), b"01");
+        assert_eq!(backend.ahead.at.lock().unwrap().0, path);
+        backend.db.save_position(id, 700.0).unwrap();
+        backend.begin_sitting(&backend.db.episode(id).unwrap().unwrap());
+
+        let tick = |position, playing| {
+            backend.tick(serde_json::from_value(json!({ "id": id, "position": position, "playing": playing })).unwrap()).unwrap();
+        };
+        assert_eq!(read("bytes=0-1"), b"01");
+        tick(0.0, false);
+        assert_eq!(read("bytes=5-6"), b"56");
+        assert!(backend.ahead.at.lock().unwrap().0.as_os_str().is_empty());
+
+        tick(701.0, true);
+        assert_eq!(read("bytes=6-7"), b"67");
+        assert_eq!(backend.ahead.at.lock().unwrap().0, path);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_film_is_what_anilist_calls_one_or_one_long_file_it_doesn_t_know() {

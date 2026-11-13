@@ -45,6 +45,8 @@
   let sheet = $state<(SeekSheet & { ratio: number }) | null>(null);
   /** Goes up with each episode, and when the player is left, so pictures on their way for the last one are let go. */
   let sheetRun = 0;
+  /** The episode whose first picture is ready. */
+  let firstFrameFor = 0;
   /** Which of the sheet's pictures is nearest the pointer. */
   const hoverPic = $derived(sheet && hoverAt !== null ? Math.min(Math.round(hoverAt / sheet.every), sheet.columns * sheet.rows - 1) : 0);
   /** The rip's own English subtitles (null until they're read), shown while Tab is held. */
@@ -262,16 +264,21 @@
       const v = await call<PlayerView>("openPlayer", { id });
       // Cards finished before this episode opened aren't news here, but one
       // still shown as being finished (mined just before) gets its outcome.
-      const missed = await call<CardEvent[]>("events", { since: lastEvent }).catch((): CardEvent[] => []);
-      for (const ev of missed) {
-        if (ev.id <= (v.lastEvent ?? 0) && toasts.list.some((t) => t.key === cardKey(ev) && t.state === "working")) cardToast(ev);
-      }
+      call<CardEvent[]>("events", { since: lastEvent })
+        .then((missed) => {
+          for (const ev of missed) {
+            if (ev.id <= (v.lastEvent ?? 0) && toasts.list.some((t) => t.key === cardKey(ev) && t.state === "working")) cardToast(ev);
+          }
+        })
+        .catch(() => {});
       lastEvent = Math.max(lastEvent, v.lastEvent ?? 0);
       recapRun++;
       recapAt = v.resume?.possible ? v.episode.position : null;
       const back = wantRecap(v, autoplayed);
       const written = (recapAt === null ? v.recap : v.resume)?.ready === true;
       if (back && written) holdPlay = true;
+      firstFrameFor = 0;
+      dropSheet();
       view = v;
       castNames = [];
       call<CastName[]>("showNames", { id: v.show.id }).then((n) => (castNames = n)).catch(() => {});
@@ -287,25 +294,6 @@
         .then((lines) => {
           if (view?.episode.id === id) translation = lines;
         });
-      dropSheet();
-      if (v.episode.mediaState === "ready") {
-        // Held in memory, so a picture is there the moment the pointer is.
-        const run = sheetRun;
-        call<SeekSheet>("seekSheet", { id })
-          .then(async (s) => {
-            const blob = await (await fetch(mediaUrl(s.src))).blob();
-            if (run !== sheetRun) return;
-            const src = URL.createObjectURL(blob);
-            const img = new Image();
-            img.onload = () => {
-              if (run === sheetRun) sheet = { ...s, src, ratio: (img.naturalWidth / s.columns) / (img.naturalHeight / s.rows) };
-              else URL.revokeObjectURL(src);
-            };
-            img.onerror = () => URL.revokeObjectURL(src);
-            img.src = src;
-          })
-          .catch(() => {});
-      }
       // A show kept with one filter, from before they could be chained, starts with that one.
       const kept = settings[`player.filters.${v.show.id}`];
       chain = arrange(Array.isArray(kept) ? kept : [settings[`player.filter.${v.show.id}`]]);
@@ -320,6 +308,30 @@
     } catch (e) {
       error = errorText(e);
     }
+  }
+
+  /** Loads the seek bar's pictures once the video has its first frame at the starting position. */
+  function firstFrame() {
+    if (closed || !video || video.seeking || !view) return;
+    if (video.readyState < HTMLMediaElement.HAVE_FUTURE_DATA && !video.ended) return;
+    const id = view.episode.id;
+    if (id !== epId || firstFrameFor === id) return;
+    firstFrameFor = id;
+    const run = sheetRun;
+    call<SeekSheet>("seekSheet", { id })
+      .then(async (s) => {
+        const blob = await (await fetch(mediaUrl(s.src))).blob();
+        if (run !== sheetRun) return;
+        const src = URL.createObjectURL(blob);
+        const img = new Image();
+        img.onload = () => {
+          if (run === sheetRun) sheet = { ...s, src, ratio: (img.naturalWidth / s.columns) / (img.naturalHeight / s.rows) };
+          else URL.revokeObjectURL(src);
+        };
+        img.onerror = () => URL.revokeObjectURL(src);
+        img.src = src;
+      })
+      .catch(() => {});
   }
 
   /** Lets go of the seek bar's pictures, and of any on their way. */
@@ -366,6 +378,7 @@
     if (at > 0) video.currentTime = at;
     lastT = video.currentTime;
     video.playbackRate = rate;
+    firstFrame();
     if (!holdPlay && !reload?.paused) video.play().catch(() => {});
   }
 
@@ -406,7 +419,7 @@
 
   /** `last` is the tick sent on closing, for what was watched since the one before. */
   async function sendTick(last = false) {
-    if (!view || !video || (closed && !last)) return;
+    if (!view || !video || firstFrameFor !== view.episode.id || (closed && !last)) return;
     if (!last) suggestFilter();
     const batch = pendingLines.splice(0);
     try {
@@ -1218,7 +1231,7 @@
     closed = true;
     // Where it was left, read before the page (and its video) can go.
     const id = view.episode.id;
-    const position = video?.currentTime ?? null;
+    const position = firstFrameFor === id ? video?.currentTime ?? null : null;
     await sendTick(true);
     await call("closePlayer", { id, position }).catch(() => {});
   }
@@ -1441,7 +1454,10 @@
     window.addEventListener("hachidori-popup-shown", popupShown);
     window.addEventListener("hachidori-popup-hidden", popupHidden);
     const unload = () => {
-      if (view && video) call("closePlayer", { id: view.episode.id, position: video.currentTime }).catch(() => {});
+      if (!view) return;
+      const id = view.episode.id;
+      const position = firstFrameFor === id ? video?.currentTime ?? null : null;
+      call("closePlayer", { id, position }).catch(() => {});
     };
     window.addEventListener("beforeunload", unload);
     wake();
@@ -1502,10 +1518,17 @@
         bind:volume
         bind:muted
         onloadedmetadata={onLoaded}
+        oncanplay={firstFrame}
         onplay={() => { paused = false; wake(); }}
         onpause={() => (paused = true)}
-        onseeked={() => video && (lastT = video.currentTime)}
-        onended={finish}
+        onseeked={() => {
+          if (video) lastT = video.currentTime;
+          firstFrame();
+        }}
+        onended={() => {
+          firstFrame();
+          finish();
+        }}
         ondurationchange={() => video && (duration = video.duration)}
         onerror={() => (videoError = video?.error?.message || "The video couldn’t play.")}
       ></video>

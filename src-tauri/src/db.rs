@@ -862,6 +862,26 @@ impl Db {
         Ok(ShowCompletion { finished_at, rewatches })
     }
 
+    /// Every show's finishes and full rewatches, as (show, when, whether it's a rewatch). For Stats.
+    pub fn all_show_completions(&self) -> Result<Vec<(i64, i64, bool)>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT show_id, at, watch_id > (SELECT MIN(watch_id) FROM show_completions f WHERE f.show_id = c.show_id)
+             FROM show_completions c ORDER BY at",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// How many episodes were played to their end each day (local time), the
+    /// first time or again. For Stats.
+    pub fn episodes_finished_by_day(&self) -> Result<Vec<(String, i64)>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare_cached("SELECT date(at / 1000, 'unixepoch', 'localtime') AS day, COUNT(*) FROM rewatches GROUP BY day")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// Recovers show dates once from the episode marks and playback history older Telly kept.
     fn backfill_show_completions(conn: &mut Connection) -> Result<()> {
         let tx = conn.transaction()?;
@@ -1073,6 +1093,18 @@ impl Db {
             params![episode_id, op.map(|o| o.0), op.map(|o| o.1), now_ms(), number, anilist_id, ed.map(|o| o.0), ed.map(|o| o.1)],
         )?;
         Ok(kept > 0)
+    }
+
+    /// The cards mined from a show, once each, as `cards_per_show` counts them:
+    /// the note, its episode's number and its sentence, in the show's order.
+    pub fn show_cards(&self, show_id: i64) -> Result<Vec<(i64, i64, String)>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT m.note_id, e.number, m.sentence, MIN(m.start) AS start FROM mine_jobs m JOIN episodes e ON e.id = m.episode_id
+             WHERE e.show_id = ?1 AND m.state IN ('done', 'pending') GROUP BY m.note_id ORDER BY e.number, start",
+        )?;
+        let rows = stmt.query_map([show_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn cards_per_show(&self) -> Result<std::collections::HashMap<i64, i64>> {

@@ -186,6 +186,45 @@ export interface EpisodeRow extends Episode {
   words: { uses: number; known: number } | null;
 }
 
+/** What was watched and mined on a day (YYYY-MM-DD, local time). */
+export interface StatsDay {
+  day: string;
+  seconds: number;
+  /** Episodes played to their end that day, the first time or again. */
+  episodes: number;
+  lines: number;
+  chars: number;
+  cards: number;
+  /** The shows played. */
+  shows: number[];
+  /** Uses of words in the episodes played, and how many are of known words (their shares as they are now). */
+  uses: number;
+  known: number;
+}
+
+export interface Stats {
+  days: StatsDay[];
+  /** Known words, by the day their first card was made. */
+  words: { day: string; n: number }[];
+  /** Uses of words in the whole library, and how many are of known words. */
+  library: { uses: number; known: number };
+  /** The finished shows' cards, by show ID. */
+  shows: Record<string, ShowCard>;
+  /** Each finish and full rewatch, oldest first, in Unix milliseconds. */
+  finished: { show: number; at: number; rewatch: boolean }[];
+}
+
+/** A show's own page in Stats. */
+export interface ShowStats {
+  card: ShowCard;
+  completion: { finishedAt: number | null; rewatches: number[] };
+  episodes: { number: number; words: { uses: number; known: number } | null }[];
+  /** What played of each episode each day. */
+  played: { day: string; showId: number; episode: number; seconds: number; lines: number; chars: number }[];
+  /** Each card mined from it: its note, episode and sentence, and its word once it's been studied. */
+  cards: { note: number; episode: number; sentence: string; word: string | null }[];
+}
+
 export interface ShowView {
   card: ShowCard;
   episodes: EpisodeRow[];

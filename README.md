@@ -126,6 +126,16 @@ On 850,000 lines in 2,700 episodes (made up, a tenth of them without their words
 
 AniList's answers are kept for a week. A show is asked about again after that, and a show you add is asked about the next time the page opens.
 
+## Stats
+
+**Stats**, in the library's toolbar, adds up what you've watched, mined and learnt over the last 7 days, 30 days, 12 months or all time. It's all from what Telly already keeps.
+
+- **Time watched, lines and characters** come from the log Tidepool reads (`telly-log.sqlite`), by the day each sitting ended. **Episodes** are those played to their end, the first time or again. Over 7 or 30 days, each figure is compared with the same length of time before.
+- **Cards mined** are the cards Telly finished with their picture and audio, premined ones too, by the day it finished them.
+- **Each day** (or **Each month**) charts the time watched. Hover over a bar for that day's episodes and cards.
+- **Words** are the words you know, as Settings → Known words counts them, charted by the day each word's first card was made in Anki. That's when its card was made, not when you learnt it. **In what you watched** is the share of the period's episodes' words that you know now, and **In your library** the same for every episode.
+- **Finished** has the shows finished or fully rewatched in the period. Press one for its own page: its time, lines and cards, each episode's cards and share of known words, the days you watched it (a row for each time through), and the words you mined from it, each in its line. A card's word shows once you've studied the card; until then, its line shows alone.
+
 ## Your AniList list
 
 In **Settings → AniList**, **Get a token** opens AniList, which shows an access token once you approve Telly. Paste it and press **Sign in**. From then on, each episode you watch raises that anime's progress on your list, and its last episode marks it completed.

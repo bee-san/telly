@@ -1,7 +1,8 @@
 //! telly-log.sqlite, in %APPDATA%\Telly: what you watched, for Tidepool's
 //! Japanese log, which reads it read-only (WAL mode lets it read while Telly
-//! writes). Tidepool's tables hold counts only; lines_seen keeps each line
-//! whole, its text too, in case it's wanted (Telly makes no statistics of it).
+//! writes), and for Stats (stats.rs). Tidepool's tables hold counts only;
+//! lines_seen keeps each line whole, its text too, in case it's wanted
+//! (Telly makes no statistics of it).
 //!
 //!   episodes_played  one row per sitting with an episode: start, end, seconds
 //!                    of playback, and the lines and characters that played
@@ -22,6 +23,7 @@
 use crate::db::open_migrated;
 use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection};
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
@@ -118,6 +120,18 @@ pub struct Seen {
     pub subtitles: bool,
 }
 
+/// One episode's playing on one day (YYYY-MM-DD, local time), added up.
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Played {
+    pub day: String,
+    pub show_id: i64,
+    pub episode: i64,
+    pub seconds: f64,
+    pub lines: i64,
+    pub chars: i64,
+}
+
 pub struct Log {
     conn: Mutex<Connection>,
     pub path: PathBuf,
@@ -206,6 +220,30 @@ impl Log {
             params![note_id, title, anilist_id, episode, at],
         )?;
         Ok(())
+    }
+
+    /// What played each day (the day it ended, in local time), by show and
+    /// episode: every show's, or `show`'s alone. For Stats.
+    pub fn played(&self, show: Option<i64>) -> Result<Vec<Played>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT date(ended_at / 1000, 'unixepoch', 'localtime') AS day, show_id, episode, SUM(seconds), SUM(lines), SUM(chars)
+             FROM episodes_played WHERE ?1 IS NULL OR show_id = ?1 GROUP BY day, show_id, episode ORDER BY day",
+        )?;
+        let rows = stmt.query_map(params![show], |r| {
+            Ok(Played { day: r.get(0)?, show_id: r.get(1)?, episode: r.get(2)?, seconds: r.get(3)?, lines: r.get(4)?, chars: r.get(5)? })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// How many cards were finished each day (local time). For Stats.
+    pub fn cards_by_day(&self) -> Result<Vec<(String, i64)>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT date(mined_at / 1000, 'unixepoch', 'localtime') AS day, COUNT(DISTINCT note_id) FROM cards_mined GROUP BY day",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     /// Sittings shorter than 20 seconds of playback, with no lines, are noise (opening the wrong episode).

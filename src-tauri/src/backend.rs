@@ -19,6 +19,7 @@ use crate::premine::{self, Premining};
 use crate::recommend;
 use crate::scan;
 use crate::search;
+use crate::stats;
 use crate::subs::Line;
 use crate::sync;
 use crate::tools::{self, Tools};
@@ -708,7 +709,7 @@ impl Backend {
     }
 
     /// A show's card, from its episodes (in order, as `Db::episodes` has them).
-    fn card(&self, show: Show, episodes: &[Episode], cards_by_show: &std::collections::HashMap<i64, i64>, scores: &std::collections::HashMap<i64, (i64, i64, String)>) -> Result<ShowCard> {
+    pub(crate) fn card(&self, show: Show, episodes: &[Episode], cards_by_show: &std::collections::HashMap<i64, i64>, scores: &std::collections::HashMap<i64, (i64, i64, String)>) -> Result<ShowCard> {
         let watched = episodes.iter().filter(|e| e.watched_at.is_some()).count();
         let media_ready = episodes.iter().filter(|e| e.media_state == "ready").count();
         let subs_ready = episodes.iter().filter(|e| settled(&e.subs_state)).count();
@@ -1659,6 +1660,8 @@ impl Backend {
             "ownHachidori" => to_value(own_hachidori::report(self)),
             "premineCards" => to_value(premine::start_cards(self, arg(&args, "words")?)?),
             "recommendations" => recommend::view(self),
+            "stats" => stats::overview(self),
+            "showStats" => stats::show(self, arg(&args, "id")?),
             "anilistSignIn" => Ok(json!({ "user": anilist_list::sign_in(self, &arg::<String>(&args, "token")?)? })),
             "anilistSignOut" => {
                 anilist_list::sign_out(self)?;

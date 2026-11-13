@@ -147,6 +147,26 @@ pub fn words(backend: &Backend) -> Words {
     words
 }
 
+/// When the first card of each known word was made, in Unix ms (a note's id
+/// is when it was made), for Stats. It isn't when the word was learnt.
+pub fn known_since(backend: &Backend) -> Vec<i64> {
+    let copy = read(backend);
+    let mature_only = mature_only(backend);
+    let mut first: HashMap<String, i64> = HashMap::new();
+    for (id, word) in copy.notes {
+        if !mature_only || copy.mature.contains(&id) {
+            let at = first.entry(word).or_insert(id);
+            *at = (*at).min(id);
+        }
+    }
+    first.into_values().collect()
+}
+
+/// Each studied note's word, by note id, from Telly's copy.
+pub fn note_words(backend: &Backend) -> HashMap<i64, String> {
+    read(backend).notes
+}
+
 /// What Settings → Known words chooses from and shows: Anki's decks, its note
 /// types that have the word's field, and how many notes the choice finds now.
 pub fn sources(backend: &Backend) -> Result<Value> {

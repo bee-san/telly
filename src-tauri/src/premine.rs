@@ -1395,6 +1395,10 @@ mod tests {
                 }
             })
         };
+        // Its page has asked for work once before the cards are made: until then, Telly's Hachidori isn't running yet.
+        while !backend.own_hachidori.answering() {
+            std::thread::yield_now();
+        }
         let episodes = vec![crate::db::NewEpisode { number: 1, path: "1.mkv".into(), size: 1, duration: 1400.0 }];
         let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
         let episode = backend.db.episodes(show).unwrap()[0].id;

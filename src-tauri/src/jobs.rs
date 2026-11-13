@@ -2684,12 +2684,14 @@ mod tests {
         }
         let eps = backend.db.episodes(id).unwrap();
         let (slot, english) = (Mutex::new(None), |e: &Episode| translation(&backend, e).unwrap().into_iter().map(|l| l.text).collect::<Vec<_>>());
+        // The rips' drive is taken for each kind in turn, whichever kind the temp folder's is.
+        let root = Path::new(&eps[0].path).ancestors().last().unwrap().to_path_buf();
         // From a hard drive (or one that can't be told about), one read makes both.
+        backend.jobs.drives.lock().unwrap().insert(root.clone(), Arc::new(Turns::default()));
         find_subtitles(&backend, &slot, &ffmpeg, &ffprobe, &show, &eps[0], 2).unwrap();
         assert!(sheet_path(&backend, id, eps[0].id).is_file());
         assert_eq!(english(&eps[0]), ["A world of magic."]);
         // From an SSD, the subtitles are read on their own, and the pictures made after.
-        let root = Path::new(&eps[1].path).ancestors().last().unwrap().to_path_buf();
         backend.jobs.drives.lock().unwrap().insert(root, Arc::new(Turns { at_once: READS_AT_ONCE, seek_free: true, ..Turns::default() }));
         find_subtitles(&backend, &slot, &ffmpeg, &ffprobe, &show, &eps[1], 2).unwrap();
         assert!(!sheet_path(&backend, id, eps[1].id).is_file());

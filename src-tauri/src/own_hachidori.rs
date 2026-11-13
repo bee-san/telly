@@ -380,6 +380,8 @@ mod tests {
             assert!(dictionary_file(&backend, name).is_err(), "{name}");
         }
         drop(backend);
+        // On Windows the stand-in is in the current folder of drive C (src-tauri, for a checkout there), not in `dir`.
+        let _ = std::fs::remove_file(folder.join("C:x.zip"));
         let _ = std::fs::remove_dir_all(dir);
     }
 

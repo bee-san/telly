@@ -136,7 +136,7 @@ fn answer_in(backend: &Backend) -> &'static str {
     if backend.db.setting_str("claude.language") == "ja" { "simple Japanese" } else { "English" }
 }
 
-fn spoken(lines: &[Line]) -> impl Iterator<Item = (usize, &Line)> {
+fn spoken(lines: &[Line]) -> impl DoubleEndedIterator<Item = (usize, &Line)> {
     lines.iter().enumerate().filter(|(_, l)| !l.sign && !l.text.trim().is_empty())
 }
 
@@ -260,8 +260,7 @@ pub struct Moment {
     pub lines: Vec<Line>,
 }
 
-/// The stretches to play for the chosen lines: each line from just before it
-/// starts, with the lines that run straight on from it, up to about 7 seconds.
+/// The stretches to play for the chosen lines, with room for the exchange to play out.
 pub fn moments(lines: &[Line], chosen: &[usize]) -> Vec<Moment> {
     let mut out: Vec<Moment> = Vec::new();
     let mut chosen: Vec<usize> = chosen.iter().copied().filter(|&i| i < lines.len()).collect();
@@ -269,16 +268,25 @@ pub fn moments(lines: &[Line], chosen: &[usize]) -> Vec<Moment> {
     chosen.dedup();
     for i in chosen {
         let first = &lines[i];
+        if first.sign || first.text.trim().is_empty() {
+            continue;
+        }
+        let mut following = spoken(&lines[i + 1..]).peekable();
         let mut last = i;
-        while last + 1 < lines.len() && last < i + 2 {
-            let next = &lines[last + 1];
-            if next.sign || next.start - lines[last].end > 1.2 || next.end - first.start > 7.0 {
+        let mut end = first.end;
+        while let Some(&(offset, next)) = following.peek() {
+            if next.start - end > 1.2 || next.end - first.start > 10.0 {
                 break;
             }
-            last += 1;
+            last = i + 1 + offset;
+            end = end.max(next.end);
+            following.next();
         }
-        let start = (first.start - 0.6).max(0.0);
-        let end = lines[last].end + 0.5;
+        let before = spoken(&lines[..i]).next_back().map_or(0.0, |(_, line)| line.end.min(first.start));
+        let start = (first.start - 0.8).max(before).max(0.0);
+        // Let the dialogue finish and leave room for the fade before another line begins.
+        let tail = (end + 0.9).max(start + 4.5).min(end + 2.0);
+        let end = following.peek().map_or(tail, |(_, next)| tail.min(next.start.max(end)));
         match out.last_mut() {
             Some(prev) if start <= prev.end => {
                 prev.end = prev.end.max(end);
@@ -398,8 +406,9 @@ pub fn recap_prompt(show_title: &str, number: i64, window: &[(i64, &[Line])], ea
          saying what happens in it, taken from the subtitles (never a name from elsewhere that could hint at what’s ahead), the first \
          and last episode it covers (\"from\" and \"to\"), and two or three sentences in {answer_in}. An arc can run on into Episode {last}.\n\
          \"last\": {last_is}.\n\
-         \"moments\": 4 to 6 lines, in story order, that best tell the story when each is played as a short clip: complete lines \
-         spoken at key moments, two or more from Episode {last}, the last near {last_end}.{carry_moments} Each has a \"caption\" in \
+         \"moments\": two or three distinct scenes from Episode {last}, the last near {last_end}. If there's an earlier story, \
+         include up to three of its key scenes too, six in all at most.{carry_moments} For each, pick the first complete spoken line \
+         of an exchange that tells the story when played as a clip. Return the picks in episode and line order. Each has a \"caption\" in \
          {answer_in}: one sentence of under 15 words saying what’s happening at that moment, for someone who has forgotten it.\n\
          Write the characters’ names as AniList does. Keep it under 350 words in all. Use only the subtitles and the earlier story \
          above, and don’t guess at what comes next. If you recognise the show, still tell me only what they say: what you know of \
@@ -445,8 +454,10 @@ fn recap_from(value: &Value) -> Option<Recap> {
     (!recap.last.is_empty() || !recap.arcs.is_empty()).then_some(recap)
 }
 
-/// The most moments a recap plays: about 40 seconds.
+/// The most moments a recap plays across the story so far.
 const MAX_MOMENTS: usize = 6;
+/// The most scenes to play from the episode you just left.
+const LAST_EPISODE_MOMENTS: usize = 3;
 
 /// `n` of the moments, spread from the first to the last (the end matters most).
 fn at_most<T: Clone>(moments: Vec<T>, n: usize) -> Vec<T> {
@@ -540,12 +551,16 @@ fn kind(at: Option<f64>) -> &'static str {
     if at.is_some() { "resume" } else { "recap" }
 }
 
-fn recap_view(backend: &Backend, show_id: i64, source: &Source, recap: &Recap) -> Result<Value> {
+fn recap_view(backend: &Backend, show_id: i64, source: &Source, recap: &Recap, at: Option<f64>) -> Result<Value> {
     let all = backend.db.episodes(show_id)?;
+    let last = source.episodes.last().map(|(e, _)| e.number);
     let mut clips = Vec::new();
+    let mut latest = Vec::new();
     // The clip before: its episode, start and end.
     let mut before: Option<(i64, f64, f64)> = None;
-    for pick in &recap.moments {
+    let mut picks: Vec<&Pick> = recap.moments.iter().filter(|p| last.is_some_and(|last| p.episode <= last)).collect();
+    picks.sort_by_key(|p| (p.episode, p.line));
+    for pick in picks {
         let Some(e) = all.iter().find(|e| e.number == pick.episode) else { continue };
         // An episode this recap read is played as far as it read it.
         let read;
@@ -558,21 +573,29 @@ fn recap_view(backend: &Backend, show_id: i64, source: &Source, recap: &Recap) -
         };
         // Played where its lines are heard: with the episode's nudge, as the player shows them.
         let nudge = e.subs_nudge_ms as f64 / 1000.0;
+        let is_last = Some(e.number) == last;
+        let duration = if e.duration > 0.0 { e.duration } else { f64::INFINITY };
+        let limit = if is_last { at.unwrap_or(duration).min(duration) } else { duration };
         for m in moments(lines, &[pick.line]) {
-            let (mut start, end) = ((m.start + nudge).max(0.0), m.end + nudge);
+            let start = (m.start + nudge).max(0.0);
+            let end = (m.end + nudge).min(limit);
+            if end <= start {
+                continue;
+            }
             // Two lines picked close together: the second's clip carries on from where the first's
             // ended, rather than playing its lines again, and goes if the first played all of it.
+            let mut after_previous = start;
             if let Some((episode, from, to)) = before {
                 if episode == e.id && start < to && end > from {
                     if end <= to {
                         continue;
                     }
-                    start = to;
+                    after_previous = to;
                 }
             }
-            before = Some((e.id, start, end));
-            clips.push(json!({
-                "start": start,
+            before = Some((e.id, after_previous, end));
+            let clip = json!({
+                "start": after_previous,
                 "end": end,
                 "lines": m.lines,
                 "caption": pick.caption,
@@ -582,15 +605,28 @@ fn recap_view(backend: &Backend, show_id: i64, source: &Source, recap: &Recap) -
                 "listedAudio": jobs::stored_probe(backend, e.id).map(|p| jobs::listed_track(e, &p)).unwrap_or(0),
                 "playable": e.media_state == "ready",
                 "nudgeMs": e.subs_nudge_ms,
-            }));
+            });
+            if is_last {
+                latest.push((start, end, clip));
+            } else {
+                clips.push(clip);
+            }
         }
+    }
+    // Keep the first and last scenes when an older recap picked more for one episode.
+    // If a clip was dropped, the one after it can play from its own start again.
+    let mut previous_end: f64 = 0.0;
+    for (start, end, mut clip) in at_most(latest, LAST_EPISODE_MOMENTS) {
+        clip["start"] = json!(start.max(previous_end));
+        previous_end = end;
+        clips.push(clip);
     }
     Ok(json!({
         "done": true,
         "recap": recap.text(),
         "arcs": recap.arcs,
         "last": recap.last,
-        "lastNumber": source.episodes.last().map(|(e, _)| e.number),
+        "lastNumber": last,
         "moments": clips,
     }))
 }
@@ -624,7 +660,7 @@ pub fn recap(backend: &Arc<Backend>, episode_id: i64, start: bool, at: Option<f6
     if let Some(kept) = backend.db.answer(episode_id, kind(at), -1)? {
         if kept.about == about {
             if let Ok(recap) = serde_json::from_str::<Recap>(&kept.text) {
-                return recap_view(backend, show.id, &source, &recap);
+                return recap_view(backend, show.id, &source, &recap, at);
             }
         }
     }
@@ -809,8 +845,8 @@ mod tests {
         let view = super::recap(&backend, episodes[1].id, false, None).unwrap();
         let clip = &view["moments"][0];
         let tenths = |v: &Value| (v.as_f64().unwrap() * 10.0).round() as i64;
-        // From just before line 10 is heard to just after line 11 ends: 132 - 0.6 to 137 + 0.5.
-        assert_eq!((tenths(&clip["start"]), tenths(&clip["end"])), (1314, 1375), "{clip}");
+        // From just before line 10 is heard to just after the exchange with lines 11 and 12.
+        assert_eq!((tenths(&clip["start"]), tenths(&clip["end"])), (1312, 1409), "{clip}");
         // Its lines are as the file has them, and the player shows them nudged, as in the episode.
         assert_eq!((clip["lines"][0]["start"].as_f64(), clip["nudgeMs"].as_i64()), (Some(130.0), Some(2000)));
         drop(backend);
@@ -833,18 +869,41 @@ mod tests {
             .map(|c| ((c["start"].as_f64().unwrap() * 10.0).round() as i64, (c["end"].as_f64().unwrap() * 10.0).round() as i64, c["caption"].as_str().unwrap()))
             .collect();
         // Line 11's moment starts where line 10's ended; the same moment again, wholly played already, goes.
-        assert_eq!(clips, vec![(1294, 1355, "Asked."), (1355, 1385, "Answered."), (1744, 1805, "Later.")]);
+        assert_eq!(clips, vec![(1292, 1389, "Asked."), (1389, 1419, "Answered."), (1742, 1839, "Later.")]);
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     fn moments_run_on_through_close_lines_and_merge() {
-        let lines = vec![line(10.0, 12.0, "a"), line(12.5, 14.0, "b"), line(30.0, 31.0, "c"), line(31.2, 32.0, "d")];
-        let m = moments(&lines, &[0, 3, 2, 9]);
+        let mut sign = line(11.0, 20.0, "a sign");
+        sign.sign = true;
+        let lines = vec![line(10.0, 12.0, "a"), sign, line(12.5, 14.0, "b"), line(30.0, 31.0, "c"), line(31.2, 32.0, "d")];
+        let m = moments(&lines, &[0, 4, 3, 9]);
         let tenths = |x: f64| (x * 10.0).round() as i64;
         assert_eq!(m.len(), 2);
-        assert_eq!((tenths(m[0].start), tenths(m[0].end), m[0].lines.len()), (94, 145, 2));
-        assert_eq!((tenths(m[1].start), tenths(m[1].end), m[1].lines.len()), (294, 325, 2));
+        assert_eq!((tenths(m[0].start), tenths(m[0].end), m[0].lines.len()), (92, 149, 3));
+        assert_eq!((tenths(m[1].start), tenths(m[1].end), m[1].lines.len()), (292, 340, 2));
+    }
+
+    #[test]
+    fn saved_recaps_play_at_most_three_scenes_from_the_last_episode_in_order() {
+        let lines: Vec<Line> = (0..30).map(|i| line(100.0 + i as f64 * 12.0, 101.0 + i as f64 * 12.0, &format!("台詞{i}"))).collect();
+        let (backend, episodes, dir) = library("pacing", 3, &lines);
+        let pick = |episode, line| Pick { episode, line, caption: String::new() };
+        let recap = Recap {
+            last: "Last time.".into(),
+            moments: vec![pick(2, 25), pick(2, 5), pick(1, 10), pick(2, 20), pick(2, 15), pick(2, 10), pick(2, 26), pick(3, 12)],
+            ..Recap::default()
+        };
+        let at = 402.0;
+        let source = source(&backend, &episodes[1], Some(at)).unwrap();
+        let view = recap_view(&backend, episodes[1].show_id, &source, &recap, Some(at)).unwrap();
+        let clips = view["moments"].as_array().unwrap();
+        let starts: Vec<_> = clips.iter().map(|c| c["lines"][0]["start"].as_f64().unwrap()).collect();
+        assert_eq!(starts, vec![220.0, 160.0, 280.0, 400.0]);
+        assert_eq!(clips[3]["end"], at);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

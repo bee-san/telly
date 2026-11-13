@@ -3,7 +3,7 @@
   import { page } from "$app/state";
   import { onDestroy, onMount, tick as nextTick } from "svelte";
   import Icon from "$lib/Icon.svelte";
-  import { call, errorText, mediaUrl, setFullscreen, setWindowTitle, type AskProgress, type CardEvent, type CastName, type ClaudeStatus, type Line, type PlayerView, type Recap, type SeekSheet } from "$lib/api";
+  import { call, errorText, mediaUrl, setFullscreen, setWindowTitle, type AskProgress, type CardEvent, type CastName, type ClaudeStatus, type Line, type Moment, type PlayerView, type Recap, type SeekSheet } from "$lib/api";
   import { arrange, createRenderer, drawTiles, filters, toggle } from "$lib/filters";
   import { clock, ownFile } from "$lib/format";
   import { app } from "$lib/state.svelte";
@@ -968,6 +968,11 @@
   const JOIN_S = 1;
   const INTRO_LEAD_MS = 400;
 
+  /** When the final spoken line in a clip has finished, including the subtitle nudge. */
+  function dialogueEnd(m: Moment): number {
+    return m.lines.reduce((end, l) => l.sign ? end : Math.max(end, l.end + m.nudgeMs / 1000), m.start);
+  }
+
   /** Runs `then` after `ms`, unless the montage has started or ended since. */
   function later(ms: number, run: number, then: () => void) {
     setTimeout(() => {
@@ -1039,7 +1044,12 @@
     const m = moments[i];
     if (!el || !m) return 0;
     const t = el.currentTime;
-    const x = Math.min(joins(i - 1) ? 1 : (t - m.start) / FADE_S, joins(i) ? 1 : (m.end - t) / FADE_S);
+    const first = m.lines.find((l) => !l.sign);
+    const lead = first ? Math.min(FADE_S, first.start + m.nudgeMs / 1000 - m.start) : FADE_S;
+    const tail = Math.min(FADE_S, m.end - dialogueEnd(m));
+    const up = joins(i - 1) || lead <= 0 ? 1 : (t - m.start) / lead;
+    const down = joins(i) ? 1 : Math.min(1, (m.end - t) / Math.max(tail, 0.001));
+    const x = Math.min(up, down);
     // Equal power: two moments crossfading are as loud between them as either is alone.
     return Math.sin((Math.min(1, Math.max(0, x)) * Math.PI) / 2);
   }
@@ -1052,6 +1062,7 @@
       if (!el) continue;
       const level = muted ? 0 : volume * gain(k) * exit;
       if (Math.abs(el.volume - level) > 0.001) el.volume = level;
+      if ((k === leaving || (bridge && k === front)) && !el.paused && el.currentTime >= moments[held[k].i]?.end) el.pause();
     }
   }
 
@@ -1091,7 +1102,7 @@
     if (!el || !m || bridge) return;
     const t = el.currentTime;
     montage.t = t;
-    if (montage.rolling && el.paused && held[front].ready && t < m.end) el.play().catch(() => {});
+    if (montage.rolling && el.paused && !el.ended && held[front].ready && t < m.end) el.play().catch(() => {});
     if (joins(montage.i)) {
       if (t >= m.end) held[front].i = ++montage.i;
       return;
@@ -1099,14 +1110,15 @@
     const n = montage.i + 1;
     if (!moments[n]) {
       // The last fades to black over its end, into the episode (on the end card, back to it).
-      if (t >= m.end - (ended ? 0 : BRIDGE_IN_MS / 1000)) endMontage(true);
+      const exit = Math.min(m.end, Math.max(dialogueEnd(m), m.end - (ended ? 0 : BRIDGE_IN_MS / 1000)));
+      if (t >= exit || el.ended) endMontage(true);
       return;
     }
     const back = decks[1 - front];
     // The next isn't ready yet: this one holds its last frame, its sound faded, till it is.
     if (t >= m.end && !el.paused) el.pause();
     if (!back || held[1 - front].i !== n || !held[1 - front].ready) return;
-    if (back.paused && t >= m.end - FADE_S) back.play().catch(() => {});
+    if (back.paused && (t >= Math.min(m.end, Math.max(dialogueEnd(m), m.end - FADE_S)) || el.ended)) back.play().catch(() => {});
     if (!back.paused && back.currentTime >= moments[n].start + LEAD_S) swap();
   }
 
@@ -1803,7 +1815,7 @@
         {#each [0, 1] as k (k)}
           <!-- svelte-ignore a11y_media_has_caption -->
           <video bind:this={decks[k]} src={deckSrc[k] || undefined} preload="auto" class:front={front === k} class:leaving={leaving === k}
-            onloadedmetadata={() => seekDeck(k)} onseeked={() => seeked(k)} ontimeupdate={montageTick} onerror={() => endMontage(false)}></video>
+            onloadedmetadata={() => seekDeck(k)} onseeked={() => seeked(k)} ontimeupdate={montageTick} onended={montageTick} onerror={() => endMontage(false)}></video>
         {/each}
       </div>
       <div class="montage-top">

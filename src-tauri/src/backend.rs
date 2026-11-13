@@ -878,7 +878,7 @@ impl Backend {
             "needsModel": listener.is_none() && tools.whisper.is_some(),
             "maker": listener.map_or("Whisper", |l| l.name()),
         });
-        Ok(json!({ "card": card, "episodes": rows, "activity": self.activity(), "whisper": whisper, "wordsError": words_error }))
+        Ok(json!({ "card": card, "episodes": rows, "activity": self.activity(), "whisper": whisper, "wordsError": words_error, "completion": self.db.show_completion(id)? }))
     }
 
     fn scan(&self, folder: &str) -> Result<Value> {
@@ -1342,10 +1342,10 @@ impl Backend {
         let episode = self.db.episode(a.id)?.ok_or_else(|| anyhow!("That episode isn’t in Telly any more"))?;
         let show = self.db.show(episode.show_id)?.ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?;
         let now = Instant::now();
-        let mut became_watched = false;
-        let mut rewatched = false;
+        let mut finished = false;
         let duration = if episode.duration > 0.0 { episode.duration } else { 0.0 };
         let watched_from = episode.ending_at.filter(|e| *e > duration * 0.5).unwrap_or(duration * 0.9);
+        let at_end = duration > 0.0 && a.position >= watched_from;
         {
             let mut guard = self.playing.lock().map_err(|_| anyhow!("busy"))?;
             if guard.as_ref().is_none_or(|p| p.episode_id != a.id) {
@@ -1407,13 +1407,6 @@ impl Backend {
             if a.playing && p.from.is_none() {
                 p.from = Some(a.position);
             }
-            // Watched to its end again: a rewatch (for AniList), once a sitting that played up to there.
-            if duration > 0.0 && a.position >= watched_from && !p.reached_end {
-                p.reached_end = true;
-                if episode.watched_at.is_some() && p.from.is_some_and(|from| from < watched_from) {
-                    rewatched = self.db.add_watch(a.id).is_ok();
-                }
-            }
             p.position = a.position;
             p.playing = a.playing;
             p.at = now;
@@ -1426,18 +1419,16 @@ impl Backend {
                 self.db.save_position(a.id, a.position)?;
                 p.saved_at = now;
             }
+            if at_end && (!p.reached_end || episode.watched_at.is_none()) {
+                let played = !p.reached_end && p.from.is_some_and(|from| from < watched_from);
+                finished = self.db.finish_episode(a.id, played)?;
+                p.reached_end = true;
+            }
         }
-        if episode.watched_at.is_none() && duration > 0.0 && a.position >= watched_from {
-            self.db.set_watched(a.id, true)?;
-            // Played, so a watch for AniList's rewatches; marked watched by hand, it isn't one.
-            let _ = self.db.add_watch(a.id);
-            became_watched = true;
+        if finished {
             self.jobs.poke();
         }
-        if rewatched {
-            self.jobs.poke();
-        }
-        Ok(json!({ "events": self.events_since(a.since), "watched": became_watched || episode.watched_at.is_some() }))
+        Ok(json!({ "events": self.events_since(a.since), "watched": at_end || episode.watched_at.is_some() }))
     }
 
     fn status(&self) -> Value {

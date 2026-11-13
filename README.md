@@ -17,6 +17,7 @@ An anime player for learning Japanese, for Windows. Point it at a folder of rips
 - finds a word in every line it's said in across your library, the lines you can read first, and plays the scene around each
 - recommends anime to watch next, from what AniList's users recommend to people who liked the shows in your library
 - logs what you watch for [Tidepool](https://github.com/bee-san/tidepool), and on your AniList list once you've signed in
+- shows when you first finished each show or film and the dates you completed full rewatches, on its page in the Library
 
 The design, plans and build order are in the [design artifact](https://claude.ai/artifact/VbgPYuAenU9pXpGiVTWGjn).
 

@@ -80,6 +80,8 @@
   const card = $derived(view?.card ?? null);
   const st = $derived(card ? statusOf(card) : null);
   const next = $derived(card?.next ?? null);
+  const completion = $derived(view?.completion);
+  const date = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
 
   function play(ep: { id: number; mediaState: string }) {
     if (ep.mediaState === "ready") goto(`/watch?ep=${ep.id}`);
@@ -215,6 +217,28 @@
           {#if !card.movie}· {card.episodes}{card.anilistEpisodes ? ` of ${card.anilistEpisodes}` : ""} episodes here{/if}
         </p>
         <p class="sp-folder mono">{card.folder}</p>
+        {#if completion && (completion.finishedAt !== null || completion.rewatches.length)}
+          <dl class="sp-history">
+            {#if completion.finishedAt !== null}
+              <div>
+                <dt>Finished</dt>
+                <dd><time datetime={new Date(completion.finishedAt).toISOString()}>{date.format(completion.finishedAt)}</time></dd>
+              </div>
+            {/if}
+            {#if completion.rewatches.length}
+              <div>
+                <dt>Full rewatches</dt>
+                <dd>
+                  <ul role="list">
+                    {#each completion.rewatches as rewatchedAt}
+                      <li><time datetime={new Date(rewatchedAt).toISOString()}>{date.format(rewatchedAt)}</time></li>
+                    {/each}
+                  </ul>
+                </dd>
+              </div>
+            {/if}
+          </dl>
+        {/if}
         <div class="sp-actions">
           {#if next}
             <button type="button" class="btn" disabled={!next.ready} onclick={() => next && play({ id: next.episodeId, mediaState: next.mediaState })}>
@@ -320,6 +344,12 @@
   .sp-head h2 { font: 800 30px/1.2 var(--font-jp-title); letter-spacing: .02em; }
   .sp-meta { font-size: 13.5px; color: var(--ink-2); margin-top: 4px; }
   .sp-folder { font-size: 12px; color: var(--ink-3); margin-top: 2px; overflow-wrap: anywhere; }
+  .sp-history { display: grid; gap: 3px; margin: 8px 0 0; font-size: 13px; color: var(--ink-2); }
+  .sp-history > div, .sp-history ul { display: flex; flex-wrap: wrap; gap: 2px 9px; }
+  .sp-history dt { font-weight: 600; color: var(--ink); }
+  .sp-history dd, .sp-history ul { margin: 0; padding: 0; }
+  .sp-history li { list-style: none; white-space: nowrap; }
+  .sp-history li + li::before { content: "·"; color: var(--ink-3); margin-right: 9px; }
   .sp-actions { display: flex; align-items: center; gap: 12px; margin-top: 16px; flex-wrap: wrap; }
   .sp-state { display: inline-flex; align-items: center; gap: 9px; font-size: 13px; color: var(--ink-2); }
   .sp-state .bar { width: 110px; }

@@ -1,6 +1,6 @@
 //! telly.sqlite, in %LOCALAPPDATA%\Telly: your shows, their episodes, where
-//! you are in each, subtitle and conversion state, settings and the queue of
-//! cards waiting for their picture and audio.
+//! you are in each, when you finished or rewatched a show, subtitle and conversion
+//! state, settings and the queue of cards waiting for their picture and audio.
 //!
 //! The schema is a list of migrations; PRAGMA user_version counts how many
 //! have run. Add new ones to the end, never edit old ones.
@@ -10,6 +10,7 @@ use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
@@ -134,6 +135,24 @@ CREATE TABLE rewatches (
   at          INTEGER NOT NULL
 );
 CREATE INDEX rewatches_by_episode ON rewatches (episode_id);
+", "
+-- Give the episode watches a stable order for counting complete passes through a show.
+ALTER TABLE rewatches RENAME TO old_rewatches;
+CREATE TABLE rewatches (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  episode_id   INTEGER NOT NULL REFERENCES episodes (id) ON DELETE CASCADE,
+  at           INTEGER NOT NULL,
+  first_watch  INTEGER NOT NULL DEFAULT 0 -- a newly watched episode is not a rewatch
+);
+INSERT INTO rewatches (id, episode_id, at) SELECT rowid, episode_id, at FROM old_rewatches ORDER BY rowid;
+DROP TABLE old_rewatches;
+CREATE INDEX rewatches_by_episode ON rewatches (episode_id);
+CREATE TABLE show_completions (
+  show_id   INTEGER NOT NULL REFERENCES shows (id) ON DELETE CASCADE,
+  watch_id  INTEGER NOT NULL, -- last episode watch included in this pass, or zero for older marks
+  at        INTEGER NOT NULL,
+  PRIMARY KEY (show_id, watch_id)
+);
 "];
 
 /// The next id for a show or an episode: after every one given out, removed or not.
@@ -335,13 +354,22 @@ pub fn open_migrated(path: &Path, migrations: &[&str]) -> Result<Connection> {
     Ok(conn)
 }
 
+/// The first finish and later full rewatches of a show, newest rewatch first.
+#[derive(Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShowCompletion {
+    pub finished_at: Option<i64>,
+    pub rewatches: Vec<i64>,
+}
+
 pub struct Db {
     conn: Mutex<Connection>,
 }
 
 impl Db {
     pub fn open(path: &Path) -> Result<Self> {
-        let conn = open_migrated(path, MIGRATIONS)?;
+        let mut conn = open_migrated(path, MIGRATIONS)?;
+        Self::backfill_show_completions(&mut conn)?;
         // The Library, the workers' choice of work and every page ask the same
         // few queries again and again: each is parsed once.
         conn.set_prepared_statement_cache_capacity(64);
@@ -491,15 +519,16 @@ impl Db {
     }
 
     pub fn set_show_anilist(&self, id: i64, s: &NewShow) -> Result<()> {
-        let conn = self.conn()?;
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
         // AniSkip's openings were for the anime it was before.
-        conn.execute("DELETE FROM openings WHERE episode_id IN (SELECT id FROM episodes WHERE show_id = ?1)", params![id])?;
+        tx.execute("DELETE FROM openings WHERE episode_id IN (SELECT id FROM episodes WHERE show_id = ?1)", params![id])?;
         // So were its season folders' own AniList and Jimaku entries, found by
         // its title, and the numbering its Jimaku files taught them.
         for prefix in ["anilist.group", "jimaku.group", "subs.numbering"] {
-            conn.execute("DELETE FROM settings WHERE key LIKE ?1", params![format!("{prefix}.{id}.%")])?;
+            tx.execute("DELETE FROM settings WHERE key LIKE ?1", params![format!("{prefix}.{id}.%")])?;
         }
-        conn.execute(
+        tx.execute(
             "UPDATE shows SET title = ?2, title_native = ?3, title_english = ?4, title_romaji = ?5, anilist_id = ?6,
                anilist_episodes = ?7, format = ?8, year = ?9, cover_url = ?10, cover_color = ?11, jimaku_id = NULL
              WHERE id = ?1",
@@ -517,6 +546,10 @@ impl Db {
                 s.cover_color
             ],
         )?;
+        if Self::show_completion_cursor(&tx, id)?.is_none() {
+            Self::record_show_completions(&tx, id, true)?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -766,11 +799,24 @@ impl Db {
         Ok(())
     }
 
-    /// An episode played to its end, the first time or again. Kept in
-    /// rewatches; one marked watched by hand isn't, as it wasn't played then.
-    pub fn add_watch(&self, id: i64) -> Result<()> {
-        self.conn()?.execute("INSERT INTO rewatches (episode_id, at) VALUES (?1, ?2)", params![id, now_ms()])?;
-        Ok(())
+    /// Keeps an episode finish and any resulting show finish together.
+    pub fn finish_episode(&self, id: i64, played_from_before_end: bool) -> Result<bool> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        let at = now_ms();
+        let first = Self::mark_watched(&tx, id, at)?;
+        let played = first || played_from_before_end;
+        if played {
+            tx.execute(
+                "INSERT INTO rewatches (episode_id, at, first_watch)
+                 VALUES (?1, ?2, ?3 AND NOT EXISTS (SELECT 1 FROM rewatches WHERE episode_id = ?1))",
+                params![id, at, first],
+            )?;
+            let show = tx.query_row("SELECT show_id FROM episodes WHERE id = ?1", [id], |r| r.get(0))?;
+            Self::record_show_completions(&tx, show, false)?;
+        }
+        tx.commit()?;
+        Ok(played)
     }
 
     /// Every time one of a show's episodes was played to its end since `since`
@@ -784,14 +830,102 @@ impl Db {
         Ok(rows)
     }
 
+    fn mark_watched(conn: &Connection, id: i64, at: i64) -> Result<bool> {
+        Ok(conn.execute("UPDATE episodes SET watched_at = ?2, position = 0 WHERE id = ?1 AND watched_at IS NULL", params![id, at])? == 1)
+    }
+
     pub fn set_watched(&self, id: i64, watched: bool) -> Result<()> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
         if watched {
-            self.conn()?.execute(
-                "UPDATE episodes SET watched_at = COALESCE(watched_at, ?2), position = 0 WHERE id = ?1",
-                params![id, now_ms()],
-            )?;
+            if Self::mark_watched(&tx, id, now_ms())? {
+                let show = tx.query_row("SELECT show_id FROM episodes WHERE id = ?1", [id], |r| r.get(0))?;
+                Self::record_show_completions(&tx, show, false)?;
+            } else {
+                tx.execute("UPDATE episodes SET position = 0 WHERE id = ?1", [id])?;
+            }
         } else {
-            self.conn()?.execute("UPDATE episodes SET watched_at = NULL, position = 0 WHERE id = ?1", params![id])?;
+            tx.execute("UPDATE episodes SET watched_at = NULL, position = 0 WHERE id = ?1", [id])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The dates of a show's first finish and each full rewatch.
+    pub fn show_completion(&self, show: i64) -> Result<ShowCompletion> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare_cached("SELECT at FROM show_completions WHERE show_id = ?1 ORDER BY watch_id")?;
+        let mut dates = stmt.query_map([show], |r| r.get(0))?;
+        let finished_at = dates.next().transpose()?;
+        let mut rewatches = dates.collect::<rusqlite::Result<Vec<_>>>()?;
+        rewatches.reverse();
+        Ok(ShowCompletion { finished_at, rewatches })
+    }
+
+    /// Recovers show dates once from the episode marks and playback history older Telly kept.
+    fn backfill_show_completions(conn: &mut Connection) -> Result<()> {
+        let tx = conn.transaction()?;
+        let done = tx.query_row("SELECT 1 FROM settings WHERE key = 'show.completions'", [], |_| Ok(())).optional()?.is_some();
+        if !done {
+            let shows = {
+                let mut stmt = tx.prepare("SELECT DISTINCT show_id FROM episodes WHERE watched_at IS NOT NULL")?;
+                stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?
+            };
+            for show in shows {
+                Self::record_show_completions(&tx, show, true)?;
+            }
+            tx.execute("INSERT INTO settings (key, value) VALUES ('show.completions', 'true')", [])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn show_completion_cursor(conn: &Connection, show: i64) -> Result<Option<i64>> {
+        Ok(conn.query_row("SELECT MAX(watch_id) FROM show_completions WHERE show_id = ?1", [show], |r| r.get(0))?)
+    }
+
+    /// Keeps one date for each pass through every episode, or each finish of a film.
+    fn record_show_completions(conn: &Connection, show: i64, backfill: bool) -> Result<()> {
+        let (movie, count, watched, first, last, missing): (bool, i64, i64, Option<i64>, Option<i64>, bool) = conn.query_row(
+            "SELECT s.format = 'MOVIE', COUNT(e.id), COUNT(e.watched_at), MIN(e.watched_at), MAX(e.watched_at),
+                    COUNT(DISTINCT e.number) < COALESCE(s.anilist_episodes, 0)
+               FROM shows s LEFT JOIN episodes e ON e.show_id = s.id WHERE s.id = ?1 GROUP BY s.id",
+            [show],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+        )?;
+        if count == 0 || (!movie && missing) {
+            return Ok(());
+        }
+        let insert = |watch_id, at| conn.execute("INSERT INTO show_completions (show_id, watch_id, at) VALUES (?1, ?2, ?3)", params![show, watch_id, at]);
+        let after = if let Some(previous) = Self::show_completion_cursor(conn, show)? {
+            previous
+        } else {
+            let Some(finished) = (if movie { first } else { last.filter(|_| watched == count) }) else { return Ok(()) };
+            // Before show history, the watched mark and its episode watch were written separately.
+            // The first watch just after that episode's mark belongs to the first pass too.
+            let cursor = conn.query_row(
+                "SELECT COALESCE(MAX(r.id), 0) FROM rewatches r JOIN episodes e ON e.id = r.episode_id
+                  WHERE e.show_id = ?1 AND (NOT ?3 OR r.at <= ?2 OR
+                    (e.watched_at <= ?2 AND r.at BETWEEN e.watched_at AND e.watched_at + 1000
+                     AND r.id = (SELECT MIN(id) FROM rewatches WHERE episode_id = e.id)))",
+                params![show, finished, backfill],
+                |r| r.get(0),
+            )?;
+            insert(cursor, finished)?;
+            cursor
+        };
+        let mut stmt = conn.prepare_cached(
+            "SELECT r.id, r.episode_id, r.at FROM rewatches r JOIN episodes e ON e.id = r.episode_id
+              WHERE e.show_id = ?1 AND r.id > ?2 AND (?3 OR NOT r.first_watch) ORDER BY r.id",
+        )?;
+        let mut seen = HashSet::new();
+        for row in stmt.query_map(params![show, after, movie], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))? {
+            let (id, episode, at) = row?;
+            seen.insert(episode);
+            if movie || seen.len() as i64 == count {
+                insert(id, at)?;
+                seen.clear();
+            }
         }
         Ok(())
     }
@@ -963,6 +1097,73 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         (Db::open(&dir.join("telly.sqlite")).unwrap(), dir)
+    }
+
+    #[test]
+    fn keeps_a_show_rewatch_only_after_every_episode_finishes_again() {
+        let (db, dir) = temp_db("show-completions");
+        let episode = |number| NewEpisode { number, path: format!("{number}.mkv"), size: 1, duration: 1400.0 };
+        let show = db.add_show(&NewShow { folder: "Series".into(), episodes: vec![episode(1), episode(2)], ..Default::default() }).unwrap();
+        let episodes = db.episodes(show).unwrap();
+        let (first, second) = (episodes[0].id, episodes[1].id);
+        db.finish_episode(second, true).unwrap();
+        assert_eq!(db.show_completion(show).unwrap(), ShowCompletion::default());
+        db.finish_episode(first, true).unwrap();
+        let finished = db.show_completion(show).unwrap().finished_at.unwrap();
+
+        for _ in 0..2 {
+            db.finish_episode(second, true).unwrap();
+        }
+        assert!(db.show_completion(show).unwrap().rewatches.is_empty());
+        db.set_watched(first, false).unwrap();
+        db.set_watched(first, true).unwrap();
+        assert!(db.show_completion(show).unwrap().rewatches.is_empty());
+        db.finish_episode(first, true).unwrap();
+        assert_eq!(db.show_completion(show).unwrap().rewatches.len(), 1);
+
+        db.add_episodes(show, &[episode(3)]).unwrap();
+        let third = db.episodes(show).unwrap()[2].id;
+        for id in [first, second, third] {
+            db.finish_episode(id, true).unwrap();
+        }
+        assert_eq!(db.show_completion(show).unwrap().rewatches.len(), 1);
+        db.finish_episode(third, true).unwrap();
+        let history = db.show_completion(show).unwrap();
+        assert_eq!(history.finished_at, Some(finished));
+        assert_eq!(history.rewatches.len(), 2);
+        drop(db);
+
+        let db = Db::open(&dir.join("telly.sqlite")).unwrap();
+        assert_eq!(db.show_completion(show).unwrap(), history);
+        db.remove_show(show).unwrap();
+        assert_eq!(db.show_completion(show).unwrap(), ShowCompletion::default());
+        drop(db);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn recovers_a_films_finish_and_real_rewatch_from_an_older_database() {
+        let dir = std::env::temp_dir().join(format!("telly-old-film-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("telly.sqlite");
+        let old = open_migrated(&path, &MIGRATIONS[..MIGRATIONS.len() - 1]).unwrap();
+        old.execute_batch(
+            "INSERT INTO shows (id, folder, title, format, added_at) VALUES (1, 'Film', 'Film', 'MOVIE', 0);
+             INSERT INTO episodes (id, show_id, number, path, watched_at) VALUES (1, 1, 1, 'a.mkv', 10000), (2, 1, 2, 'b.mkv', NULL);
+             INSERT INTO rewatches (episode_id, at) VALUES (1, 10001), (1, 30000);",
+        ).unwrap();
+        drop(old);
+
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.show_completion(1).unwrap(), ShowCompletion { finished_at: Some(10000), rewatches: vec![30000] });
+        db.finish_episode(2, true).unwrap();
+        let history = db.show_completion(1).unwrap();
+        assert_eq!(history.finished_at, Some(10000));
+        assert_eq!(history.rewatches.len(), 2);
+        assert_eq!(history.rewatches[1], 30000);
+        drop(db);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -190,6 +190,8 @@ export interface ShowView {
   card: ShowCard;
   episodes: EpisodeRow[];
   activity: Activity;
+  /** First completion and full rewatches, newest first, in Unix milliseconds. */
+  completion: { finishedAt: number | null; rewatches: number[] };
   /**
    * Whether subtitles can be made (by a model on OpenRouter, or whisper.cpp
    * here with a model), whether whisper.cpp only lacks its model, and who

@@ -131,6 +131,9 @@ pub fn model(backend: &Backend) -> Option<String> {
 /// Explain's effort: low answers in about a third of the time.
 pub const EFFORT: &str = "low";
 
+/// The prompt version of a saved explanation.
+const LINE_ANSWER_VERSION: &str = "2";
+
 /// English, or simple Japanese for when you'd rather not read English.
 fn answer_in(backend: &Backend) -> &'static str {
     if backend.db.setting_str("claude.language") == "ja" { "simple Japanese" } else { "English" }
@@ -158,8 +161,7 @@ fn names_line(backend: &Backend, show: &Show, text: &str) -> String {
     if named.is_empty() { String::new() } else { format!("\nCharacters named in them, from AniList: {}.", named.join(", ")) }
 }
 
-/// `lines[index]` for a prompt: the line, what came just before it, and the
-/// next two lines.
+/// `lines[index]` for a prompt, with the dialogue just before it.
 fn line_in_context(show_title: &str, number: i64, lines: &[Line], index: usize, names: &str) -> String {
     let line = &lines[index];
     let before: Vec<String> = spoken(&lines[..index])
@@ -167,25 +169,22 @@ fn line_in_context(show_title: &str, number: i64, lines: &[Line], index: usize, 
         .map(|(_, l)| one_line(&l.text))
         .collect();
     let before = &before[before.len().saturating_sub(12)..];
-    let after: Vec<String> = spoken(&lines[index + 1..]).take(2).map(|(_, l)| one_line(&l.text)).collect();
     format!(
         "I’m watching {show_title}, Episode {number}, an anime in Japanese, with Japanese subtitles.{names}\n\n\
          The subtitles just before the line, oldest first:\n<before>\n{before}\n</before>\n\n\
-         The line:\n<line>{line}</line>\n\n\
-         The next subtitles:\n<after>\n{after}\n</after>\n\n",
+         The line:\n<line>{line}</line>\n\n",
         before = before.join("\n"),
         line = one_line(&line.text),
-        after = after.join("\n"),
     )
 }
 
 /// The prompt for explaining `lines[index]`.
 pub fn explain_prompt(show_title: &str, number: i64, lines: &[Line], index: usize, names: &str, answer_in: &str) -> String {
     format!(
-        "{}Explain the line for a learner, in {answer_in}. First a natural translation of it, on a line of its own. \
+        "{}Explain the line for a learner, in {answer_in}. Start immediately with the natural translation itself, on a line of its own. \
          Then, one per line, the words, grammar and expressions a learner might trip on, each as \"term (reading): explanation\", \
          with the reading in hiragana for words with kanji. Leave out what a beginner already knows. \
-         Use the other subtitles only to understand the line. Keep it under 160 words.",
+         Give just the translation and learning notes. Use only the subtitles in this request as scene context. Keep it under 160 words.",
         line_in_context(show_title, number, lines, index, names)
     )
 }
@@ -208,7 +207,7 @@ pub fn follow_up_prompt(context: &str, explanation: &str, thread: &[Exchange], q
     format!(
         "{context}You explained the line to me like this:\n<explanation>\n{}\n</explanation>\n\n{earlier}\
          Now I ask:\n<question>{}</question>\n\n\
-         Answer the question in {answer_in}, for a learner, in under 120 words. Use the other subtitles only to understand the line.",
+         Answer the question directly in {answer_in}, for a learner, in under 120 words. Use only the subtitles in this request as scene context.",
         explanation.trim(),
         question.trim(),
     )
@@ -222,7 +221,7 @@ pub fn follow_up(backend: &Arc<Backend>, episode_id: i64, index: usize, explanat
     if index >= lines.len() {
         return Err(anyhow!("That line isn’t in the subtitles any more"));
     }
-    let near: String = lines[index.saturating_sub(12)..(index + 3).min(lines.len())].iter().map(|l| l.text.as_str()).collect();
+    let near: String = lines[index.saturating_sub(12)..=index].iter().map(|l| l.text.as_str()).collect();
     let context = line_in_context(&show_title(&show), episode.number, &lines, index, &names_line(backend, &show, &near));
     let prompt = follow_up_prompt(&context, explanation, thread, question, answer_in(backend));
     let id = backend.asks.start(prompt, model(backend), EFFORT, true, |_| {});
@@ -237,16 +236,16 @@ pub fn explain(backend: &Arc<Backend>, episode_id: i64, index: usize) -> Result<
     let line = lines.get(index).ok_or_else(|| anyhow!("That line isn’t in the subtitles any more"))?;
     let about = one_line(&line.text);
     if let Some(kept) = backend.db.answer(episode_id, "line", index as i64)? {
-        if kept.about == about {
+        if kept.about == about && kept.extra == LINE_ANSWER_VERSION {
             return Ok(json!({ "text": kept.text, "done": true, "line": about }));
         }
     }
-    let context: String = lines[index.saturating_sub(12)..(index + 3).min(lines.len())].iter().map(|l| l.text.as_str()).collect();
+    let context: String = lines[index.saturating_sub(12)..=index].iter().map(|l| l.text.as_str()).collect();
     let prompt = explain_prompt(&show_title(&show), episode.number, &lines, index, &names_line(backend, &show, &context), answer_in(backend));
     let keeper = backend.clone();
     let kept_about = about.clone();
     let id = backend.asks.start(prompt, model(backend), EFFORT, true, move |answer| {
-        let _ = keeper.db.save_answer(episode_id, "line", index as i64, &kept_about, answer, "");
+        let _ = keeper.db.save_answer(episode_id, "line", index as i64, &kept_about, answer, LINE_ANSWER_VERSION);
     });
     Ok(json!({ "ask": id, "line": about }))
 }
@@ -745,7 +744,7 @@ mod tests {
         let p = explain_prompt("『FAIRY TAIL』", 3, &lines, 2, "", "English");
         assert!(p.contains("<line>腹減った…</line>"));
         assert!(p.contains("<before>\nナツ！\nなんだよ\n</before>"));
-        assert!(p.contains("<after>\nまた？\nうん\n</after>"));
+        assert!(!p.contains("また？") && !p.contains("うん"));
         assert!(p.contains("in English") && p.contains("Episode 3"));
     }
 
@@ -756,6 +755,7 @@ mod tests {
         let thread = vec![Exchange { q: "Why no は?".into(), a: "It’s dropped in casual speech.".into() }];
         let p = follow_up_prompt(&context, "I’m hungry…\n腹 (はら): belly", &thread, " Is 腹 rude? ", "English");
         assert!(p.contains("<line>腹減った…</line>") && p.contains("<before>\nナツ！\n</before>"));
+        assert!(!p.contains("また？"));
         assert!(p.contains("<explanation>\nI’m hungry…\n腹 (はら): belly\n</explanation>"));
         assert!(p.contains("<question>Why no は?</question>\nYou answered:\n<answer>\nIt’s dropped in casual speech.\n</answer>"));
         assert!(p.contains("Now I ask:\n<question>Is 腹 rude?</question>") && p.contains("in English"));

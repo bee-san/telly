@@ -124,7 +124,7 @@
 <div class="modal-bg" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
   <div class="scene" role="dialog" aria-label="Scene" aria-modal="true" tabindex="-1" bind:this={sheet}>
     <div class="sc-head">
-      <span class="sc-title" lang="ja">{show?.titleNative || show?.title || ""}</span>
+      <span class="sc-title" lang={show?.titleNative ? "ja" : undefined} title={show?.titleNative || show?.title}>{show?.titleNative || show?.title || ""}</span>
       {#if found}<span class="sc-where">{label ? `${label} · ` : ""}{clock(found.start)}</span>{/if}
       <span class="grow"></span>
       <button type="button" class="pbtn" aria-label="Close" title="Close (Esc)" onclick={onclose}><Icon name="x" /></button>

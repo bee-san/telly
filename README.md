@@ -103,11 +103,13 @@ The 10 episodes of Cyberpunk: Edgerunners season 2 (5,300 lines, 3,300 different
 
 `cargo run --profile measure --example words_check -- <data folder> <port> <dictionaries folder> <subtitle files>` times it against a copy of Telly's Hachidori open in a browser (see the example for how; `--shares` times the Library's pass).
 
-## Searching lines
+## Searching shows and lines
 
-Text typed in the Library's search that has Japanese in it is also looked for in the subtitles. Lines are listed under their shows, each with its picture and episode; pressing one plays its scene over the Library (the line with the one before and after it), and **Watch from here** opens the player there.
+Hover over a show title to read the whole name. Search in the Library by Japanese title, English title or romaji. Telly uses AniList's titles and can also work out a reading from the Japanese title.
 
-- **A word** finds every form of itself: 食べる, たべる and 食べた all find 食べた, 食べて and 食べられる, and the whole form is marked. Kana find it in either script: だめ finds ダメ. It goes by the words premining saves for each episode. A name finds itself with an honorific after it too (フリーレン finds フリーレン様), which Telly's character dictionary makes one word.
+Search for Japanese words in the same box, in Japanese or romaji. Type `gakko` for 学校 or `ramen` for ラーメン. Lines are listed under their shows, each with its picture and episode. Press one to play its scene over the Library (the line with the one before and after it), or **Watch from here** to open the player there.
+
+- **A word** finds every form of itself. `taberu`, 食べる, たべる and 食べた all find 食べた, 食べて and 食べられる, and the whole form is marked. Kana find it in either script, so だめ finds ダメ. It goes by the words premining saves for each episode. A name finds itself with an honorific after it too (フリーレン finds フリーレン様), which Telly's character dictionary makes one word.
 - **Anything else** (a phrase, a name no episode has as a word) is looked for in the lines' text. So is a word premining leaves out (俺, 二人, ありがとう), where it's written outside the words it saved, and so are the lines of episodes whose words aren't saved yet, listed after the rest. A single kana isn't: it's in nearly every line.
 - **The lines you can read first** lead: those that are said (not sung, not a caption's note), then those with the fewest other words you don't know. A show lists up to 100 of its lines, with how many it has.
 - The lines are kept in `telly-lines.sqlite`, made from the files in `subtitles` when they sync and in a pass as Telly starts (about three minutes for 2,700 episodes the first time).

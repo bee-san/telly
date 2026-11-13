@@ -57,10 +57,13 @@
     };
   });
 
+  let titleMatches = $state.raw<{ q: string; ids: Set<number> } | null>(null);
+
   function matches(s: ShowCard): boolean {
     const t = q.trim().toLowerCase();
     if (!t) return true;
-    return [s.title, s.titleNative, s.titleEnglish, s.titleRomaji].join(" ").toLowerCase().includes(t);
+    return [s.title, s.titleNative, s.titleEnglish, s.titleRomaji].some((title) => title.toLowerCase().includes(t))
+      || (titleMatches?.q === q.trim() && titleMatches.ids.has(s.id));
   }
 
 
@@ -121,10 +124,16 @@
       found = [];
       totals = {};
       foundFor = "";
+      titleMatches = null;
       return;
     }
     const timer = setTimeout(async () => {
-      const answer = await call<LineSearch>("searchLines", { q: text }).catch((): LineSearch => ({ lines: [], shows: {} }));
+      const shows = call<number[]>("searchShows", { q: text }).catch(() => []);
+      const subtitles = call<LineSearch>("searchLines", { q: text }).catch((): LineSearch => ({ lines: [], shows: {} }));
+      const ids = await shows;
+      if (q.trim() !== text) return;
+      titleMatches = { q: text, ids: new Set(ids) };
+      const answer = await subtitles;
       if (q.trim() !== text) return;
       found = answer.lines;
       totals = answer.shows;
@@ -262,13 +271,13 @@
         {#each watching as s (s.id)}
           {@const st = statusOf(s)}
           <div class="wcard card" role="presentation" onpointerenter={() => ahead(s)} oncontextmenu={(e) => context(e, s)}>
-            <button type="button" class="hit" onclick={() => open(s)} aria-label="{s.title}. {st.text}. {st.sub}"></button>
+            <button type="button" class="hit" onclick={() => open(s)} aria-label="{s.title}. {st.text}. {st.sub}" title={s.title}></button>
             <span class="wcv">
               <Cover cover={s.cover} color={s.coverColor} native={s.titleNative} title={s.title} caption={s.coverCaption} />
               <span class="wplay"><Icon name="play" /></span>
             </span>
             <span class="w-body">
-              <a class="w-jp title" lang="ja" href="/show?id={s.id}">{s.titleNative || s.title}</a>
+              <a class="w-jp title" lang={s.titleNative ? "ja" : undefined} href="/show?id={s.id}" title={s.titleNative || s.title}>{s.titleNative || s.title}</a>
               <span class="w-en">{s.titleNative ? s.title : ""}</span>
               <span class="w-next">{st.text}</span>
               <span class="w-sub">{st.sub}</span>
@@ -308,7 +317,7 @@
           <div class="lcard card" role="presentation" onpointerenter={() => ahead(s)} oncontextmenu={(e) => context(e, s)}>
             <button type="button" class="hit" onclick={() => open(s)} aria-label="{s.title}. {st.text}. {st.sub}"></button>
             <Cover cover={s.cover} color={s.coverColor} native={s.titleNative} title={s.title} caption={s.coverCaption} />
-            <a class="l-title title" href="/show?id={s.id}">{s.title}</a>
+            <a class="l-title title" href="/show?id={s.id}" title={s.title}>{s.title}</a>
             <span class="l-status" class:ok={st.ok}>{st.text}</span>
             <span class="l-sub">{st.sub}</span>
             {#if s.wordsUses}<span class="l-known">{Math.round((100 * s.wordsKnown) / s.wordsUses)}% known</span>{/if}
@@ -331,8 +340,8 @@
         <section class="lgroup">
           <div class="lg-head">
             <span class="lg-cv"><Cover cover={g.show.cover} color={g.show.coverColor} native={g.show.titleNative} title={g.show.title} /></span>
-            <a class="lg-title" lang={g.show.titleNative ? "ja" : undefined} href="/show?id={g.show.id}">{g.show.titleNative || g.show.title}</a>
-            <span class="lg-sub">{g.show.titleNative ? `${g.show.title} · ` : ""}{plural(g.total, "line")}</span>
+            <a class="lg-title" lang={g.show.titleNative ? "ja" : undefined} href="/show?id={g.show.id}" title={g.show.titleNative || g.show.title}>{g.show.titleNative || g.show.title}</a>
+            <span class="lg-sub" title={g.show.titleNative ? g.show.title : undefined}>{g.show.titleNative ? `${g.show.title} · ` : ""}{plural(g.total, "line")}</span>
           </div>
           <div class="lrows">
             {#each listedOf(g) as l (`${l.episodeId} ${l.line}`)}

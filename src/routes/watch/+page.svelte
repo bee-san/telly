@@ -1570,7 +1570,7 @@
   <div class="ptop">
     <button type="button" class="pbtn" aria-label="Back to library" title="Back to library" onclick={() => leave("/")}><Icon name="back" /></button>
     {#if view}
-      <span class="ptitle"><b>{view.show.title}</b><span>Episode {view.episode.number} of {view.count}</span></span>
+      <span class="ptitle"><b title={view.show.title}>{view.show.title}</b><span>Episode {view.episode.number} of {view.count}</span></span>
       <span class="grow"></span>
       <span class="subnote" title={view.episode.subsFile}>
         {#if view.episode.subsState === "synced"}<Icon name="check" />{/if}{syncNote}{#if nudge !== 0} · {nudge > 0 ? "+" : ""}{(nudge / 1000).toFixed(1)} s{/if}

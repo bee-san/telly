@@ -1652,6 +1652,7 @@ impl Backend {
                 &arg::<String>(&args, "question")?,
             ),
             "searchLines" => search::find(self, &arg::<String>(&args, "q")?),
+            "searchShows" => search::matching_shows(self, &arg::<String>(&args, "q")?),
             "scene" => search::scene(self, arg(&args, "id")?, arg(&args, "line")?),
             "premine" => to_value(premine::start_list(self, arg(&args, "show")?)?),
             "premineStatus" => to_value(premine::status(self)),

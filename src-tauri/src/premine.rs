@@ -295,6 +295,17 @@ pub(crate) fn dictionary_form(text: &str) -> Option<String> {
     (is_word(first) && rest.iter().all(is_ending)).then(|| first.base.clone())
 }
 
+/// The reading of a Japanese title when there is no matching AniList spelling.
+pub(crate) fn title_reading(text: &str) -> Result<String> {
+    Ok(tokens(text)?.into_iter().map(|t| match t.surface.as_str() {
+        "は" if t.pos.first().is_some_and(|p| p == "助詞") => "わ".into(),
+        "へ" if t.pos.first().is_some_and(|p| p == "助詞") => "え".into(),
+        "を" if t.pos.first().is_some_and(|p| p == "助詞") => "お".into(),
+        _ if t.reading.is_empty() => t.surface,
+        _ => t.reading,
+    }).collect())
+}
+
 /// A word in a line: one token, or nouns that run together, which may hold a
 /// longer word than any of them.
 #[derive(Clone, Debug, PartialEq)]

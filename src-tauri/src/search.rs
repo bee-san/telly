@@ -1,5 +1,5 @@
-//! Line search: a word, found in every line it's said in across the library,
-//! with the scene around each to watch.
+//! Library search: show titles and every line a word is said in, with the
+//! scene around each to watch. Both can be searched in romaji.
 //!
 //! telly-lines.sqlite, in %LOCALAPPDATA%\Telly, holds every spoken line of
 //! every episode that has subtitles, and the line's words as premining saved
@@ -24,8 +24,8 @@
 //!   they're said close by.
 
 use crate::backend::{Backend, Served};
-use crate::db::{open_migrated, Episode};
-use crate::names::kana::{contains_japanese, contains_kanji, hira_to_kata, kata_to_hira};
+use crate::db::{open_migrated, Episode, Show};
+use crate::names::kana::{alphabet_to_kana, contains_japanese, contains_kanji, hira_to_kata, kata_to_hira};
 use crate::names::name_parser::HONORIFIC_SUFFIXES;
 use crate::premine::{self, SavedUse};
 use crate::subs::Line;
@@ -448,6 +448,127 @@ fn catch_up(backend: &Backend) -> Result<()> {
 
 // ---- Finding lines ----
 
+/// Romaji that can be read as kana, with any spaces between words removed.
+fn romaji_kana(q: &str) -> Option<String> {
+    let text = q.to_lowercase();
+    if !text.chars().all(|c| c.is_ascii_alphabetic() || c.is_whitespace() || "āīūēōâîûêô'’‘-.".contains(c)) {
+        return None;
+    }
+    let kana: String = text.split_whitespace().map(alphabet_to_kana).collect();
+    (!kana.is_empty() && !kana.chars().any(|c| c.is_ascii())).then_some(kana)
+}
+
+/// The vowel a kana ends with, for reading a long vowel written with ー.
+fn vowel(kana: char) -> Option<char> {
+    [
+        ('あ', "ぁあかがさざただなはばぱまゃやらゎわ"),
+        ('い', "ぃいきぎしじちぢにひびぴみりゐ"),
+        ('う', "ぅうくぐすずつづぬふぶぷむゅゆるゔ"),
+        ('え', "ぇえけげせぜてでねへべぺめれゑ"),
+        ('お', "ぉおこごそぞとどのほぼぽもょよろを"),
+    ].into_iter().find_map(|(v, row)| row.contains(kana).then_some(v))
+}
+
+fn lengthens(previous: char, kana: char) -> bool {
+    kana == previous || matches!((previous, kana), ('お', 'う') | ('え', 'い'))
+}
+
+/// A katakana spelling of the query, with long vowels as in ラーメン.
+fn long_katakana(kana: &str) -> String {
+    let mut previous = None;
+    let text: String = kana.chars().map(|c| {
+        let long = previous.is_some_and(|v| lengthens(v, c));
+        previous = vowel(c);
+        if long { 'ー' } else { c }
+    }).collect();
+    hira_to_kata(&text)
+}
+
+/// Readings with a long vowel left out of the romaji, as in gakko and ramen.
+fn with_unmarked_vowel(kana: &str) -> (Vec<String>, Vec<String>) {
+    let mut forms = Vec::new();
+    let mut spellings = Vec::new();
+    // Only guess omitted vowels for a word, so a long phrase doesn't need dozens of lookups.
+    if kana.chars().count() > 12 {
+        return (forms, spellings);
+    }
+    let mut chars = kana.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        let Some(v) = vowel(c) else { continue };
+        if chars.peek().is_some_and(|&(_, next)| "ぁあぃいぅうぇえぉおゃゅょ".contains(next)) {
+            continue;
+        }
+        let (before, after) = kana.split_at(at + c.len_utf8());
+        let long = format!("{before}ー{after}");
+        let kata = hira_to_kata(&long);
+        forms.extend([format!("{before}{v}{after}"), long, kata.clone()]);
+        if v == 'お' {
+            forms.push(format!("{before}う{after}"));
+        }
+        spellings.push(kata);
+    }
+    (forms, spellings)
+}
+
+/// A title's reading without punctuation, spaces or vowel length.
+fn kana_title(text: &str) -> String {
+    let mut previous = None;
+    kata_to_hira(text).to_lowercase().chars().filter(|&c| {
+        if c == 'ー' { return false; }
+        if !c.is_alphanumeric() {
+            previous = None;
+            return false;
+        }
+        let long = previous.is_some_and(|v| lengthens(v, c));
+        previous = vowel(c);
+        !long
+    }).collect()
+}
+
+/// A romaji title as it may be typed without spaces or accents.
+fn latin_title(text: &str) -> String {
+    text.to_lowercase().chars().filter(|c| c.is_alphanumeric()).map(|c| match c {
+        'ā' | 'â' => 'a',
+        'ī' | 'î' => 'i',
+        'ū' | 'û' => 'u',
+        'ē' | 'ê' => 'e',
+        'ō' | 'ô' => 'o',
+        _ => c,
+    }).collect()
+}
+
+/// A title's romaji words as kana, keeping words like Frieren in Latin script.
+fn romaji_title(text: &str) -> String {
+    text.split(|c: char| !c.is_alphanumeric() && !"'’‘".contains(c))
+        .map(|word| romaji_kana(word).map_or_else(|| latin_title(word), |kana| kana_title(&kana)))
+        .collect()
+}
+
+/// Shows whose title or Japanese reading matches the romaji typed in the Library.
+pub fn matching_shows(backend: &Backend, q: &str) -> Result<Value> {
+    if contains_japanese(q) {
+        return Ok(json!([]));
+    }
+    let latin = latin_title(q);
+    if latin.is_empty() {
+        return Ok(json!([]));
+    }
+    let reading = romaji_title(q);
+    let shows: Vec<i64> = backend.db.shows()?.iter().filter(|s| title_matches(s, &latin, &reading)).map(|s| s.id).collect();
+    Ok(json!(shows))
+}
+
+fn title_matches(show: &Show, latin: &str, reading: &str) -> bool {
+    if [&show.title, &show.title_english, &show.title_romaji].into_iter().any(|title| latin_title(title).contains(latin)) {
+        return true;
+    }
+    if romaji_title(&show.title_romaji).contains(reading) {
+        return true;
+    }
+    let title = if show.title_native.is_empty() { &show.title } else { &show.title_native };
+    contains_japanese(title) && premine::title_reading(title).is_ok_and(|kana| kana_title(&kana).contains(reading))
+}
+
 /// What to look for as a word: the text as typed, in hiragana and in katakana
 /// (Hachidori has a word's reading in hiragana, but in katakana for one
 /// written in it: だめ finds ダメ, ばか バカ), and its dictionary form when it's a
@@ -525,32 +646,52 @@ fn has_brackets(text: &str) -> bool {
 /// forms or as a name with an honorific, those of episodes whose words aren't
 /// saved yet with `q` in their text, and those with `q` written outside every
 /// saved word (a pronoun or a number). When no line has it as a word,
-/// every line with `q` in its text (a phrase).
-fn hits(index: &Index, q: &str) -> Result<Vec<Hit>> {
-    let forms = forms(q);
-    let name = name_prefix(q);
-    let mut hits = word_hits(index.with_word(&forms, name)?, &forms, name);
+/// every line with `q` in its text (a phrase). Romaji also looks for its
+/// katakana spellings in the text.
+fn hits_for(index: &Index, q: &str, forms: &[String], name: Option<&str>, spellings: &[&str]) -> Result<Vec<Hit>> {
+    let mut hits = word_hits(index.with_word(forms, name)?, forms, name);
     if !by_text(q) {
         return Ok(hits);
     }
-    if hits.is_empty() {
-        return Ok(text_hits(index.with_text(q, None, 0)?, q));
-    }
-    let with_words = index.with_words()?;
+    let word_count = hits.len();
     // A word premining keeps is a saved word wherever it's said, so only
     // episodes whose words aren't saved are read for it. One it doesn't keep
     // (a pronoun, a number, an interjection: 俺, 二人, ありがとう) is found by
     // its text too, written outside every saved word: otherwise a search for
     // 俺 finds only オラ and おれ, which Hachidori reads as 俺.
-    let more = if crate::premine::dictionary_form(q).is_some() {
-        let without: Vec<i64> = index.episodes()?.into_iter().filter(|e| !with_words.contains(e)).collect();
-        if without.is_empty() { Vec::new() } else { text_hits(index.with_text(q, Some(&without), hits.len())?, q) }
+    let without_words = if word_count > 0 && premine::dictionary_form(q).is_some() {
+        let saved = index.with_words()?;
+        Some(index.episodes()?.into_iter().filter(|id| !saved.contains(id)).collect::<Vec<_>>())
     } else {
-        let found: HashSet<(i64, usize)> = hits.iter().map(|h| (h.kept.episode_id, h.kept.line)).collect();
-        outside_words(index.with_text(q, None, 0)?, q).into_iter().filter(|h| !found.contains(&(h.kept.episode_id, h.kept.line))).collect()
+        None
     };
-    hits.extend(more);
+    if without_words.as_ref().is_some_and(Vec::is_empty) {
+        return Ok(hits);
+    }
+    let outside = word_count > 0 && without_words.is_none();
+    if !outside && spellings.is_empty() {
+        hits.extend(text_hits(index.with_text(q, without_words.as_deref(), word_count)?, q));
+        return Ok(hits);
+    }
+    let mut seen: HashMap<_, _> = hits.iter().enumerate().map(|(i, h)| ((h.kept.episode_id, h.kept.line), i)).collect();
+    for text in std::iter::once(q).chain(spellings.iter().copied()) {
+        let kept = index.with_text(text, without_words.as_deref(), word_count)?;
+        let more = if outside { outside_words(kept, text) } else { text_hits(kept, text) };
+        for hit in more {
+            let at = *seen.entry((hit.kept.episode_id, hit.kept.line)).or_insert(hits.len());
+            if at == hits.len() {
+                hits.push(hit);
+            } else if !spellings.is_empty() && hit.said && !hits[at].said {
+                hits[at] = hit;
+            }
+        }
+    }
     Ok(hits)
+}
+
+#[cfg(test)]
+fn hits(index: &Index, q: &str) -> Result<Vec<Hit>> {
+    hits_for(index, q, &forms(q), name_prefix(q), &[])
 }
 
 /// The lines among `kept` with `q` in their text, each where it's first said.
@@ -639,11 +780,30 @@ struct Found {
 /// any of its forms, or else those with `q` in their text.
 pub fn find(backend: &Backend, q: &str) -> Result<Value> {
     let q = q.trim();
-    if !contains_japanese(q) {
+    let (forms, hits) = if contains_japanese(q) {
+        let forms = forms(q);
+        let hits = hits_for(&backend.lines, q, &forms, name_prefix(q), &[])?;
+        (forms, hits)
+    } else if let Some(kana) = romaji_kana(q).filter(|kana| by_text(kana)) {
+        let kata = hira_to_kata(&kana);
+        let long = long_katakana(&kana);
+        let mut forms = forms(&kana);
+        let mut spellings = vec![kata.as_str()];
+        if long != kata {
+            forms.extend([kata_to_hira(&long), long.clone()]);
+            spellings.push(&long);
+        }
+        let (long_forms, long_spellings) = if long == kata { with_unmarked_vowel(&kana) } else { (Vec::new(), Vec::new()) };
+        forms.extend(long_forms);
+        spellings.extend(long_spellings.iter().map(String::as_str));
+        let hits = hits_for(&backend.lines, &kana, &forms, name_prefix(&long), &spellings)?;
+        (forms, hits)
+    } else {
+        return Ok(json!({ "lines": [], "shows": {} }));
+    };
+    if hits.is_empty() {
         return Ok(json!({ "lines": [], "shows": {} }));
     }
-    let forms = forms(q);
-    let hits = hits(&backend.lines, q)?;
     let episodes: HashMap<i64, Episode> = backend.db.all_episodes()?.into_iter().map(|e| (e.id, e)).collect();
     let known = known::words(backend).known;
     let with_words = backend.lines.with_words()?;
@@ -1139,14 +1299,52 @@ mod tests {
     }
 
     #[test]
-    fn a_search_without_japanese_answers_as_one_that_finds_nothing() {
+    fn romaji_finds_indexed_words_and_kana_text() {
         let dir = std::env::temp_dir().join(format!("telly-lines-latin-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
-        // As the Library's LineSearch has it (api.ts): the lines and each show's count.
-        for q in ["Frieren", "  ", "雪合戦"] {
+        let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), ..Default::default() }).unwrap();
+        let add_episode = |number| {
+            backend.db.add_episodes(show, &[crate::db::NewEpisode { number, path: format!("{number}.mkv"), size: 1, duration: 1400.0 }]).unwrap();
+            backend.db.episodes(show).unwrap().into_iter().find(|e| e.number == number).unwrap().id
+        };
+        let lines = [line(1.0, 2.0, "ちゃんと食べないと。"), line(3.0, 4.0, "食べ物だ。"), line(5.0, 6.0, "学校に行く。")];
+        let uses = [
+            word(0, &lines[0].text, "食べ", "食べる", "たべる"),
+            word(1, &lines[1].text, "食べ物", "食べ物", "たべもの"),
+            word(2, &lines[2].text, "学校", "学校", "がっこう"),
+        ];
+        backend.lines.replace(add_episode(1), &entries(&lines, &uses).unwrap(), "now", true).unwrap();
+        let lines = [line(1.0, 2.0, "ラーメンだ。"), line(3.0, 4.0, "（らあめん）ラーメン！"), line(5.0, 6.0, "ラメン。")];
+        backend.lines.replace(add_episode(2), &entries(&lines, &[]).unwrap(), "now", false).unwrap();
+        for (q, words) in [("taberu", vec!["食べない"]), ("TABERU", vec!["食べない"]), ("tabeta", vec!["食べない"]), ("gakkō", vec!["学校"]), ("gakko", vec!["学校"]), ("rāmen", vec!["ラーメン", "ラーメン"]), ("ramen", vec!["ラーメン", "ラーメン", "ラメン"])] {
+            let result = find(&backend, q).unwrap();
+            let matched: Vec<_> = result["lines"].as_array().unwrap().iter().map(|line| line["word"].as_str().unwrap()).collect();
+            assert_eq!(matched, words, "{q}");
+            assert_eq!(result["shows"][show.to_string()], words.len(), "{q}");
+        }
+        for q in ["Frieren", "  ", "雪合戦", "123"] {
             assert_eq!(find(&backend, q).unwrap(), json!({ "lines": [], "shows": {} }), "{q:?}");
         }
+        drop(backend);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn romaji_finds_kanji_titles_with_or_without_anilist() {
+        let dir = std::env::temp_dir().join(format!("telly-title-romaji-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let add = |title: &str, native: &str, romaji: &str| backend.db.add_show(&crate::db::NewShow {
+            folder: title.into(), title: title.into(), title_native: native.into(), title_romaji: romaji.into(), ..Default::default()
+        }).unwrap();
+        let matched = add("Frieren", "葬送のフリーレン", "Sōsō no Frieren");
+        let local = add("進撃の巨人", "", "");
+        let kana = add("ラーメン", "", "");
+        for (q, id) in [("soso no frieren", matched), ("sousou no frieren", matched), ("SHINGEKI NO KYOJIN", local), ("shingekinokyojin", local), ("ramen", kana)] {
+            assert_eq!(matching_shows(&backend, q).unwrap(), json!([id]), "{q}");
+        }
+        assert_eq!(matching_shows(&backend, "whatever").unwrap(), json!([]));
         drop(backend);
         let _ = std::fs::remove_dir_all(&dir);
     }

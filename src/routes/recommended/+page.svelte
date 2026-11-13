@@ -129,7 +129,7 @@
       {#each rec.picks.slice(0, shown) as p (p.id)}
         <button type="button" class="pick" onclick={(e) => show(p, e.currentTarget)}>
           <span aria-hidden="true"><Cover cover={p.cover} color={p.color} native={p.native} title={p.title} /></span>
-          <span class="p-title">{p.title}</span>
+          <span class="p-title" title={p.title}>{p.title}</span>
           <span class="p-meta">{meta(p)}</span>
           <span class="p-why">{why(p)}</span>
         </button>
@@ -158,7 +158,7 @@
         <h4>Recommended from</h4>
         <ul>
           {#each p.from as f, i (i)}
-            <li><span>{f.title}</span><span>{f.votes.toLocaleString("en-GB")} {f.votes === 1 ? "vote" : "votes"}</span></li>
+            <li><span title={f.title}>{f.title}</span><span>{f.votes.toLocaleString("en-GB")} {f.votes === 1 ? "vote" : "votes"}</span></li>
           {/each}
         </ul>
       </div>

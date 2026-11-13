@@ -122,17 +122,14 @@ fn set_host_status(app: &AppHandle, status: HostStatus) {
 }
 
 /// WebView2's browser arguments, for every window (WebView2 refuses windows that
-/// share a data folder but not their arguments): Tauri's own, AudioVideoTracks,
+/// share a data folder but not their arguments): Tauri's own, and AudioVideoTracks,
 /// which gives the player a rip's audio tracks to choose from (a rip that plays
-/// as it is keeps all of them), and no video overlays: with them, AMD's drivers
-/// since 26.9.2 leave the pointer drawn where it was in full screen, however the
-/// mouse moves (GPUOpen-Drivers/AMD-Gfx-Drivers#123). That one is spelt with
-/// underscores and `=1`: WebView2 157 ignores the hyphenated switch. Passing any
-/// makes WebView2 ignore WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, so that's added
-/// here (`--remote-debugging-port=9222` lets DevTools drive the app).
+/// as it is keeps all of them). Passing any makes WebView2 ignore
+/// WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, so that's added here
+/// (`--remote-debugging-port=9222` lets DevTools drive the app).
 fn browser_args() -> String {
     let extra = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
-    format!("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required --enable-blink-features=AudioVideoTracks --disable_direct_composition_video_overlays=1 {extra}")
+    format!("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required --enable-blink-features=AudioVideoTracks {extra}")
 }
 
 /// Opens (or reloads) the hidden window that keeps Hachidori's engine running
@@ -318,13 +315,4 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![call, hachidori_info, hachidori_start, open_hachidori_settings, relay_status])
         .run(tauri::generate_context!())
         .expect("error while running Telly");
-}
-
-#[cfg(test)]
-mod tests {
-    /// Without this switch, spelt just so, the pointer freezes in full screen on AMD's drivers.
-    #[test]
-    fn turns_video_overlays_off() {
-        assert!(super::browser_args().split(' ').any(|arg| arg == "--disable_direct_composition_video_overlays=1"));
-    }
 }

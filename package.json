@@ -1,6 +1,6 @@
 {
   "name": "telly",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "An anime player for learning Japanese",
   "type": "module",
   "private": true,

@@ -166,7 +166,8 @@
         <button type="button" class="btn quiet" onclick={() => hide(p)}>Hide</button>
         <span class="grow"></span>
         <button type="button" class="btn quiet" onclick={close}>Close</button>
-        <button type="button" class="btn" onclick={() => openOnAniList(p)}>Open on AniList</button>
+        <button type="button" class="btn quiet" onclick={() => openOnAniList(p)}>Open on AniList</button>
+        <button type="button" class="btn" onclick={() => goto(`/downloads?from=recommended&q=${encodeURIComponent(p.romaji || p.english || p.title)}`)} title="Find it on nyaa.si, most shared first, and pick a release for Telly to download"><Icon name="download" /><span>Download…</span></button>
       </div>
     </div>
   </div>

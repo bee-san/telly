@@ -75,6 +75,7 @@ Time watched, cards mined and words known, over a week, a month, a year or all t
 - 🪟 **A small player** that stays on top of a game, lookups and all
 - ⏭️ **Skip opening and outro,** from the rip's chapters or AniSkip
 - 🤖 **No subtitles anywhere?** Telly makes them with Whisper
+- ⬇️ **Download from nyaa.si,** straight from Recommended, with Telly's own torrent client: it picks up where it was when the connection drops, and each episode joins your library as it finishes
 - 📈 **AniList and Tidepool** log what you watch for you
 
 ## 🆚 Why Telly?
@@ -97,5 +98,5 @@ Time watched, cards mined and words known, over a week, a month, a year or all t
 <br>
 
 <p align="center">
-  <sub>Built on <a href="https://github.com/bee-san/hachidori">Hachidori</a>, <a href="https://jimaku.cc">Jimaku</a>, <a href="https://anilist.co">AniList</a>, <a href="https://github.com/bloc97/Anime4K">Anime4K</a>, <a href="https://github.com/Morgawr/michadame">michadame</a>, <a href="https://github.com/FireRedTeam/FireRedVAD">FireRedVAD</a> and <a href="https://claude.com/claude-code">Claude Code</a>. GPL-3.0-or-later.</sub>
+  <sub>Built on <a href="https://github.com/bee-san/hachidori">Hachidori</a>, <a href="https://jimaku.cc">Jimaku</a>, <a href="https://github.com/ikatson/rqbit">librqbit</a>, <a href="https://anilist.co">AniList</a>, <a href="https://github.com/bloc97/Anime4K">Anime4K</a>, <a href="https://github.com/Morgawr/michadame">michadame</a>, <a href="https://github.com/FireRedTeam/FireRedVAD">FireRedVAD</a> and <a href="https://claude.com/claude-code">Claude Code</a>. GPL-3.0-or-later.</sub>
 </p>

@@ -26,6 +26,7 @@ export const icons = {
   grip: `<svg viewBox="0 0 24 24" aria-hidden="true"><g fill="currentColor"><circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/></g></svg>`,
   warn: s(`<path d="M12 4 2.8 19.5h18.4z"/><path d="M12 10v4.2M12 17h.01"/>`),
   card: s(`<rect x="4" y="3.5" width="16" height="17" rx="2"/><path d="M8 8.5h8M8 12h8M8 15.5h5"/>`),
+  download: s(`<path d="M12 4v11M7 10.5l5 5 5-5"/><path d="M5 19.5h14"/>`),
   folder: s(`<path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>`),
   speed: s(`<path d="M12 13l4-4"/><path d="M4.5 18a9 9 0 1 1 15 0"/>`),
   min: s(`<path d="M5 12h14"/>`),

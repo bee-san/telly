@@ -16,6 +16,7 @@ use crate::media;
 use crate::mining::{self, Mining};
 use crate::names::{self, Names};
 use crate::own_hachidori::{self, Own};
+use crate::nyaa;
 use crate::premine::{self, Premining};
 use crate::recommend;
 use crate::relink;
@@ -25,6 +26,7 @@ use crate::stats;
 use crate::subs::Line;
 use crate::sync;
 use crate::tools::{self, Tools};
+use crate::torrents::{self, Downloads};
 use crate::util::now_ms;
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -127,6 +129,8 @@ pub struct Backend {
     moved: Mutex<Option<Moved>>,
     /// The copies folder, once asked for (see `media_dir`).
     media_folder: RwLock<Option<PathBuf>>,
+    /// What Telly is downloading (torrents.rs).
+    pub downloads: Downloads,
 }
 
 /// Where "Earlier/Later from here" last moved an episode's lines from, so
@@ -242,6 +246,8 @@ pub struct Activity {
     pub title: String,
     pub done: usize,
     pub total: usize,
+    /// How the downloads are going, while any are.
+    pub downloading: Option<torrents::Summary>,
 }
 
 /// What the title bar's list shows: what each worker is doing, and the work
@@ -496,6 +502,7 @@ impl Backend {
             lines,
             moved: Mutex::new(None),
             media_folder: RwLock::new(None),
+            downloads: Downloads::default(),
         })
     }
 
@@ -510,6 +517,7 @@ impl Backend {
             jobs::start(backend.clone());
             let for_cards = backend.clone();
             std::thread::Builder::new().name("telly-cards".into()).spawn(move || cards::worker(&for_cards)).ok();
+            torrents::start(backend.clone());
             backend.watch_folders();
             backend.fill_covers();
             recommend::gather(&backend);
@@ -793,7 +801,7 @@ impl Backend {
     }
 
     fn activity(&self) -> Activity {
-        let mut activity = Activity { tasks: self.tasks(), ..Default::default() };
+        let mut activity = Activity { tasks: self.tasks(), downloading: self.downloads.summary(), ..Default::default() };
         // Several episodes are worked on at once, often of different shows.
         let mut seen = std::collections::HashSet::new();
         for t in activity.tasks.iter().filter(|t| t.show_id != 0) {
@@ -879,7 +887,7 @@ impl Backend {
             let episodes = by_show.remove(&s.id).unwrap_or_default();
             cards.push(self.card(s, &episodes, &cards_by_show, &scores)?);
         }
-        Ok(json!({ "shows": cards, "activity": self.activity(), "setup": self.setup() }))
+        Ok(json!({ "shows": cards, "activity": self.activity(), "setup": self.setup(), "downloaded": torrents::offers(self) }))
     }
 
     fn show_view(&self, id: i64) -> Result<Value> {
@@ -913,7 +921,9 @@ impl Backend {
 
     fn scan(&self, folder: &str) -> Result<Value> {
         let tools = self.tools();
-        let scan = scan::scan(Path::new(folder), |paths| scan::probe_durations(tools.ffprobe.as_deref(), paths))?;
+        let scan = scan::scan(Path::new(folder), |paths| {
+            self.downloads.unless_downloading(paths, |paths| scan::probe_durations(tools.ffprobe.as_deref(), paths))
+        })?;
         let count = scan.files.iter().filter(|f| f.number.is_some()).count();
         let (matches, error) = match anilist::search_loosely(&scan.guess) {
             Ok(mut found) => {
@@ -936,7 +946,8 @@ impl Backend {
         let known: std::collections::HashMap<String, f64> = existing.iter().map(|e| (e.path.clone(), e.duration)).collect();
         let taken: std::collections::HashSet<i64> = existing.iter().map(|e| e.number).collect();
         let tools = self.tools();
-        let scan = scan::scan(Path::new(&show.folder), |paths| {
+        // A file still downloading is left for the next look.
+        let scan = scan::scan(Path::new(&show.folder), |paths| self.downloads.unless_downloading(paths, |paths| {
             // Only files Telly doesn't know yet need ffprobe.
             let unknown: Vec<PathBuf> = paths.iter().filter(|p| !known.contains_key(p.to_string_lossy().as_ref())).cloned().collect();
             let probed = scan::probe_durations(tools.ffprobe.as_deref(), &unknown);
@@ -949,7 +960,7 @@ impl Backend {
                     None => by_path.remove(p).flatten(),
                 })
                 .collect()
-        })?;
+        }))?;
         let mut next_number = existing.iter().map(|e| e.number).max().unwrap_or(0) + 1;
         // Numbered as their names say: the folder as a whole is, or the show's
         // episodes are (a second release of one makes the folder's numbers
@@ -1746,6 +1757,28 @@ impl Backend {
                 Ok(json!({}))
             }
             "testClaude" => Ok(ask::test(self)),
+            "searchNyaa" => to_value(nyaa::search(
+                &self.db.setting_str("nyaa.site"),
+                &arg::<String>(&args, "q")?,
+                &arg::<Option<String>>(&args, "category")?.unwrap_or_default(),
+                arg::<Option<bool>>(&args, "trusted")?.unwrap_or(false),
+                &arg::<Option<String>>(&args, "sort")?.unwrap_or_default(),
+                arg::<Option<u32>>(&args, "page")?.unwrap_or(1),
+            )?),
+            "download" => {
+                let torrent = arg::<Option<String>>(&args, "torrent")?.unwrap_or_default();
+                let folder = torrents::add(self, &arg::<String>(&args, "magnet")?, &torrent, &arg::<String>(&args, "title")?, arg(&args, "show")?)?;
+                Ok(json!({ "folder": folder }))
+            }
+            "downloads" => Ok(torrents::view(self)),
+            "pauseDownload" => {
+                torrents::pause(self, arg(&args, "id")?, arg(&args, "paused")?)?;
+                Ok(torrents::view(self))
+            }
+            "removeDownload" => {
+                torrents::remove(self, arg(&args, "id")?)?;
+                Ok(torrents::view(self))
+            }
             _ => Err(anyhow!("Telly doesn’t know the request \"{cmd}\"")),
         }
     }

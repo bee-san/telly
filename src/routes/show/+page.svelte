@@ -309,6 +309,7 @@
             <button type="button" class="btn quiet" onclick={getModel} title="So Whisper can make subtitles Jimaku doesn’t have">Get Whisper’s model</button>
           {/if}
           <button type="button" class="btn quiet" onclick={lookAgain}>Look for new episodes</button>
+          <button type="button" class="btn quiet" onclick={() => card && goto(`/downloads?show=${card.id}`)} title="Find more of it on nyaa.si: Telly downloads it into this show’s folder, and each episode joins as it finishes">Download episodes…</button>
           <button type="button" class="btn quiet" onclick={() => card && act(() => call("retrySubs", { show: card.id }))}>Find subtitles again</button>
           <button type="button" class="btn quiet" onclick={freeSpace}>Free up space</button>
           <button type="button" class="btn danger" onclick={remove}>Remove…</button>

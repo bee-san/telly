@@ -238,6 +238,8 @@
     <span class="grow"></span>
     <a class="btn quiet" href="/recommended">Recommended</a>
     <a class="btn quiet" href="/stats">Stats</a>
+    <a class="btn quiet" href="/processing" title="What’s downloading, and what Telly is getting ready">Processing</a>
+    <a class="btn quiet" href="/downloads" title="Find a show on nyaa.si, and Telly downloads it"><Icon name="download" /><span>Download…</span></a>
     <a class="btn quiet" href="/settings"><Icon name="gear" /><span>Settings</span></a>
     <button type="button" class="btn" onclick={add}><Icon name="plus" /><span>Add media…</span></button>
   </div>
@@ -249,6 +251,12 @@
       <a href="/settings" class="link-btn">Open Settings</a>
     </p>
   {/if}
+  {#each lib?.downloaded ?? [] as d (d.folder)}
+    <p class="setup">
+      <span>Downloaded: <b>{d.name}</b>{d.downloading ? " (the rest is still downloading)" : ""}</span>
+      <button type="button" class="link-btn" onclick={() => (adding = d.folder)}>Add to library…</button>
+    </p>
+  {/each}
   {#if error}<p class="err">{error}</p>{/if}
 
   {#if lib && lib.shows.length === 0}

@@ -26,6 +26,7 @@ pub mod matching;
 pub mod media;
 pub mod mining;
 pub mod names;
+pub mod nyaa;
 pub mod openrouter;
 pub mod own_hachidori;
 pub mod premine;
@@ -38,6 +39,7 @@ pub mod stats;
 pub mod subs;
 pub mod sync;
 pub mod tools;
+pub mod torrents;
 pub mod util;
 
 use backend::{Backend, Dirs};

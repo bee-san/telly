@@ -118,6 +118,16 @@ export interface Activity {
   title: string;
   done: number;
   total: number;
+  /** How the downloads are going, all together, while any are. */
+  downloading: DownloadSummary | null;
+}
+
+export interface DownloadSummary {
+  count: number;
+  /** From 0 to 1. */
+  progress: number;
+  /** Bytes a second. */
+  speed: number;
 }
 
 /** An episode waiting for work (backend.rs `Queued`). */
@@ -149,6 +159,8 @@ export interface Library {
   shows: ShowCard[];
   activity: Activity;
   setup: Setup;
+  /** Folders of finished downloads that aren't shows in the library yet. */
+  downloaded: DownloadOffer[];
 }
 
 export interface Episode {
@@ -504,6 +516,78 @@ export interface Anime {
   cover: string;
   color: string;
   score: number;
+}
+
+/** A release on nyaa.si. */
+export interface Release {
+  id: number;
+  title: string;
+  magnet: string;
+  /** Its .torrent file. */
+  torrent: string;
+  /** As nyaa shows it: "1.4 GiB". */
+  size: string;
+  bytes: number;
+  seeders: number;
+  leechers: number;
+  /** How many times it's been downloaded. */
+  completed: number;
+  /** When it was uploaded (unix seconds). */
+  date: number;
+  /** From one of nyaa's trusted uploaders. */
+  trusted: boolean;
+  /** Someone else's release uploaded again. */
+  remake: boolean;
+  /** Its page on nyaa. */
+  page: string;
+}
+
+export interface NyaaFound {
+  releases: Release[];
+  more: boolean;
+}
+
+/** One of Telly's downloads. */
+export interface Torrent {
+  /** What Pause and Remove name it by; null while its files are being found. */
+  id: number | null;
+  hash: string;
+  name: string;
+  /** From 0 to 1. */
+  progress: number;
+  size: number;
+  /** Bytes a second. */
+  speed: number;
+  /** Seconds left, when there's a speed to tell by. */
+  eta: number | null;
+  /** "waiting" is for anyone sharing it to connect; "checking" is what's on disk. */
+  state: "finding" | "checking" | "downloading" | "waiting" | "paused" | "done" | "error";
+  error: string | null;
+  /** The folder its files go in. */
+  folder: string;
+  /** The people sharing it that Telly is connected to. */
+  peers: number;
+  /** The show whose folder it's in. */
+  show: number | null;
+  filesDone: number;
+  files: number;
+}
+
+/** A folder of finished downloads that isn't a show in the library yet. */
+export interface DownloadOffer {
+  folder: string;
+  name: string;
+  /** Whether some of it is still downloading. */
+  downloading: boolean;
+}
+
+export interface DownloadsView {
+  torrents: Torrent[];
+  offers: DownloadOffer[];
+  /** Why the downloads couldn't be looked at. */
+  error: string | null;
+  /** Where new shows are downloaded. */
+  folder: string;
 }
 
 export interface ScanResult {

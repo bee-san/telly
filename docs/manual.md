@@ -15,7 +15,7 @@
 - [Getting started](#-getting-started): installing, the first time it opens, running it from source, Hachidori in Telly
 - [Keys](#%EF%B8%8F-keys)
 - [Explain and Previously on](#-explain-and-previously-on) · [Filters](#-filters) · [Character names](#-character-names) · [Premining](#-premining)
-- [Searching shows and lines](#-searching-shows-and-lines) · [Recommended](#-recommended) · [Stats](#-stats) · [Your AniList list](#-your-anilist-list)
+- [Searching shows and lines](#-searching-shows-and-lines) · [Recommended](#-recommended) · [Downloading](#%EF%B8%8F-downloading) · [Stats](#-stats) · [Your AniList list](#-your-anilist-list)
 - [How subtitles are matched](#-how-subtitles-are-matched) · [Machine-made subtitles](#-machine-made-subtitles) · [Getting a library ready](#-getting-a-library-ready)
 - [When your rips move](#-when-your-rips-move) · [Backing up, and moving to another computer](#-backing-up-and-moving-to-another-computer) · [Where things go](#-where-things-go)
 - [Developing](#-developing) · [Built on](#-built-on) · [Licence](#-licence)
@@ -47,6 +47,7 @@
 - 🖼️ **A cover for everything:** what AniList doesn't know (live action, a folder of specials) gets a cover too: the poster from Wikipedia's article of that very name, else a frame from the video, taken at random when it's added, with the title drawn over it as on a poster. Every cover gets a small copy when it's got, which is what the app draws, so the Library scrolls without waiting for pictures. A film is listed as a movie, with its length.
 - 🔁 **Every time through:** each show or film's page in the Library shows when you first finished it and the dates you completed full rewatches.
 - 💡 **[Something to watch next](#-recommended):** it recommends anime to watch next, from what AniList's users recommend to people who liked the shows in your library and on your AniList list.
+- ⬇️ **[Downloads that carry on](#%EF%B8%8F-downloading):** it finds a show on nyaa.si, from Recommended or a show's page, and downloads it with its own torrent client, which picks up where it was through a dropped connection and a restart. Each episode joins the library as it finishes.
 - 📈 **Logged for you:** it logs what you watch for [Tidepool](https://github.com/bee-san/tidepool), and on your [AniList list](#-your-anilist-list) once you've signed in.
 
 ![The Library: what you're watching, then every show with the share of its words you know](library.webp)
@@ -243,9 +244,22 @@ On 850,000 lines in 2,700 episodes (made up, a tenth of them without their words
 - **Your AniList list:** signed in, each anime on your list (but those you only plan to watch) counts as the list says. One you've scored counts 2 at your average score, and 1 more or less for each 10 points above or below it, from -2 to 4: with your average at 7.5/10, a 9 counts 3.5, and a 5 counts -0.5, against its picks. Without a score, one completed counts 2, one you're watching 1 to 2 by how far you are, and one paused 0.25. One you dropped counts -1. A show in your library and on your list counts as the list says.
 - **Against:** a pick that your dropped and low-scored shows say more against than the rest say for is left out, and a show that says against a pick isn't among those it's recommended from.
 - **Series:** a show's seasons, films and side stories (AniList's relations) have one say between them, the biggest any of them gives. The rest of a series you have, or have on your list, isn't offered as a pick.
-- **A pick** opens with its synopsis, the shows it's recommended from with their votes, and **Open on AniList**. **Hide** leaves it out from now on, for one you've seen elsewhere.
+- **A pick** opens with its synopsis, the shows it's recommended from with their votes, **Open on AniList** and **Download…**, which finds it on nyaa.si ([Downloading](#%EF%B8%8F-downloading)). **Hide** leaves it out from now on, for one you've seen elsewhere.
 
 AniList's answers are kept for a week. A show is asked about again after that, and a show you add is asked about the next time the page opens.
+
+## ⬇️ Downloading
+
+Telly downloads anime with its own torrent client ([librqbit](https://github.com/ikatson/rqbit)), so nothing else needs installing. A torrent comes in small pieces from everyone sharing it, each piece checked as it arrives, so a connection that keeps dropping loses nothing: Telly carries on where it was when the connection comes back, and when Telly opens again.
+
+- **Finding a release:** **Download…** in the library's toolbar, **Download episodes…** on a show's page and **Download…** on a pick in Recommended open nyaa.si's search, the last two already searching for that show. The releases most people are sharing come first (they download fastest and steadiest); **Newest first**, **English-translated**, **Raw** and **Trusted uploaders only** narrow it down, and a title opens its page on nyaa. If your internet provider blocks nyaa.si, Settings → Downloads takes another address for it.
+- **Where it goes:** from a show's page, into that show's folder. Otherwise into a new folder named for the show (`Sousou no Frieren 2nd Season` for `[Erai-raws] Sousou no Frieren 2nd Season - 09 [1080p]`) in the downloads folder: `Downloads\Telly` in your home folder, or the one chosen in Settings → Downloads.
+- **Into the library:** a file that's still downloading is left out when Telly looks in a folder, so no episode is added half there. When a file finishes in a show's folder, Telly looks in the folder at once and the episode joins the show. A new show's folder, once something in it is downloaded, is offered at the top of the Library and in Processing: **Add to library…** opens Add media on it, and the rest of it joins as it finishes.
+- **Processing**, in the library's toolbar (or **Open Processing** in the title bar's list), shows each download's progress, speed and time left, beside what Telly is getting ready. **Pause**, **Carry on** and **Remove** are on each; removing a download leaves what it got where it is. While downloads run and Telly has nothing else to do, the title bar shows how they're going, and clicking it opens Processing.
+- **Sharing back:** a finished download is shared with others while Telly is open, as torrents are, until it's removed in Processing. The first time Telly downloads, Windows may ask whether it can use the network: allowing it lets the people sharing a release connect to Telly too, which makes downloads faster.
+- **Picking up again:** Telly keeps the list of downloads in `torrents` ([Where things go](#-where-things-go)). The client writes down how far a download got only every 16 MB, so when Telly opens, each download that wasn't finished checks what's already on disk (a few seconds an episode) and carries on from there.
+
+Telly fetches a release's `.torrent` file from nyaa, asking again when the connection drops; when it can't, it starts from the magnet link, and Processing says it's asking the people sharing it for its list of files until they answer.
 
 ## 📊 Stats
 
@@ -314,7 +328,7 @@ With that key, Telly also asks OpenRouter by itself, without the button. An epis
 
 ## ⏳ Getting a library ready
 
-Telly works through a library in the background: each show's next episode first, then the 10 after it, then the rest. Several episodes are worked on at once, and the title bar says which show is being got ready, or how many shows. Click it for what each worker is doing and how far it's got, and for the work waiting of each kind (video, subtitles, the seek bar's pictures, words), the next to be taken first.
+Telly works through a library in the background: each show's next episode first, then the 10 after it, then the rest. Several episodes are worked on at once, and the title bar says which show is being got ready, or how many shows. Click it for what each worker is doing and how far it's got, and for the work waiting of each kind (video, subtitles, the seek bar's pictures, words), the next to be taken first. **Processing**, in the library's toolbar, shows the same on a page of its own, with the [downloads](#%EF%B8%8F-downloading).
 
 - **Video:** one conversion at a time. A rip that plays as it is doesn't wait behind one: a second worker reads what's in the rips nobody has looked at yet, about a second each.
 - **Subtitles:** 3 episodes at once. A rip is read through once for all its subtitle tracks together, text and pictures, however many it has; a rip without any is heard in that read, to match files to its speech. Jimaku is asked by one episode at a time, and a show's files are fetched once.
@@ -372,6 +386,8 @@ Telly knows a show's episodes by where their rips are. When the rips aren't ther
 | `%LOCALAPPDATA%\Telly\telly-lines.sqlite` | every spoken line and its words, for searching lines; made again from `subtitles` if it's deleted |
 | `%LOCALAPPDATA%\Telly\recommended.json` | what AniList's users recommend for each of your shows, kept for a week |
 | `%LOCALAPPDATA%\Telly\anilist-list.json` | the anime on your AniList list, with each one's status and your score, once you've signed in |
+| `%LOCALAPPDATA%\Telly\torrents` | the downloads, how far each got, and the torrent network's nodes Telly knows |
+| `Downloads\Telly` in your home folder | new shows' downloads, a folder each (Settings → Downloads can choose another) |
 | `%APPDATA%\Telly\telly-log.sqlite` | what you watched, for Tidepool (counts only, never the text) |
 
 A backup (Settings → Backup) has `telly.sqlite`, `telly-log.sqlite`, `subtitles`, `known-words.json` and `anilist-list.json`; Telly makes the rest again. A backup being restored waits in `%LOCALAPPDATA%\Telly\backup-to-restore` until Telly starts again.
@@ -401,6 +417,7 @@ Telly stands on a lot of other people's work:
 
 - [Hachidori](https://github.com/bee-san/hachidori) for lookups and cards, and [Yomitan Audio Fast](https://github.com/bee-san/yomitan-audio-fast) for word audio
 - [Jimaku](https://jimaku.cc) for Japanese subtitles, and [AniSkip](https://aniskip.com) for openings and outros
+- [librqbit](https://github.com/ikatson/rqbit) for downloading, and [nyaa.si](https://nyaa.si) for finding releases
 - [AniList](https://anilist.co) for shows, casts, recommendations and your list
 - [FireRedVAD](https://github.com/FireRedTeam/FireRedVAD) for hearing speech, and alass for cutting broadcast-timed files
 - [Lindera](https://github.com/lindera/lindera) for splitting lines into words

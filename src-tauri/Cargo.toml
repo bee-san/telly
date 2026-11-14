@@ -41,6 +41,9 @@ webrtc-vad = "0.4"
 firered-vad = "0.1.0"
 # Splits Japanese into words for premining (IPADIC, built into the app).
 lindera = { version = "6", default-features = false, features = ["embed-ipadic"] }
+# Downloads (torrents.rs): Telly's own torrent client, and the runtime it runs on.
+librqbit = { version = "9.1.0", default-features = false, features = ["rust-tls"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
 
 # Whether a drive is a hard drive (drives.rs): the version Tauri brings already.
 [target.'cfg(windows)'.dependencies]

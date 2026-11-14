@@ -21,6 +21,7 @@
     type Backup,
     type BackupFile,
     type ClaudeStatus,
+    type DownloadsView,
     type HachidoriInfo,
     type HostStatus,
     type NamesStatus,
@@ -74,6 +75,7 @@
         callKept<OwnHachidori>("ownHachidori").then((o) => (own = o)),
         callKept<ClaudeStatus>("claudeStatus").then((c) => (claude = c)),
         callKept<KnownSources>("knownSources").then((k) => (sources = k)).catch(() => (sources = null)),
+        callKept<DownloadsView>("downloads").then((d) => (downloadsFolder = d.folder)).catch(() => {}),
         loadAway(),
       ]);
     } catch (e) {
@@ -395,6 +397,12 @@
     ["openai/whisper-large-v3", "Whisper large v3", "Whisper"],
   ];
   let showRouterKey = $state(false);
+  /** Where new shows are downloaded when no folder is chosen. */
+  let downloadsFolder = $state("");
+  async function chooseDownloadsFolder() {
+    const folder = await pickFolder("Choose where new shows are downloaded");
+    if (folder) await set("downloads.folder", folder);
+  }
   const routerMaker = $derived((ROUTER_MODELS.find(([id]) => id === str("openrouter.model")) ?? ROUTER_MODELS[0])[2]);
 
   /** Telly's app on AniList, whose page shows an access token to paste here. */
@@ -712,6 +720,24 @@
     </div>
     <p class="muted">The library and subtitles stay in:</p>
     <p class="muted mono path">{status?.dataDir}</p>
+  </section>
+
+  <section id="downloads">
+    <h2>Downloads</h2>
+    <p class="lede">Find a show on nyaa.si with <b>Download…</b> in the Library, on a show’s page or in Recommended, and Telly downloads it itself, picking up where it was whenever the connection drops and when Telly opens again. Each episode joins the library as it finishes. Processing shows how they’re going.</p>
+    <div class="rows">
+      <div class="field">
+        <span>Folder for new shows</span>
+        <span class="inline"><input class="input grow mono" value={str("downloads.folder") || downloadsFolder} readonly aria-label="Folder for new shows" /><button type="button" class="btn quiet" onclick={chooseDownloadsFolder}>Choose folder…</button></span>
+        <small>Each new show gets a folder of its own in here. More episodes of a show in the library go in its folder.</small>
+        {#if str("downloads.folder")}<span><button type="button" class="link-btn" onclick={() => set("downloads.folder", null)}>Use Downloads\Telly in your home folder</button></span>{/if}
+      </div>
+      <label class="field narrow">
+        <span>nyaa address</span>
+        <input class="input mono" value={str("nyaa.site")} placeholder="https://nyaa.si" onchange={(e) => set("nyaa.site", e.currentTarget.value.trim())} />
+        <small>Another address for nyaa, if your internet provider blocks nyaa.si.</small>
+      </label>
+    </div>
   </section>
 
   <section id="moved">

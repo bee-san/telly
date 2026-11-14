@@ -25,7 +25,7 @@ export function watchActivity(): () => void {
   const loop = async () => {
     if (stopped) return;
     await refreshActivity();
-    const busy = (app.activity?.tasks.length ?? 0) > 0;
+    const busy = (app.activity?.tasks.length ?? 0) > 0 || !!app.activity?.downloading;
     timer = setTimeout(loop, busy ? 1200 : 4000);
   };
   loop();

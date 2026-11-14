@@ -7,7 +7,11 @@
 
   const act = $derived(app.activity);
   const task = $derived(act?.tasks[0] ?? null);
+  /** With no other work, the title bar shows the downloads, and goes to Processing. */
+  const downloads = $derived(act?.downloading ?? null);
+  const onlyDownloads = $derived(!task && !!downloads);
   const label = $derived.by(() => {
+    if (onlyDownloads && downloads) return `Downloading ${downloads.count === 1 ? "1 release" : `${downloads.count} releases`} · ${Math.floor(downloads.progress * 100)}%`;
     if (!act || !task) return "";
     if (act.total > 0 && act.done < act.total) {
       const what = act.shows > 1 ? `${act.shows} shows` : act.title;
@@ -16,6 +20,7 @@
     return task.label;
   });
   const progress = $derived.by(() => {
+    if (onlyDownloads && downloads) return downloads.progress;
     if (!act || !task) return 0;
     if (act.total > 0 && act.done < act.total) return act.done / act.total;
     return task.progress;
@@ -150,9 +155,10 @@
         class="wt-act"
         class:on={opened}
         bind:this={button}
-        aria-haspopup="menu"
-        aria-expanded={opened}
-        onclick={() => (opened ? close(false) : open("first"))}
+        aria-haspopup={onlyDownloads ? undefined : "menu"}
+        aria-expanded={onlyDownloads ? undefined : opened}
+        title={onlyDownloads ? "Open Processing" : undefined}
+        onclick={() => (onlyDownloads ? goto("/processing") : opened ? close(false) : open("first"))}
         onkeydown={onButtonKey}
       >
         <span class="spin"></span>
@@ -193,6 +199,9 @@
             <div class="wq-h" role="presentation">Waiting</div>
             <div class="wq-more" role="presentation">Nothing else</div>
           {/if}
+          <button type="button" role="menuitem" class="wq-all" onclick={() => { close(false); goto("/processing"); }}>
+            <span class="wq-name">Open Processing</span><small>{downloads ? `${downloads.count} downloading` : "Downloads too"}</small>
+          </button>
         </div>
       {/if}
     </span>
@@ -230,6 +239,7 @@
   .wq-kind { display: flex; justify-content: space-between; gap: 10px; padding: 6px 10px 2px; font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
   .wq-kind span:first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .wq-more { padding: 3px 10px 6px; font-size: 12px; color: var(--ink-3); }
+  .wt-menu .wq-all { margin-top: 4px; border-top: 1px solid var(--rule); border-radius: 0 0 5px 5px; font-weight: 600; }
   .wt-caps { display: flex; height: 100%; }
   .wt-caps button { width: 46px; height: 100%; display: grid; place-items: center; color: var(--ink-2); background: none; border: 0; cursor: default; }
   .wt-caps button:hover { background: var(--sunk); color: var(--ink); }
@@ -244,6 +254,7 @@
   .wt.dark .wt-menu button:hover, .wt.dark .wt-menu button:focus-visible { background: var(--vid-hover); }
   .wt.dark .wq-h, .wt.dark .wq-more, .wt.dark .wt-menu small { color: var(--vid-ink-2); }
   .wt.dark .wq-kind { color: var(--vid-ink); }
+  .wt.dark .wt-menu .wq-all { border-top-color: var(--vid-edge); }
   .wt.dark .wt-logo { --logo-bg: #ededeb; --logo-fg: #151516; }
   .wt.dark .spin { border-color: rgba(255, 255, 255, .2); border-top-color: var(--vid-ink); }
 </style>

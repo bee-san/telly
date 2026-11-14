@@ -1652,6 +1652,13 @@ impl Backend {
                 &arg::<Vec<ask::Exchange>>(&args, "thread")?,
                 &arg::<String>(&args, "question")?,
             ),
+            "explainMore" => ask::explain_more(
+                self,
+                arg(&args, "id")?,
+                arg(&args, "index")?,
+                &arg::<String>(&args, "explanation")?,
+                &arg::<String>(&args, "kind")?,
+            ),
             "searchLines" => search::find(self, &arg::<String>(&args, "q")?),
             "searchShows" => search::matching_shows(self, &arg::<String>(&args, "q")?),
             "scene" => search::scene(self, arg(&args, "id")?, arg(&args, "line")?),

@@ -1,5 +1,5 @@
 //! What Telly asks Claude (claude.rs): "Explain this line" in the player, with
-//! follow-up questions about it, and
+//! Gist, Break it down, Nuance and follow-up questions about it, and
 //! "Previously on", a recap of the story so far, with the moments of it to
 //! play back. Answers are kept (db answers), so asking twice is instant.
 //!
@@ -225,6 +225,67 @@ pub fn follow_up(backend: &Arc<Backend>, episode_id: i64, index: usize, explanat
     let context = line_in_context(&show_title(&show), episode.number, &lines, index, &names_line(backend, &show, &near));
     let prompt = follow_up_prompt(&context, explanation, thread, question, answer_in(backend));
     let id = backend.asks.start(prompt, model(backend), EFFORT, true, |_| {});
+    Ok(json!({ "ask": id }))
+}
+
+/// What each button under an explanation asks about the line, by its kind:
+/// Gist, Break it down and Nuance.
+fn more_asked(kind: &str) -> Option<&'static str> {
+    Some(match kind {
+        "gist" => "Give me just the gist of the line: the important part of what it says, in a sentence or two.",
+        "breakdown" => {
+            "Break the line down for me: every word, particle and ending in it, in order, one per line, each as \
+             \"part (reading): what it is and does\", with the reading in hiragana for words with kanji. Trace each \
+             conjugated form back to its dictionary form, step by step. Keep it under 200 words."
+        }
+        "nuance" => {
+            "Tell me why the line is put the way it is: its tone, how polite or casual it is, and anything cultural in \
+             how it’s said. Keep it under 120 words."
+        }
+        _ => return None,
+    })
+}
+
+/// The prompt for one of the buttons under an explanation (`kind`: gist,
+/// breakdown or nuance). Like a follow-up it carries the line and its
+/// explanation, but not the questions before, so its answer can be kept for the line.
+pub fn explain_more_prompt(context: &str, explanation: &str, kind: &str, answer_in: &str) -> Option<String> {
+    let asked = more_asked(kind)?;
+    Some(format!(
+        "{context}You explained the line to me like this:\n<explanation>\n{}\n</explanation>\n\n\
+         {asked} Answer directly in {answer_in}, for a learner. Use only the subtitles in this request as scene context.",
+        explanation.trim(),
+    ))
+}
+
+/// The answer kept for a button under the explanation of line `index`, while
+/// the line reads as it did (`about`) and the answer is in `language`.
+fn kept_more(backend: &Backend, episode_id: i64, index: usize, kind: &str, about: &str, language: &str) -> Option<String> {
+    let kept = backend.db.answer(episode_id, &format!("line.{kind}"), index as i64).ok().flatten()?;
+    (kept.about == about && kept.extra == language).then_some(kept.text)
+}
+
+/// One of the buttons under an explanation: a kept answer, or an ask to
+/// follow. Asked in the warm session, and kept for the line in the language
+/// it's written in, so English and Japanese answers don't mix.
+pub fn explain_more(backend: &Arc<Backend>, episode_id: i64, index: usize, explanation: &str, kind: &str) -> Result<Value> {
+    let episode = backend.db.episode(episode_id)?.ok_or_else(|| anyhow!("That episode isn’t in Telly any more"))?;
+    let show = backend.db.show(episode.show_id)?.ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?;
+    let lines = jobs::read_lines(backend, episode_id);
+    let line = lines.get(index).ok_or_else(|| anyhow!("That line isn’t in the subtitles any more"))?;
+    let about = one_line(&line.text);
+    let language = answer_in(backend);
+    if let Some(text) = kept_more(backend, episode_id, index, kind, &about, language) {
+        return Ok(json!({ "text": text, "done": true }));
+    }
+    let near: String = lines[index.saturating_sub(12)..=index].iter().map(|l| l.text.as_str()).collect();
+    let context = line_in_context(&show_title(&show), episode.number, &lines, index, &names_line(backend, &show, &near));
+    let prompt = explain_more_prompt(&context, explanation, kind, language).ok_or_else(|| anyhow!("Telly doesn’t know that question"))?;
+    let keeper = backend.clone();
+    let kept_as = format!("line.{kind}");
+    let id = backend.asks.start(prompt, model(backend), EFFORT, true, move |answer| {
+        let _ = keeper.db.save_answer(episode_id, &kept_as, index as i64, &about, answer, language);
+    });
     Ok(json!({ "ask": id }))
 }
 
@@ -759,6 +820,48 @@ mod tests {
         assert!(p.contains("<explanation>\nI’m hungry…\n腹 (はら): belly\n</explanation>"));
         assert!(p.contains("<question>Why no は?</question>\nYou answered:\n<answer>\nIt’s dropped in casual speech.\n</answer>"));
         assert!(p.contains("Now I ask:\n<question>Is 腹 rude?</question>") && p.contains("in English"));
+    }
+
+    #[test]
+    fn gist_break_it_down_and_nuance_each_carry_the_line_and_its_explanation() {
+        let lines = vec![line(1.0, 2.0, "ナツ！"), line(5.0, 6.0, "腹減った…"), line(7.0, 8.0, "また？")];
+        let context = line_in_context("『FAIRY TAIL』", 3, &lines, 1, "");
+        let explanation = "I’m hungry…\n減る (へる): to decrease";
+        let gist = explain_more_prompt(&context, explanation, "gist", "English").unwrap();
+        let breakdown = explain_more_prompt(&context, explanation, "breakdown", "simple Japanese").unwrap();
+        let nuance = explain_more_prompt(&context, explanation, "nuance", "English").unwrap();
+        for p in [&gist, &breakdown, &nuance] {
+            assert!(p.contains("<line>腹減った…</line>") && p.contains("<before>\nナツ！\n</before>"));
+            assert!(!p.contains("また？"));
+            assert!(p.contains("<explanation>\nI’m hungry…\n減る (へる): to decrease\n</explanation>"));
+        }
+        assert!(gist.contains("just the gist") && gist.contains("a sentence or two") && gist.contains("in English"));
+        assert!(breakdown.contains("every word, particle and ending") && breakdown.contains("dictionary form") && breakdown.contains("in simple Japanese"));
+        assert!(nuance.contains("tone") && nuance.contains("polite") && nuance.contains("cultural"));
+        assert_eq!(explain_more_prompt(&context, explanation, "summary", "English"), None);
+    }
+
+    #[test]
+    fn a_button_s_answer_is_kept_for_the_line_in_the_language_it_was_written_in() {
+        let lines: Vec<Line> = (0..3).map(|i| line(i as f64 * 3.0, i as f64 * 3.0 + 2.0, &format!("台詞{i}"))).collect();
+        let (backend, episodes, dir) = library("more", 1, &lines);
+        let id = episodes[0].id;
+        backend.db.save_answer(id, "line.gist", 1, "台詞1", "A line.", "English").unwrap();
+        // Pressing Gist again is instant, in English as it was written.
+        let view = explain_more(&backend, id, 1, "", "gist").unwrap();
+        assert_eq!((view["text"].as_str(), view["done"].as_bool()), (Some("A line."), Some(true)));
+        assert_eq!(kept_more(&backend, id, 1, "gist", "台詞1", "English").as_deref(), Some("A line."));
+        // Not when Japanese answers are asked for, for another button or line, or once the line reads differently.
+        assert_eq!(kept_more(&backend, id, 1, "gist", "台詞1", "simple Japanese"), None);
+        assert_eq!(kept_more(&backend, id, 1, "nuance", "台詞1", "English"), None);
+        assert_eq!(kept_more(&backend, id, 2, "gist", "台詞2", "English"), None);
+        assert_eq!(kept_more(&backend, id, 1, "gist", "台詞一", "English"), None);
+        // With Settings → Claude on simple Japanese, the answer kept in Japanese comes back.
+        backend.db.set_setting("claude.language", &json!("ja")).unwrap();
+        backend.db.save_answer(id, "line.nuance", 1, "台詞1", "ていねいです。", "simple Japanese").unwrap();
+        assert_eq!(explain_more(&backend, id, 1, "", "nuance").unwrap()["text"], "ていねいです。");
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

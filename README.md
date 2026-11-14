@@ -1,55 +1,124 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.svg">
+    <img src="src-tauri/app-icon.svg" width="120" alt="Telly's logo: a television with a play button">
+  </picture>
+</p>
+
 <h1 align="center">Telly</h1>
 
-<p align="center">An anime player for learning Japanese, for Windows.</p>
+<p align="center">
+  <b>Learn Japanese from the anime you already have.</b><br>
+  An anime player for Windows that finds Japanese subtitles for your rips, syncs them, looks up any word you hover over, and makes Anki cards with the line's moving picture and audio.
+</p>
 
 <p align="center">
-  <a href="https://github.com/bee-san/telly/releases/latest">Download</a> ·
-  <a href="#running-it">Running it</a> ·
-  <a href="#explain-and-previously-on">Previously on</a> ·
-  <a href="#filters">Filters</a> ·
-  <a href="#premining">Premining</a> ·
-  <a href="#stats">Stats</a>
+  <a href="https://github.com/bee-san/telly/releases/latest"><img src="https://img.shields.io/badge/Download_for_Windows-ffd84a?style=for-the-badge" alt="Download for Windows"></a>
 </p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/platform-Windows-0078d4" alt="Platform: Windows">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/licence-GPL--3.0--or--later-blue" alt="Licence: GPL-3.0-or-later"></a>
+  <img src="https://img.shields.io/badge/Tauri_2-24c8db?logo=tauri&logoColor=white" alt="Built with Tauri 2">
+  <img src="https://img.shields.io/badge/Rust-000000?logo=rust&logoColor=white" alt="Rust">
+  <img src="https://img.shields.io/badge/Svelte_5-ff3e00?logo=svelte&logoColor=white" alt="Svelte 5">
+</p>
+
+<p align="center">
+  <a href="#-getting-started">Getting started</a> ·
+  <a href="#-features">Features</a> ·
+  <a href="#-explain-and-previously-on">Previously on</a> ·
+  <a href="#-filters">Filters</a> ·
+  <a href="#-premining">Premining</a> ·
+  <a href="#-stats">Stats</a>
+</p>
+
+<br>
 
 ![Looking up ゴチャゴチャ in a subtitle line with Hachidori](docs/lookup.webp)
 
-Point it at a folder of rips and it:
+## 🤔 What is this?
 
-- works out the show on AniList and puts the episodes in order
-- lists your library as movies, series or both, sorted by when it was added, name, year released or the share of its words you know; what you're watching is one row that scrolls sideways
-- gives what AniList doesn't know (live action, a folder of specials) a cover too: the poster from Wikipedia's article of that very name, else a frame from the video, taken at random when it's added, with the title drawn over it as on a poster. Every cover gets a small copy when it's got, which is what the app draws, so the Library scrolls without waiting for pictures. A film is listed as a movie, with its length
-- plays each episode straight from the rip when WebView2 can (H.264, HEVC and AV1, 8-bit or 10-bit, in MKV or MP4), and converts what it can't (MPEG-2 DVD rips; DTS and TrueHD audio, to lossless FLAC) in the background, next episode first. Picking up part-way through, Telly reads the picture where you left off before reading ahead and getting the seek bar's pictures
-- finds Japanese subtitles on [Jimaku](https://jimaku.cc) and syncs them to your rip: to the rip's own subtitles when it has any (in any language, pictures included), or to its speech, heard by [FireRedVAD](https://github.com/FireRedTeam/FireRedVAD)
-- shows them as lines you can look up with [Hachidori](https://github.com/bee-san/hachidori), pausing while you read and carrying on when you move back to the picture
-- plays the Japanese audio track unless you pick another for the show (**Audio ▾**, on rips with more than one), offers **Skip opening** and **Skip outro** from the rip's chapters or [AniSkip](https://aniskip.com), and marks the chapters on the seek bar. Skip outro jumps to any preview or scene after the credits. When the credits run to the end, it opens the end card even if you paused
-- shows the rip's own English subtitles for the line while you hold **Tab**, when the rip has them as text (**?** lists every key)
-- shrinks to a small player on top of your other windows (**I**), to watch beside a game: the picture alone, its subtitles sized to the window, and the main controls only while the pointer is over it (the rest are on their keys). Hovering a line still pauses and looks it up, and mining works as before. Drag it by the picture and size it from its corners, and it keeps the picture's shape. It opens where you left it last time (the first time, in the bottom-right corner of the screen); **I** or Esc puts the window back as it was
-- finishes the cards you mine with an animated AVIF of the line and its audio as Opus
-- explains the line on screen when you press **E**, and when you come back to a show, opens on **Previously on**: the story so far in its arcs, the episode you left, and key moments to watch again, each with a caption (both by Claude, through the Claude Code on your computer)
-- premines: before you watch, it lists the words in the next episodes that you don't know yet and makes them into cards in your Hachidori card format
-- makes a dictionary of the characters in what you're watching, the way [characterdictionary.tokyo](https://characterdictionary.tokyo) does, adds it to Hachidori and colours their names in the subtitles
-- finds a word in every line it's said in across your library, the lines you can read first, and plays the scene around each
-- recommends anime to watch next, from what AniList's users recommend to people who liked the shows in your library
-- logs what you watch for [Tidepool](https://github.com/bee-san/tidepool), and on your AniList list once you've signed in
-- shows when you first finished each show or film and the dates you completed full rewatches, on its page in the Library
+Watching anime with Japanese subtitles is a good way to learn Japanese, and a fiddly one to set up: subtitles to find and line up with your rip, a dictionary for the words you don't know, cards for the ones you want to keep. Telly is an anime player that does all of it.
+
+Point it at a folder of rips and it gets every episode ready in the background. When you sit down to watch, you press play and hover over any word you don't know.
+
+## ✨ Features
+
+### 🎌 Learning Japanese
+
+- 🎯 **[Japanese subtitles, synced to your rip](#-how-subtitles-are-matched):** it finds Japanese subtitles on [Jimaku](https://jimaku.cc) and syncs them to your rip: to the rip's own subtitles when it has any (in any language, pictures included), or to its speech, heard by [FireRedVAD](https://github.com/FireRedTeam/FireRedVAD).
+- 🔍 **Hover to look up:** it shows them as lines you can look up with [Hachidori](https://github.com/bee-san/hachidori), pausing while you read and carrying on when you move back to the picture.
+- 💬 **English when you need it:** it shows the rip's own English subtitles for the line while you hold **Tab**, when the rip has them as text (**?** lists every key).
+- 🃏 **Cards that move:** it finishes the cards you mine with an animated AVIF of the line and its audio as Opus.
+- 🧠 **[Explain and Previously on](#-explain-and-previously-on):** it explains the line on screen when you press **E**, and when you come back to a show, opens on **Previously on**: the story so far in its arcs, the episode you left, and key moments to watch again, each with a caption (both by Claude, through the Claude Code on your computer).
+- 📝 **[Premining](#-premining):** before you watch, it lists the words in the next episodes that you don't know yet and makes them into cards in your Hachidori card format.
+- 📛 **[Character names](#-character-names):** it makes a dictionary of the characters in what you're watching, the way [characterdictionary.tokyo](https://characterdictionary.tokyo) does, adds it to Hachidori and colours their names in the subtitles.
+- 🗣️ **[Every line a word is said in](#-searching-shows-and-lines):** it finds a word in every line it's said in across your library, the lines you can read first, and plays the scene around each.
+
+### ▶️ Watching
+
+- 🎬 **Your rips, as they are:** it plays each episode straight from the rip when WebView2 can (H.264, HEVC and AV1, 8-bit or 10-bit, in MKV or MP4), and converts what it can't (MPEG-2 DVD rips; DTS and TrueHD audio, to lossless FLAC) in the background, next episode first. Picking up part-way through, Telly reads the picture where you left off before reading ahead and getting the seek bar's pictures.
+- 🎧 **The right audio, and no sitting through the opening:** it plays the Japanese audio track unless you pick another for the show (**Audio ▾**, on rips with more than one), offers **Skip opening** and **Skip outro** from the rip's chapters or [AniSkip](https://aniskip.com), and marks the chapters on the seek bar. Skip outro jumps to any preview or scene after the credits. When the credits run to the end, it opens the end card even if you paused.
+- 🪟 **A small player on top:** it shrinks to a small player on top of your other windows (**I**), to watch beside a game: the picture alone, its subtitles sized to the window, and the main controls only while the pointer is over it (the rest are on their keys). Hovering a line still pauses and looks it up, and mining works as before. Drag it by the picture and size it from its corners, and it keeps the picture's shape. It opens where you left it last time (the first time, in the bottom-right corner of the screen); **I** or Esc puts the window back as it was.
+- 🎨 **[Filters](#-filters):** Anime4K's upscalers, FSR, Denoise, Restore and more clean up an old or small rip, and three televisions show it as on a CRT.
+
+### 📚 Your library
+
+- 🔎 **Shows worked out:** it works out the show on AniList and puts the episodes in order.
+- 🗂️ **A library to browse:** it lists your library as movies, series or both, sorted by when it was added, name, year released or the share of its words you know; what you're watching is one row that scrolls sideways.
+- 🖼️ **A cover for everything:** what AniList doesn't know (live action, a folder of specials) gets a cover too: the poster from Wikipedia's article of that very name, else a frame from the video, taken at random when it's added, with the title drawn over it as on a poster. Every cover gets a small copy when it's got, which is what the app draws, so the Library scrolls without waiting for pictures. A film is listed as a movie, with its length.
+- 🔁 **Every time through:** each show or film's page in the Library shows when you first finished it and the dates you completed full rewatches.
+- 💡 **[Something to watch next](#-recommended):** it recommends anime to watch next, from what AniList's users recommend to people who liked the shows in your library.
+- 📈 **Logged for you:** it logs what you watch for [Tidepool](https://github.com/bee-san/tidepool), and on your [AniList list](#-your-anilist-list) once you've signed in.
 
 ![The Library: what you're watching, then every show with the share of its words you know](docs/library.webp)
 
-The design, plans and build order are in the [design artifact](https://claude.ai/artifact/VbgPYuAenU9pXpGiVTWGjn).
+## 🆚 Why Telly?
 
-## Installing
+| Without Telly, you… | With Telly… |
+|---|---|
+| look for Japanese subtitles for each episode, download them and line them up with your rip | they're found on Jimaku for every episode and synced in the background, to the rip's own subtitles or its speech |
+| put a dictionary popup over your video player | Hachidori is built in: hover over a word, and the episode pauses while you read |
+| cut the line's picture and audio for every card you make | each card you mine gets an animated AVIF of the line and its audio as Opus |
+| meet the words you don't know mid-scene | the words in the next episodes you don't know yet are made into cards before you watch |
+| try to remember where the story was | Previously on tells you, and plays the key moments again |
+| skip the opening by hand | **Skip opening** and **Skip outro** come from the rip's chapters or AniSkip |
 
-Each [release](https://github.com/bee-san/telly/releases) has the installer, `Telly_<version>_x64-setup.exe`, an installer for your Windows user. Publishing a release tagged `v<version>` (the version in `src-tauri/tauri.conf.json`) builds it on GitHub Actions and adds it to the release (`.github/workflows/release.yml`); run the workflow by hand to build one without a release. `npm run release` builds the same installer locally, in `src-tauri/target/release/bundle/nsis/`. Run it as `Telly_<version>_x64-setup.exe /P /D=%LOCALAPPDATA%\Programs\Telly` to keep the app apart from Telly's data: without `/D` it installs to `%LOCALAPPDATA%\Telly`, the folder that also holds your library. Later installs reuse the folder the first one used.
+## 🚀 Getting started
 
-## Running it
+### 📦 Installing
 
-```
+Download the installer, `Telly_<version>_x64-setup.exe`, from the [latest release](https://github.com/bee-san/telly/releases/latest) and run it. It installs Telly for your Windows user.
+
+> [!TIP]
+> Run it as `Telly_<version>_x64-setup.exe /P /D=%LOCALAPPDATA%\Programs\Telly` to keep the app apart from Telly's data: without `/D` it installs to `%LOCALAPPDATA%\Telly`, the folder that also holds your library. Later installs reuse the folder the first one used.
+
+### 🧭 The first time it opens
+
+A few screens set Telly up, finding out what they can before asking:
+
+| Screen | What it sets up |
+|---|---|
+| 📁 **Your rips** | the folders of your rips (read while you go on, then checked and added) |
+| 🎞️ **ffmpeg** | the one you choose, else one on PATH, else GameSentenceMiner's copy; cards need its libsvtav1 and libopus |
+| 🔑 **Jimaku** | your Jimaku API key |
+| 🃏 **Anki** | the deck, the note type and its card fields, and Anki Beacon's address, so cards are finished the moment you add them |
+| 📖 **Dictionaries** | the folder of your Yomitan dictionaries |
+| 🧠 **Claude Code** | checked with a test question |
+| 📈 **AniList** | optional: signed in, each episode you watch goes on your AniList list |
+
+Each screen says whether its part works and can be skipped. Settings lists what isn't working, found by the same checks, and **Run setup again** opens the setup again. A library set up before there was a setup (one with shows or a Jimaku key) doesn't go through it.
+
+### 💻 Running it from source
+
+```bash
 npm install
 npm run prepare:hachidori   # once: downloads Hachidori and sets it up for Telly
 npm run tauri dev
 ```
 
-The first time Telly opens, a few screens set it up, finding out what they can before asking: the folders of your rips (read while you go on, then checked and added), ffmpeg (the one you choose, else one on PATH, else GameSentenceMiner's copy; cards need its libsvtav1 and libopus), your Jimaku API key, Anki (the deck, the note type and its card fields, and Anki Beacon's address, so cards are finished the moment you add them), your dictionaries, Claude Code (with a test question) and AniList. Each screen says whether its part works and can be skipped. Settings lists what isn't working, found by the same checks, and **Run setup again** opens the setup again. A library set up before there was a setup (one with shows or a Jimaku key) doesn't go through it.
+### 📖 Hachidori in Telly
 
 Hachidori in Telly is ready to mine on its own, in overlay mode (lookups on hover, no first-run page):
 
@@ -59,35 +128,84 @@ Hachidori in Telly is ready to mine on its own, in overlay mode (lookups on hove
 
 Settings → Hachidori can link it to the Hachidori in your browser instead, so lookups use that one's dictionaries, settings and card format, through Hachidori Relay in Anki (or Telly's own relay while Anki is closed), with sharing on in the browser's Hachidori (Settings → Sharing).
 
-## Explain and Previously on
+## ⌨️ Keys
+
+In the player (**?** lists them too):
+
+| Key | | Key | |
+|---|---|---|---|
+| <kbd>Space</kbd> or <kbd>K</kbd> | Play or pause | <kbd>E</kbd> | Explain the line |
+| <kbd>←</kbd> and <kbd>→</kbd> | Previous and next line | <kbd>P</kbd> | Show Previously on |
+| <kbd>↓</kbd> | Replay the line | <kbd>M</kbd> | Add the line to the last card |
+| <kbd>-</kbd> and <kbd>=</kbd> | Volume down and up | Hold <kbd>Tab</kbd> | Show the rip's English subtitles |
+| <kbd>0</kbd> | Mute | <kbd>S</kbd> | Show subtitles |
+| <kbd>[</kbd> and <kbd>]</kbd> | Slower and faster | <kbd>B</kbd> | Blur subtitles until hovered |
+| <kbd>F</kbd> | Fullscreen | <kbd>Z</kbd> and <kbd>X</kbd> | Subtitles earlier and later |
+| <kbd>I</kbd> | Small player, on top of other windows | <kbd>T</kbd> | Show transcript |
+| <kbd>Esc</kbd> | Close, or leave fullscreen or the small player | <kbd>V</kbd> | Show filters |
+| <kbd>?</kbd> | Show shortcuts | | |
+
+## 🧠 Explain and Previously on
 
 ![Previously on: the moments from the episode you left, each with a caption, then the episode starts](docs/previously-on.gif)
 
 Both use [Claude Code](https://claude.com/claude-code), installed and signed in on this computer: Telly runs `claude -p` with no tools, the way Gromit Reader does, so it uses your own sign-in and needs no API key. It asks Haiku 5.5 unless Settings → Claude picks another model, and answers in English or simple Japanese.
 
+<details>
+<summary>⚡ <b>How Explain answers within seconds</b></summary>
+
+<br>
+
 Claude Code takes 3 to 15 seconds to start, longer than Haiku takes to answer. So while the player is open Telly keeps one Claude Code started and past its first turn, and Explain asks in it: the answer starts 1 to 3 seconds after you press E and is complete within 4 (measured over 12 questions: first words after 1.1 to 3.3 s, the whole answer after 1.8 to 4.1 s, against 24 s starting Claude Code for each question with its default model). What's left is Haiku's own time to answer. Telly also starts Claude Code with its non-essential traffic off (update checks, telemetry), which saves a few seconds more.
 
-- **Explain** (E, or Explain on a transcript line) pauses and starts with a translation, then explains the words and grammar a learner might trip on. It uses the selected line and earlier dialogue for context. The answer shows as it's written and is saved, so asking again is instant. Under it, **Gist** gives just the important part in a sentence or two, **Break it down** goes through every word, particle and ending in order, tracing each conjugated form back to its dictionary form, and **Nuance** says why it's put that way: its tone, politeness and culture. Their answers are saved for the line too, so pressing one again is instant (unless you've switched between English and Japanese since). The box under them asks a follow-up question about the line, in the same warm Claude Code; each question carries the line, its explanation and the questions before, and follow-ups aren't saved.
-- **Previously on** (P, or Recap) tells the story so far: the story cut into its arcs, each with what happens in it and the episodes it spans, then **Last time** for the episode you left, then up to three scenes from the episode you left and up to six across the whole story, each with a caption. The clips give each exchange time to finish before fading into the next scene. Each recap carries on from the one kept for the episode before, so only the episode you just left is read (up to six when there's no recap to carry on from). When you come back to a show after 8 hours (Settings → Claude), the moments play first, opening on "Previously on" and the show's title, each one's sound crossfading into the next's as the next dissolves in, as a TV recap is cut, and the episode starts after them, through a card naming it (and where it picks up); Read recap shows the text instead. Back within 3 days, it's only Last time and that episode's moments, with the rest behind Show story so far. Picking up in the middle of an episode, the recap runs up to where you stopped. It's written when you leave the player, so it's ready next time (Haiku takes about 15 seconds for one episode); if it isn't, the episode starts and Telly says when the recap is ready.
+</details>
 
-## Filters
+### Explain
+
+**Explain** (E, or Explain on a transcript line) pauses and starts with a translation, then explains the words and grammar a learner might trip on. It uses the selected line and earlier dialogue for context. The answer shows as it's written and is saved, so asking again is instant. Under it:
+
+| Button | What it gives |
+|---|---|
+| **Gist** | just the important part, in a sentence or two |
+| **Break it down** | goes through every word, particle and ending in order, tracing each conjugated form back to its dictionary form |
+| **Nuance** | says why it's put that way: its tone, politeness and culture |
+
+Their answers are saved for the line too, so pressing one again is instant (unless you've switched between English and Japanese since). The box under them asks a follow-up question about the line, in the same warm Claude Code; each question carries the line, its explanation and the questions before, and follow-ups aren't saved.
+
+### Previously on
+
+**Previously on** (P, or Recap) tells the story so far: the story cut into its arcs, each with what happens in it and the episodes it spans, then **Last time** for the episode you left, then up to three scenes from the episode you left and up to six across the whole story, each with a caption. The clips give each exchange time to finish before fading into the next scene.
+
+When you come back to a show after 8 hours (Settings → Claude), the moments play first, opening on "Previously on" and the show's title, each one's sound crossfading into the next's as the next dissolves in, as a TV recap is cut, and the episode starts after them, through a card naming it (and where it picks up); Read recap shows the text instead. Back within 3 days, it's only Last time and that episode's moments, with the rest behind Show story so far. Picking up in the middle of an episode, the recap runs up to where you stopped.
+
+It's written when you leave the player, so it's ready next time (Haiku takes about 15 seconds for one episode); if it isn't, the episode starts and Telly says when the recap is ready. Each recap carries on from the one kept for the episode before, so only the episode you just left is read (up to six when there's no recap to carry on from).
+
+## 🎨 Filters
 
 ![Filters: clicking Anime4K, Restore and others on and off, each tile showing the frame through its filter](docs/filters.gif)
 
 **Filters** in the player (V) opens a panel of tiles, each showing the frame through one filter. Click filters to put them on, and they run one after another in the order you clicked them, each on the picture the one before left: with two or more, each tile says where it comes, 1, 2, 3. Click one again to take it out, or None to take them all off. The filters are drawn over the picture only, so the subtitles stay sharp, and they're remembered for each show. When an episode fills well over its own size on screen (1.5× or more) and its show has no filter picked, a note suggests Anime4K, once.
 
-- **Denoise** smooths out grain, as on DVD-era rips, and keeps lines sharp. **Deband** smooths the bands in skies and dark gradients.
-- **Restore** undoes blur and compression blocks, and **Restore Soft** does less, for a cleaner rip.
-- **Anime4K** S, M and L are [Anime4K](https://github.com/bloc97/Anime4K)'s 2× upscalers, for a rip smaller than the screen. L looks best and needs the most from the graphics card. **FSR** is AMD's FidelityFX Super Resolution 1, an upscaler to the screen's size with its own sharpening: much lighter than Anime4K. **Lanczos** scales the picture to the screen plainly.
-- **Thin Lines** and **Darken Lines** make outlines slimmer or bolder.
-- **Sharpen** crisps lines, and **FSR Sharpen** is FSR's sharpening alone: stronger, and gentler on grain.
-- **Trinitron**, **PVM-20M2** and **Dorm TV** are three of [michadame](https://github.com/Morgawr/michadame)'s televisions: its Halo shaders and presets, unchanged. They're made for a 4K screen: on a smaller one the scanlines fade and the picture comes out brighter. A television draws the whole screen, so it always comes last, and picking another takes its place.
+| Filter | What it does |
+|---|---|
+| **Denoise** | smooths out grain, as on DVD-era rips, and keeps lines sharp |
+| **Deband** | smooths the bands in skies and dark gradients |
+| **Restore** | undoes blur and compression blocks; **Restore Soft** does less, for a cleaner rip |
+| **Anime4K** S, M and L | [Anime4K](https://github.com/bloc97/Anime4K)'s 2× upscalers, for a rip smaller than the screen. L looks best and needs the most from the graphics card |
+| **FSR** | AMD's FidelityFX Super Resolution 1, an upscaler to the screen's size with its own sharpening: much lighter than Anime4K |
+| **Lanczos** | scales the picture to the screen plainly |
+| **Thin Lines**, **Darken Lines** | make outlines slimmer or bolder |
+| **Sharpen** | crisps lines; **FSR Sharpen** is FSR's sharpening alone: stronger, and gentler on grain |
+| **Trinitron**, **PVM-20M2**, **Dorm TV** | three of [michadame](https://github.com/Morgawr/michadame)'s televisions: its Halo shaders and presets, unchanged. They're made for a 4K screen: on a smaller one the scanlines fade and the picture comes out brighter. A television draws the whole screen, so it always comes last, and picking another takes its place |
 
-Denoise, Restore, Thin Lines and Darken Lines are Anime4K's too. An upscaler works from the picture as it stands, and is passed over once the picture fills the screen: Anime4K after Anime4K doesn't double it again, and Anime4K does nothing to a rip that's already the screen's size. Lanczos shrinks a picture too, so after an upscaler that left it bigger than the screen, it does the fitting. For an old rip, for example: Denoise, Restore, Anime4K M, Sharpen.
+Denoise, Restore, Thin Lines and Darken Lines are Anime4K's too. An upscaler works from the picture as it stands, and is passed over once the picture fills the screen: Anime4K after Anime4K doesn't double it again, and Anime4K does nothing to a rip that's already the screen's size. Lanczos shrinks a picture too, so after an upscaler that left it bigger than the screen, it does the fitting.
+
+> [!TIP]
+> For an old rip, for example: Denoise, Restore, Anime4K M, Sharpen.
 
 The shaders and where they come from are in `src/lib/filters/shaders`.
 
-## Character names
+## 📛 Character names
 
 ![ハク looked up in a subtitle line: his name card from Telly characters, with his portrait](docs/names.webp)
 
@@ -97,7 +215,7 @@ It goes into Hachidori as **Telly characters** the way SubMiner sends its own: t
 
 `cargo run --profile measure --example names_check -- <AniList id> <folder>` builds one show's dictionary on its own, to see what it holds.
 
-## Premining
+## 📝 Premining
 
 A show's page has **Premine**: the words in the next episode (or the next 3 or 10) that you have no card for, most useful first, each with the first line it comes up in. Tick the ones you want, or take the top 20, 40 or 80, and **Make cards**.
 
@@ -109,6 +227,11 @@ A show's page has **Premine**: the words in the next episode (or the next 3 or 1
 
 A show's page also shows, for each episode with subtitles, the share of its words that are known, counted the same way, and the Library shows each show's. Telly keeps the shares, and a copy of the words Anki says you have, so both are there at once and with Anki closed. With Anki open they're brought up to date when Telly starts, when the Library or a show's page opens, and once a day while Telly stays open: three searches for note ids and one for the notes edited since Telly last looked (Anki counts that in whole days, so it looks a day further back), then only the notes Telly hasn't read and those edited, so a word you correct in Anki is corrected in Telly too. The show whose page is open goes first, then the shows you're watching, the latest first, then the rest.
 
+<details>
+<summary>🔬 <b>When an episode's words are worked out, and how fast</b></summary>
+
+<br>
+
 An episode's words are worked out when its subtitles sync, and kept. An episode whose subtitles synced while Telly's Hachidori couldn't be asked (it was starting, or installing a dictionary) gets its words when the Library or a show's page next opens, that show's episodes first, or once Hachidori can be asked. Nothing is worked out while a dictionary in your folder is still to be installed, so no episode keeps words that miss its entries.
 
 The 10 episodes of Cyberpunk: Edgerunners season 2 (5,300 lines, 3,300 different words and runs of nouns to look up) took 26 to 32 s to work out with six dictionaries, and take a few seconds now, with the same words (runs taken in turn, Telly's Hachidori in Chromium on Linux):
@@ -119,7 +242,9 @@ The 10 episodes of Cyberpunk: Edgerunners season 2 (5,300 lines, 3,300 different
 
 `cargo run --profile measure --example words_check -- <data folder> <port> <dictionaries folder> <subtitle files>` times it against a copy of Telly's Hachidori open in a browser (see the example for how; `--shares` times the Library's pass).
 
-## Searching shows and lines
+</details>
+
+## 🔎 Searching shows and lines
 
 Hover over a show title to read the whole name. Search in the Library by Japanese title, English title or romaji. Telly uses AniList's titles and can also work out a reading from the Japanese title.
 
@@ -130,9 +255,16 @@ Search for Japanese words in the same box, in Japanese or romaji. Type `gakko` f
 - **The lines you can read first** lead: those that are said (not sung, not a caption's note), then those with the fewest other words you don't know. A show lists up to 100 of its lines, with how many it has.
 - The lines are kept in `telly-lines.sqlite`, made from the files in `subtitles` when they sync and in a pass as Telly starts (about three minutes for 2,700 episodes the first time).
 
+<details>
+<summary>🔬 <b>How fast it is</b></summary>
+
+<br>
+
 On 850,000 lines in 2,700 episodes (made up, a tenth of them without their words saved), a word said in 42,000 lines took 0.27 s to answer, and 0.95 s to be listed on the page. Before the 100 a show, the same word sent 7.6 MB in 0.77 s, and a single kana 64 MB in 6.3 s.
 
-## Recommended
+</details>
+
+## 💡 Recommended
 
 ![Recommended: anime to watch next, each with the shows in your library it's recommended from](docs/recommended.webp)
 
@@ -144,7 +276,7 @@ On 850,000 lines in 2,700 episodes (made up, a tenth of them without their words
 
 AniList's answers are kept for a week. A show is asked about again after that, and a show you add is asked about the next time the page opens.
 
-## Stats
+## 📊 Stats
 
 ![Stats for 7 days: time watched, episodes, lines, cards mined, each day's watching and words known](docs/stats.webp)
 
@@ -156,7 +288,7 @@ AniList's answers are kept for a week. A show is asked about again after that, a
 - **Words** are the words you know, as Settings → Known words counts them, charted by the day each word's first card was made in Anki. That's when its card was made, not when you learnt it. **In what you watched** is the share of the period's episodes' words that you know now, and **In your library** the same for every episode.
 - **Finished** has the shows finished or fully rewatched in the period. Press one for its own page: its time, lines and cards, each episode's cards and share of known words, the days you watched it (a row for each time through), and the words you mined from it, each in its line. A card's word shows once you've studied the card; until then, its line shows alone.
 
-## Your AniList list
+## 📋 Your AniList list
 
 In **Settings → AniList**, **Get a token** opens AniList, which shows an access token once you approve Telly. Paste it and press **Sign in**. From then on, each episode you watch raises that anime's progress on your list, and its last episode marks it completed.
 
@@ -167,16 +299,29 @@ In **Settings → AniList**, **Get a token** opens AniList, which shows an acces
 - If AniList can't be reached, Telly tries again every 10 minutes, and Settings says why it failed.
 - **Recommended** leaves out what's on your list, except what you only plan to watch. A copy of the list is kept, fetched again when Telly starts, when you sign in and after Telly updates it.
 
-## How subtitles are matched
+## 🎯 How subtitles are matched
 
 Telly tries every file Jimaku has that could be the episode's, syncs each to the episode, and keeps the one that fits best.
 
 - **Your own subtitles:** a Japanese subtitle file beside the rip and named after it (`Episode 01.ja.srt`, `Episode 01.srt`) is used as it is, with nothing of the rip read and no sync to move it: you put it there. Every show's episodes get theirs before any rip is read. Of several, the one re-timed with alass (`.alass.srt`) is taken, then one marked Japanese (`.ja.srt`, `.jpn.srt`), then one named just as the rip, and a machine-made one (`.ai.srt`) last; the episode's page can switch to another. A Japanese track inside the rip comes first among the rest: when it's in sync already (a sync would move it less than half a second), Telly keeps it as it is and doesn't ask Jimaku. Otherwise it's synced along with Jimaku's files.
 - **What files are matched to:** the rip's own subtitles when it has any, in any language. Picture subtitles (PGS, as on most Blu-ray rips) are read from the container's packets: no OCR is needed, only when each subtitle shows. They're timed to this very video, so they place a file far more precisely than the speech does, and in a few seconds. Lines showing at once (a song's karaoke) count once. A rip without subtitles is matched to its speech, heard by FireRedVAD (FireRedTeam's detector, which finds 96% of speech where WebRTC's finds 36%, without music fooling it).
+
+<details>
+<summary>🔬 <b>How Telly judges a fit, picks a file and places it</b></summary>
+
+<br>
+
 - **How sure a fit is:** by how much of the timing the file's lines cover, against the same lines moved 20 seconds to 5 minutes away, and by how often they start where the timing's lines start (within 0.3 s), against the same moved 23 seconds to 3¼ minutes away. Where the timing has lines most of the time, in long stretches of talk, a file moved a minute covers nearly as much, so coverage says little; where the lines start still says where the file belongs. So a file fits with one shift when its line starts stand 6.5 spreads above chance, and each quarter of it above chance on its own: the lines of a TV broadcast's file between two ad breaks stand far above chance at their shift, but that shift doesn't fit the rest. Line starts tell a file's speed (PAL) too, where coverage can't.
 - **Which number:** a show added as one folder holding several seasons gets its files looked for under Telly's number, the number in the file's name, and that number after the season folders before it, since Jimaku's packs often number a whole run from 1. A season folder's own AniList entry is looked up on Jimaku too. What fits teaches the folder its numbering, and when nothing expected fits, every file is screened and the best few synced in full: a release whose order differs (Judas's Fairy Tail 2014 runs in another order than Netflix's from its 48th episode) still finds each episode's file.
 - **Which file:** one synced in one piece beats one that fits only cut into pieces (below); otherwise one that fits beats one that doesn't; then clean Japanese text (not furigana or English set as lines); then a file made for this very release (the same release tag); then the smaller shift; then the tighter fit. A Japanese track inside the rip counts as made for it, and as an exact fit when the rip is matched to that track. When nothing fits, Telly keeps nothing rather than the wrong episode's lines.
 - **Files timed to a TV broadcast:** a recording of the broadcast has the ads in it, so its subtitles are a minute or more out after each break and don't fit with one shift. When no file syncs with one shift, Telly cuts each file where alass cuts it, but only where the broadcast's lines pause for 20 seconds or more (an ad break, the opening): elsewhere alass moves an episode's last scene onto the closing song, whose sung lines, thick and fast, agree with anything. Each piece goes where its lines start with the timing's. Coverage can't judge pieces, since another episode's file cut up covers the timing as well as one that belongs, but line starts can: the pieces are kept only if, together, their lines start with the timing's far more often than when moved 23 seconds to 3¼ minutes away (6.5 spreads above chance). A piece of under 10 lines, or no better than chance, follows its neighbour, so a short recap or cold open that can't be placed is left out rather than shown at the wrong time.
+
+</details>
+
+<details>
+<summary>📏 <b>Measured on Fairy Tail and Cyberpunk: Edgerunners</b></summary>
+
+<br>
 
 Measured on Fairy Tail's 286 Judas Blu-ray episodes: every one of the 277 TV episodes synced (files that belong stood 6.3 to 17 spreads above chance, files that don't at most 5.4), Judas-timed files chosen where they exist (1 to 40), Netflix's elsewhere, and the 9 OVAs, for which Jimaku has nothing, left without. Synced by speech instead, the same files came within 0.15 s.
 
@@ -186,7 +331,9 @@ Measured on Cyberpunk: Edgerunners season 2 (10 episodes, each rip with 10 full 
 
 `cargo run --profile measure --example sync_real -- <telly.sqlite> <jimaku folder> 1-286` runs this over a library, read-only, and says what Telly would keep for each episode.
 
-## Machine-made subtitles
+</details>
+
+## 🤖 Machine-made subtitles
 
 When Jimaku has nothing for an episode (or there's no key yet), its show's page offers **Make subtitles with Whisper**. It uses the whisper.cpp Tidepool downloads for voice input, with one of whisper.cpp's multilingual models, chosen and downloaded in Settings → Machine-made subtitles: small (190 MB, the default), medium (539 MB), large v3 turbo (574 MB) or large v3 (1.1 GB). How much better the bigger ones hear Japanese hasn't been measured here. Whisper's subtitles are marked as machine-made.
 
@@ -194,7 +341,7 @@ With an OpenRouter API key in Settings, a model on [OpenRouter](https://openrout
 
 With that key, Telly also asks OpenRouter by itself, without the button. An episode no subtitle file fits has its subtitles made this way. And when a file's timing fit is doubtful, four 90-second stretches of the episode are sent: if at least 12 of the lines heard, from at least 3 stretches, read like the file's lines and agree on one shift, the file is moved there (the episode's details say “matched to what MAI-Transcribe heard”, naming the model chosen); if not, the timing's own answer stands. On one episode, with whisper.cpp's small model listening, a file thrown out by 1.1, 7.3 and 42 seconds came back within 0.08 s.
 
-## Getting a library ready
+## ⏳ Getting a library ready
 
 Telly works through a library in the background: each show's next episode first, then the 10 after it, then the rest. Several episodes are worked on at once, and the title bar says which show is being got ready, or how many shows. Click it for what each worker is doing and how far it's got, and for the work waiting of each kind (video, subtitles, the seek bar's pictures, words), the next to be taken first.
 
@@ -203,6 +350,11 @@ Telly works through a library in the background: each show's next episode first,
 - **For the player:** that one read also makes the seek bar's pictures, when the rip itself is what plays, and keeps the rip's English lines, so the player doesn't read the rip from end to end when an episode first plays. On an SSD, the subtitle tracks are read on their own first, in a fraction of a second where the pictures take seconds, and the pictures made just after, from what that read left in Windows' file cache. Telly's own copy of an episode gets its pictures when the copy is made. Episodes got ready before this are caught up in the background, next episodes first.
 - **One rip at a time from each hard drive:** the rest of an episode's work (asking Jimaku, syncing its files) goes on while the next rip is read, but two rips aren't read from one hard drive at once, and the episodes that come first (each show's next) are read first. A hard drive reads two at once slower than one after the other. An SSD, which Windows tells apart, is read three rips at a time; a drive Windows can't say (a network share, some USB enclosures) is read as a hard drive.
 - **While a game is running:** no episode starts converting, getting its subtitles or its seek bar's pictures until the game closes, so the game has the processor and the drive. An episode already under way is finished. The title bar says what the work is waiting for: "Waiting for Wow.exe to close". A game is a program in a Steam, Epic, GOG, Riot or Xbox games folder (`steamapps\common`, `Epic Games`, `GOG Games`, `Riot Games`, `XboxGames`) or in `World of Warcraft`, or `Wow.exe` or `WowClassic.exe` wherever it is. The launchers and services that stay running in those folders (Epic Games Launcher and Epic Online Services, Riot Client, Wallpaper Engine) aren't games. Telly looks every 10 seconds. Settings → Games turns this off, and adds other games by their program's name, which is all Telly goes by for a game Windows won't tell it the folder of (one run as administrator, say).
+
+<details>
+<summary>📏 <b>Measured on a USB hard drive and an SSD</b></summary>
+
+<br>
 
 Measured on a 4 TB USB hard drive (Seagate Expansion, exFAT) nothing else was reading, each run on rips that weren't in Windows' file cache:
 
@@ -214,7 +366,9 @@ Measured on a 4 TB USB hard drive (Seagate Expansion, exFAT) nothing else was re
 
 `cargo run --profile measure --example jobs_check -- <data folder>` runs the background work over a scratch copy of a library and says when each episode was done, and what the title bar said.
 
-## When your rips move
+</details>
+
+## 🚚 When your rips move
 
 Telly knows a show's episodes by where their rips are. When the rips aren't there:
 
@@ -223,9 +377,9 @@ Telly knows a show's episodes by where their rips are. When the rips aren't ther
 - **Settings → Moved rips** does the same for every show in a folder at once: everything that was in `D:\Anime` is now in `E:\Anime`.
 - **Look for new episodes** (and Telly's look every 10 minutes) finds a rip moved within its show's folder, into a season folder, say, by its name and size, rather than taking it for a new release of the episode.
 
-## Where things go
+## 📂 Where things go
 
-| | |
+| Where | What |
 |---|---|
 | `%LOCALAPPDATA%\Telly\telly.sqlite` | your shows, episodes, where you are, settings, the card queue |
 | `%LOCALAPPDATA%\Telly\media` | Telly's copies of episodes WebView2 can't play as they are. Settings → Disk space can move them to another folder, on an external drive, say |
@@ -237,9 +391,12 @@ Telly knows a show's episodes by where their rips are. When the rips aren't ther
 | `%LOCALAPPDATA%\Telly\anilist-list.json` | which anime are on your AniList list, once you've signed in |
 | `%APPDATA%\Telly\telly-log.sqlite` | what you watched, for Tidepool (counts only, never the text) |
 
-Your rips are never moved or changed.
+> [!NOTE]
+> Your rips are never moved or changed.
 
-## Developing
+## 🔧 Developing
+
+The design, plans and build order are in the [design artifact](https://claude.ai/artifact/VbgPYuAenU9pXpGiVTWGjn).
 
 - `cargo test --manifest-path src-tauri/Cargo.toml --lib` runs the backend's tests.
 - `npm run check` type-checks the frontend.
@@ -249,6 +406,25 @@ Your rips are never moved or changed.
 
 Ports: 8771 is Hachidori Relay's (Telly runs its own while Anki is closed), 8773 is where Telly listens for Anki Beacon.
 
-## Licence
+### Building the installer
+
+Publishing a release tagged `v<version>` (the version in `src-tauri/tauri.conf.json`) builds `Telly_<version>_x64-setup.exe` on GitHub Actions and adds it to the release (`.github/workflows/release.yml`); run the workflow by hand to build one without a release. `npm run release` builds the same installer locally, in `src-tauri/target/release/bundle/nsis/`.
+
+## 🙏 Built on
+
+Telly stands on a lot of other people's work:
+
+- [Hachidori](https://github.com/bee-san/hachidori) for lookups and cards, and [Yomitan Audio Fast](https://github.com/bee-san/yomitan-audio-fast) for word audio
+- [Jimaku](https://jimaku.cc) for Japanese subtitles, and [AniSkip](https://aniskip.com) for openings and outros
+- [AniList](https://anilist.co) for shows, casts, recommendations and your list
+- [FireRedVAD](https://github.com/FireRedTeam/FireRedVAD) for hearing speech, and alass for cutting broadcast-timed files
+- [Lindera](https://github.com/lindera/lindera) for splitting lines into words
+- [characterdictionary.tokyo](https://github.com/bee-san/Japanese_Character_Name_Dictionary)'s builder for character names
+- [Anime4K](https://github.com/bloc97/Anime4K), [michadame](https://github.com/Morgawr/michadame) and AMD's FidelityFX Super Resolution for filters
+- [Claude Code](https://claude.com/claude-code) for Explain and Previously on
+- whisper.cpp (the copy [Tidepool](https://github.com/bee-san/tidepool) downloads) and [OpenRouter](https://openrouter.ai) for machine-made subtitles
+- Gromit Reader, whose Hachidori, relay and Beacon code Telly copies
+
+## 📜 Licence
 
 GPL-3.0-or-later, as Gromit Reader (whose Hachidori, relay and Beacon code Telly copies) and alass are.

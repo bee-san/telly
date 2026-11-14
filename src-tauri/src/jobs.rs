@@ -16,7 +16,9 @@
 //!   3. the rest: subtitles always; videos only when nothing has played for a
 //!      couple of minutes and Settings allows it, as copies take disk space
 //!
-//! Episodes you've watched get subtitles last and are never converted.
+//! Episodes you've watched get subtitles last and are never converted. A
+//! show whose folder isn't there (its drive unplugged, or the folder moved)
+//! is left as it is until it's back, or found where it is now (relink.rs).
 //!
 //! While a game is running (games.rs), no worker takes another episode until
 //! it closes; one already being worked on is finished.
@@ -43,6 +45,8 @@ pub const GOOD_SYNC: f64 = 0.5;
 const FITS_NOT: f64 = 0.15;
 /// After this, the quick sync stops trying more files.
 const GREAT_SYNC: f64 = 0.75;
+/// What an episode's work says when its rip isn't where Telly has it.
+pub const GONE: &str = "The file isn’t there any more";
 /// The most subtitle files tried per episode. Matching a file to the rip's own
 /// subtitles takes a fraction of a second, so it can try every set Jimaku has.
 const MAX_TRIES: usize = 12;
@@ -287,6 +291,18 @@ impl Jobs {
         }
     }
 
+    /// Episodes whose rips were just found where they are now (relink.rs):
+    /// what was looked for while they weren't there (their pictures and
+    /// English lines, your subtitle files beside them) is looked for again.
+    pub fn look_again(&self, episodes: &[i64]) {
+        let mut caught_up = self.caught_up.lock().unwrap_or_else(|e| e.into_inner());
+        let mut looked_beside = self.looked_beside.lock().unwrap_or_else(|e| e.into_inner());
+        for id in episodes {
+            caught_up.remove(id);
+            looked_beside.remove(id);
+        }
+    }
+
     /// What the workers are doing now, for the title bar: last, which game
     /// they're waiting for, when that's all there is to say.
     pub fn tasks(&self) -> Vec<Task> {
@@ -425,6 +441,8 @@ pub fn waiting<'a>(backend: &Backend, kind: &str, library: &'a [(Show, Vec<Episo
     for (rank, (show, episodes)) in library.iter().enumerate() {
         let count = episodes.len();
         let next = next_episode(episodes).map(|e| e.number).unwrap_or(1);
+        // Whether the show's folder is there, looked at once it has work waiting.
+        let mut here = None;
         for e in episodes {
             let waiting = match kind {
                 "media" => e.media_state == "pending",
@@ -437,6 +455,10 @@ pub fn waiting<'a>(backend: &Backend, kind: &str, library: &'a [(Show, Vec<Episo
             };
             if !waiting {
                 continue;
+            }
+            // Its rips can't be read: nothing of it is done, failed or forgotten until they can.
+            if !*here.get_or_insert_with(|| Path::new(&show.folder).is_dir()) {
+                break;
             }
             let bucket = bucket(e.number, next, ahead);
             // Only episodes near the next are got ready, but for a copy got ready
@@ -851,7 +873,7 @@ fn plan_for(backend: &Backend, episode: &Episode, probe: &media::Probe) -> (Plan
 fn plan_video(backend: &Backend, ffprobe: &Path, show: &Show, episode: &Episode) -> Result<Option<(media::Probe, Plan, usize)>> {
     let source = PathBuf::from(&episode.path);
     if !source.is_file() {
-        return Err(anyhow!("The file isn’t there any more: {}", episode.path));
+        return Err(anyhow!("{GONE}: {}", episode.path));
     }
     let probe = media::probe(ffprobe, &source)?;
     let (plan, audio) = plan_for(backend, episode, &probe);
@@ -1481,6 +1503,35 @@ fn keep_timing(backend: &Backend, episode: &Episode, timing: &Timing) {
     }
 }
 
+/// What's kept by where an episode's rip is, moved with it from `from` to
+/// `to` (relink.rs): the timing read from it, and your subtitle files beside
+/// it among those to switch between.
+pub fn rip_moved(backend: &Backend, episode_id: i64, from: &str, to: &str) {
+    let path = timing_path(backend, episode_id);
+    if let Some(mut kept) = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice::<KeptTiming>(&b).ok()) {
+        if kept.rip == from {
+            kept.rip = to.to_string();
+            if let Ok(json) = serde_json::to_vec(&kept) {
+                let _ = crate::util::write_whole(&path, json);
+            }
+        }
+    }
+    let mut tried = read_tried(backend, episode_id);
+    let (before, now) = (crate::relink::folder_of(from), crate::relink::folder_of(to));
+    let mut moved = false;
+    for t in tried.iter_mut().filter(|t| t.beside) {
+        if let Some(rest) = crate::relink::below(before, &t.path) {
+            t.path = crate::relink::join(now, &rest);
+            moved = true;
+        }
+    }
+    if moved {
+        if let Ok(json) = serde_json::to_vec(&tried) {
+            let _ = crate::util::write_whole(&tried_path(backend, episode_id), json);
+        }
+    }
+}
+
 /// The timing kept for an episode, if it was read from the rip it has now.
 fn kept_timing(backend: &Backend, episode: &Episode) -> Option<Timing> {
     let kept: KeptTiming = serde_json::from_slice(&std::fs::read(timing_path(backend, episode.id)).ok()?).ok()?;
@@ -2093,8 +2144,12 @@ fn find_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &Path, 
     if !own.is_empty() {
         return keep_beside(backend, episode, &own);
     }
-    let key = backend.db.setting_str("jimaku.key");
     let rip = Path::new(&episode.path);
+    // Without it there's no knowing which file fits, and what the episode has stays.
+    if !rip.is_file() {
+        return Err(anyhow!("{GONE}: {}", episode.path));
+    }
+    let key = backend.db.setting_str("jimaku.key");
     // One rip is read through at a time on each drive, the episodes that come
     // first first (see `Jobs::drive`): this one is queued from now until it
     // reads, or knows it won't before asking Jimaku.
@@ -2445,7 +2500,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let backend = Arc::new(Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap());
         let episodes = (1..=2).map(|number| crate::db::NewEpisode { number, path: format!("{number}.mkv"), size: 1, duration: 1400.0 }).collect();
-        let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let show = backend.db.add_show(&crate::db::NewShow { folder: dir.to_string_lossy().into_owned(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
         let game = |name: Option<&str>| *backend.jobs.game.lock().unwrap() = name.map(str::to_string);
         let worker = || {
             let backend = backend.clone();
@@ -2510,7 +2565,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("telly-probe-once-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
-        let episodes = (1..=2).map(|number| crate::db::NewEpisode { number, path: format!("{number}.mkv"), size: 1, duration: 1400.0 }).collect();
+        let rip = |number: i64| {
+            let path = dir.join(format!("{number}.mkv"));
+            std::fs::write(&path, b"rip").unwrap();
+            path.to_string_lossy().into_owned()
+        };
+        let episodes = (1..=2).map(|number| crate::db::NewEpisode { number, path: rip(number), size: 1, duration: 1400.0 }).collect();
         let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
         let show = backend.db.show(show).unwrap().unwrap();
         let eps = backend.db.episodes(show.id).unwrap();
@@ -2529,12 +2589,59 @@ mod tests {
     }
 
     #[test]
+    fn a_show_whose_folder_isn_t_there_is_left_as_it_is() {
+        let dir = std::env::temp_dir().join(format!("telly-unplugged-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let open = || Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let backend = open();
+        // A show on a drive that's unplugged: episodes still to get ready, one queued for Whisper, one ready but behind.
+        let unplugged = dir.join("unplugged");
+        let episodes = (1..=4).map(|number| crate::db::NewEpisode { number, path: unplugged.join(format!("{number}.mkv")).to_string_lossy().into_owned(), size: 1, duration: 1400.0 }).collect();
+        let away = backend.db.add_show(&crate::db::NewShow { folder: unplugged.to_string_lossy().into_owned(), title: "Away".into(), episodes, ..Default::default() }).unwrap();
+        let eps = backend.db.episodes(away).unwrap();
+        backend.db.queue_whisper(None, Some(eps[1].id)).unwrap();
+        backend.db.media_ready(eps[2].id, &eps[2].path, 0, 0).unwrap();
+        backend.db.set_subs(eps[2].id, "synced", "", "", None, None).unwrap();
+        let kinds = ["media", "probe", "subs", "whisper", "catch up"];
+        let waiting_for = |backend: &Backend, kind: &str| -> Vec<i64> {
+            let library = library(backend);
+            waiting(backend, kind, &library).into_iter().map(|(_, e, _)| e.id).collect()
+        };
+        for kind in kinds {
+            assert!(waiting_for(&backend, kind).is_empty(), "{kind}");
+        }
+        // Failed subtitles are tried again at the next start, but not a show's whose folder isn't there.
+        backend.db.set_subs_state(eps[0].id, "failed", "Jimaku was down").unwrap();
+        drop(backend);
+        let backend = open();
+        assert_eq!(backend.db.episode(eps[0].id).unwrap().unwrap().subs_state, "failed");
+        // Plugged in again, its work is there to do.
+        std::fs::create_dir_all(&unplugged).unwrap();
+        for kind in kinds {
+            assert!(!waiting_for(&backend, kind).is_empty(), "{kind}");
+        }
+
+        // A rip gone from a folder that's there: finding its subtitles fails, and its lines stay.
+        let ep = &eps[0];
+        write_lines(&backend, ep.id, &[Line { start: 1.0, end: 2.0, text: "せりふ".into(), ruby: vec![], speaker: String::new(), sign: false }]).unwrap();
+        backend.db.set_subs_state(ep.id, "pending", "").unwrap();
+        assert!(backend.db.claim_subs(ep.id).unwrap());
+        let show = backend.db.show(away).unwrap().unwrap();
+        let nothing = Path::new("no-such-tool");
+        let error = find_subtitles(&backend, &Mutex::new(None), nothing, nothing, &show, ep, 3).unwrap_err();
+        assert!(error.to_string().starts_with(GONE), "{error}");
+        assert_eq!(read_lines(&backend, ep.id).len(), 1);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn workers_never_take_the_same_episode() {
         let dir = std::env::temp_dir().join(format!("telly-take-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
         let episodes = (1..=40).map(|number| crate::db::NewEpisode { number, path: format!("{number}.mkv"), size: 1, duration: 1400.0 }).collect();
-        backend.db.add_show(&crate::db::NewShow { folder: "D:\\Anime\\Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        backend.db.add_show(&crate::db::NewShow { folder: dir.to_string_lossy().into_owned(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
         // Four workers take subtitle work until none is left: each episode goes to one of them.
         let mut taken: Vec<i64> = std::thread::scope(|scope| {
             let workers: Vec<_> = (0..4).map(|_| scope.spawn(|| std::iter::from_fn(|| take(&backend, "subs")).map(|(_, e, _)| e.number).collect::<Vec<_>>())).collect();
@@ -2561,7 +2668,9 @@ mod tests {
         let backend = std::sync::Arc::new(Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap());
         let add = |title: &str, count: i64| {
             let episodes = (1..=count).map(|number| crate::db::NewEpisode { number, path: format!("{title} {number}.mkv"), size: 1, duration: 1400.0 }).collect();
-            backend.db.add_show(&crate::db::NewShow { folder: title.into(), title: title.into(), episodes, ..Default::default() }).unwrap()
+            let folder = dir.join(title);
+            std::fs::create_dir_all(&folder).unwrap();
+            backend.db.add_show(&crate::db::NewShow { folder: folder.to_string_lossy().into_owned(), title: title.into(), episodes, ..Default::default() }).unwrap()
         };
         let (fairy_tail, frieren) = (add("Fairy Tail", 30), add("Frieren", 15));
         // Frieren was watched last, up to episode 5: its episode 6 is next, the 10 after it near, the 5 before it last.
@@ -2671,7 +2780,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
         let episodes = (1..=2).map(|number| crate::db::NewEpisode { number, path: format!("{number}.mkv"), size: 1, duration: 1400.0 }).collect();
-        let show = backend.db.add_show(&crate::db::NewShow { folder: "D:\\Anime\\Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let show = backend.db.add_show(&crate::db::NewShow { folder: dir.to_string_lossy().into_owned(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
         let first = backend.db.episodes(show).unwrap().remove(0);
         // The rip's English lines are kept from its tracks as they were read: the full track's, without its signs.
         let track = |index: i64, title: &str, text: &str| (
@@ -2707,7 +2816,7 @@ mod tests {
         let open = || Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
         let backend = open();
         let episodes = (1..=3).map(|number| crate::db::NewEpisode { number, path: format!("{number}.mkv"), size: 1, duration: 1400.0 }).collect();
-        let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let show = backend.db.add_show(&crate::db::NewShow { folder: dir.to_string_lossy().into_owned(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
         let eps = backend.db.episodes(show).unwrap();
         // Three episodes ready, with their pictures: one rip has no subtitles,
         // one an English track that gave no lines, one an English track not read yet.

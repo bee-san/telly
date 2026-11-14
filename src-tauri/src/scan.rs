@@ -160,7 +160,9 @@ fn is_video(path: &Path) -> bool {
         .is_some_and(|e| VIDEO_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
 }
 
-fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+/// Adds the videos in `dir` and the folders below it to `out`, down to
+/// `MAX_DEPTH` folders below the chosen one (`dir` is `depth` down).
+pub fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let path = entry.path();

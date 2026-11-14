@@ -684,6 +684,33 @@ impl Db {
         Ok(())
     }
 
+    /// Points shows at the folders they're in now, and episodes at where
+    /// their rips are now (relink.rs), in one go. Nothing else of theirs
+    /// changes: a rip that plays as it is plays from its new place, and Telly's
+    /// copies stay where they are. Work given up on because the rip wasn't
+    /// there (`jobs::GONE`), and subtitles that failed, are tried again.
+    pub fn relink(&self, shows: &[(i64, String)], episodes: &[(i64, String)]) -> Result<()> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        for (id, folder) in shows {
+            tx.execute("UPDATE shows SET folder = ?2 WHERE id = ?1", params![id, folder])?;
+        }
+        for (id, path) in episodes {
+            tx.execute(
+                "UPDATE episodes SET path = ?2, play_path = CASE WHEN play_path = path THEN ?2 ELSE play_path END,
+                   media_progress = CASE WHEN media_state = 'failed' AND media_error LIKE ?3 || '%' THEN 0 ELSE media_progress END,
+                   media_error = CASE WHEN media_state = 'failed' AND media_error LIKE ?3 || '%' THEN '' ELSE media_error END,
+                   media_state = CASE WHEN media_state = 'failed' AND media_error LIKE ?3 || '%' THEN 'pending' ELSE media_state END,
+                   subs_detail = CASE WHEN subs_state = 'failed' THEN '' ELSE subs_detail END,
+                   subs_state = CASE WHEN subs_state = 'failed' THEN 'pending' ELSE subs_state END
+                 WHERE id = ?1",
+                params![id, path, crate::jobs::GONE],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn media_reset(&self, id: i64) -> Result<()> {
         self.conn()?.execute(
             "UPDATE episodes SET media_state = 'pending', media_progress = 0, media_error = '', play_path = '' WHERE id = ?1",

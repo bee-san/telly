@@ -189,6 +189,15 @@ Measured on a 4 TB USB hard drive (Seagate Expansion, exFAT) nothing else was re
 
 `cargo run --profile measure --example jobs_check -- <data folder>` runs the background work over a scratch copy of a library and says when each episode was done, and what the title bar said.
 
+## When your rips move
+
+Telly knows a show's episodes by where their rips are. When the rips aren't there:
+
+- **An unplugged drive** isn't a show that's gone: nothing of the show is got ready, given up on or forgotten until the drive is back, and the show's page says its folder isn't there.
+- **Find its folder…**, on the page of a show whose rips aren't where they were (the folder moved or was renamed, or the drive's letter changed), asks which folder it's in now. Telly matches each episode to a file there, by its place in the show's folder first, then by its name and size, and shows what it found ("24 of 24 episodes found", and which it didn't) before anything changes. **Use this folder** keeps everything: where you were, what you watched, the subtitles, kept explanations and recaps, the seek bar's pictures and your cards. Episodes it didn't find are left as they were, and what failed because a rip wasn't there is tried again.
+- **Settings → Moved rips** does the same for every show in a folder at once: everything that was in `D:\Anime` is now in `E:\Anime`.
+- **Look for new episodes** (and Telly's look every 10 minutes) finds a rip moved within its show's folder, into a season folder, say, by its name and size, rather than taking it for a new release of the episode.
+
 ## Where things go
 
 | | |

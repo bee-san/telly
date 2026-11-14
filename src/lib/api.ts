@@ -268,6 +268,20 @@ export interface ShowMove {
   missing: { id: number; number: number; path: string }[];
 }
 
+/** What a backup says about itself (backup.rs): the Telly that made it, when, and how many shows and episodes it has. */
+export interface Backup {
+  telly: string;
+  madeAt: number;
+  shows: number;
+  episodes: number;
+}
+
+/** A backup chosen to restore: what's in it, where it is, and how many shows the library here has. */
+export interface BackupFile extends Backup {
+  path: string;
+  showsHere: number;
+}
+
 export interface Line {
   start: number;
   end: number;
@@ -615,6 +629,18 @@ export async function pickFile(title: string, extensions: string[], name: string
   const { open } = await import("@tauri-apps/plugin-dialog");
   const picked = await open({ directory: false, multiple: false, title, filters: [{ name, extensions }] });
   return typeof picked === "string" ? picked : null;
+}
+
+/** Windows' save dialog in the app; a prompt in a browser. */
+export async function pickSaveFile(title: string, extensions: string[], name: string, suggested: string): Promise<string | null> {
+  if (!inTauri) return window.prompt(title + " (full path)", suggested);
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  return save({ title, defaultPath: suggested, filters: [{ name, extensions }] });
+}
+
+/** Starts Telly again, to finish restoring a backup (in the app only). */
+export async function restartTelly(): Promise<void> {
+  if (inTauri) await invoke("restart");
 }
 
 export async function setWindowTitle(title: string): Promise<void> {

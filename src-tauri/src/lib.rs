@@ -8,6 +8,7 @@ pub mod aniskip;
 pub mod anki;
 pub mod ask;
 pub mod backend;
+pub mod backup;
 pub mod cards;
 pub mod claude;
 pub mod clip;
@@ -82,6 +83,14 @@ async fn call(backend: State<'_, Arc<Backend>>, cmd: String, args: Value) -> Res
     tauri::async_runtime::spawn_blocking(move || backend.call(&cmd, args).map_err(|e| format!("{e:#}")))
         .await
         .map_err(|e| e.to_string())?
+}
+
+/// Starts Telly again, once Restore has unpacked a backup: it takes the
+/// library's place as Telly starts (backup.rs). Synchronous, so it runs on the
+/// main thread, where restarting needs no round through the event loop.
+#[tauri::command]
+fn restart(app: AppHandle) {
+    app.restart();
 }
 
 #[derive(Serialize)]
@@ -316,7 +325,7 @@ pub fn run() {
                 window.app_handle().exit(0);
             }
         })
-        .invoke_handler(tauri::generate_handler![call, hachidori_info, hachidori_start, open_hachidori_settings, relay_status])
+        .invoke_handler(tauri::generate_handler![call, hachidori_info, hachidori_start, open_hachidori_settings, relay_status, restart])
         .run(tauri::generate_context!())
         .expect("error while running Telly");
 }

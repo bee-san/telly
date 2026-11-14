@@ -5,6 +5,7 @@
 use crate::anilist::{self, Anime};
 use crate::anilist_list;
 use crate::ask::{self, Asks};
+use crate::backup;
 use crate::cards::{self, Event};
 use crate::covers;
 use crate::db::{Db, Episode, NewShow, Show};
@@ -434,7 +435,19 @@ impl Backend {
     pub fn open(dirs: Dirs) -> Result<Self> {
         std::fs::create_dir_all(&dirs.local)?;
         std::fs::create_dir_all(&dirs.roaming)?;
+        // A backup that Restore unpacked takes the library's place before anything opens it.
+        let restored = backup::finish_restore(&dirs);
         let db = Db::open(&dirs.local.join("telly.sqlite"))?;
+        // For the page to say once: what was restored, or why it wasn't.
+        match restored {
+            Ok(Some(made)) => {
+                let _ = db.set_setting(backup::RESTORED, &json!(made));
+            }
+            Ok(None) => {}
+            Err(e) => {
+                let _ = db.set_setting(backup::NOT_RESTORED, &json!(format!("{e:#}")));
+            }
+        }
         let log = Log::open(&dirs.roaming.join("telly-log.sqlite"))?;
         let _ = log.tidy();
         let lines = search::Index::open(&dirs.local.join("telly-lines.sqlite"))?;
@@ -1535,6 +1548,9 @@ impl Backend {
                 let apply = arg::<Option<bool>>(&args, "apply")?.unwrap_or(false);
                 to_value(relink::library(self, &arg::<String>(&args, "from")?, &arg::<String>(&args, "to")?, apply)?)
             }
+            "backUp" => backup::back_up(self, &arg::<String>(&args, "path")?),
+            "readBackup" => backup::read(self, &arg::<String>(&args, "path")?),
+            "restoreBackup" => backup::stage(self, &arg::<String>(&args, "path")?),
             "removeShow" => self.remove_show(arg(&args, "id")?),
             "renumber" => {
                 let order: Vec<(i64, i64)> = arg(&args, "order")?;

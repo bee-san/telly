@@ -1,5 +1,6 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
+  import { page } from "$app/state";
   import { onMount } from "svelte";
   import Icon from "$lib/Icon.svelte";
   import {
@@ -13,8 +14,12 @@
     openHachidoriSettings,
     pickFile,
     pickFolder,
+    pickSaveFile,
     relayStatus,
+    restartTelly,
     setWindowTitle,
+    type Backup,
+    type BackupFile,
     type ClaudeStatus,
     type HachidoriInfo,
     type HostStatus,
@@ -240,6 +245,58 @@
       toast({ key: "moved", state: "failed", title: "Nothing was changed", text: errorText(e) });
     }
     loadAway();
+  }
+
+  /** Just restored from a backup whose shows' rips aren't where it has them (routes/+page.ts sends you here). */
+  const restored = page.url.searchParams.has("restored");
+
+  /** Backing up, and the backup chosen to restore once Telly has read what's in it. */
+  let backingUp = $state(false);
+  let restoring = $state<BackupFile | null>(null);
+  /** "unpacking" while Telly unpacks it; "restart" once only a restart is left to do. */
+  let restoreStep = $state<"" | "unpacking" | "restart">("");
+  const madeOn = new Intl.DateTimeFormat(undefined, { dateStyle: "long", timeStyle: "short" });
+
+  async function backUp() {
+    const d = new Date();
+    const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const path = await pickSaveFile("Save a backup of Telly", ["zip"], "Telly backup", `Telly backup ${day}.zip`);
+    if (!path) return;
+    backingUp = true;
+    try {
+      const made = await call<Backup & { path: string; bytes: number }>("backUp", { path });
+      toast({ key: "backup", state: "done", title: `Backed up ${plural(made.shows, "show")} (${bytes(made.bytes)})`, text: made.path });
+    } catch (e) {
+      toast({ key: "backup", state: "failed", title: "Not backed up", text: errorText(e) });
+    }
+    backingUp = false;
+  }
+
+  /** Reads what's in a backup, for Restore and restart to confirm. */
+  async function chooseBackup() {
+    const path = await pickFile("Choose a backup of Telly", ["zip"], "Telly backup");
+    if (!path) return;
+    try {
+      restoring = await call<BackupFile>("readBackup", { path });
+      restoreStep = "";
+    } catch (e) {
+      toast({ key: "restore", state: "failed", title: "Can’t restore this", text: errorText(e) });
+    }
+  }
+
+  /** Unpacks the backup beside the library, and starts Telly again: it takes the library's place as Telly starts. */
+  async function restore() {
+    if (!restoring) return;
+    restoreStep = "unpacking";
+    try {
+      await call("restoreBackup", { path: restoring.path });
+    } catch (e) {
+      restoreStep = "";
+      toast({ key: "restore", state: "failed", title: "Nothing was restored", text: errorText(e) });
+      return;
+    }
+    restoreStep = "restart";
+    await restartTelly().catch(() => {});
   }
 
   const movedFound = $derived(moved?.reduce((n, m) => n + m.found.length, 0) ?? 0);
@@ -654,8 +711,11 @@
     <p class="muted mono path">{status?.dataDir}</p>
   </section>
 
-  <section>
+  <section id="moved">
     <h2>Moved rips</h2>
+    {#if restored && away.length}
+      <p class="lede"><b>Your library is back.</b> The rips of {plural(away.length, "show")} aren’t where they were when the backup was made. Say where they are now here, or with Find its folder… on each show’s page.</p>
+    {/if}
     <p class="lede">If your rips moved to another folder or drive, or the drive’s letter changed, Telly can find them there and keep where you were, what you watched, your cards and subtitles. It matches each episode to a file in the new folder; the rips aren’t moved or changed.</p>
     {#if away.length}
       <p class="muted">Not where they were: {away.map((a) => a.title).join(", ")}</p>
@@ -721,6 +781,32 @@
     <h2>Tidepool</h2>
     <p class="lede">Watching is logged for Tidepool’s Japanese log: each sitting, and the lines and characters that played, never the text itself.</p>
     <p class="muted mono path">{status?.logPath}</p>
+  </section>
+
+  <section id="backup">
+    <h2>Backup</h2>
+    <p class="lede">A backup is one file with what Telly can’t make again: your shows, where you are in each and what you watched, your settings, the subtitles and your nudges to their timing, Tidepool’s log, the words you know and your AniList list. Restore it on a new computer or after reinstalling. Telly’s copies of episodes, covers and the seek bar’s pictures aren’t in it, as Telly makes them again, and nor are your rips.</p>
+    <p class="lede">It holds your Jimaku and OpenRouter keys and your AniList token, so keep it where only you can open it.</p>
+    {#if restoring}
+      <div class="moved">
+        <p><b>Made by Telly {restoring.telly} on {madeOn.format(restoring.madeAt)}</b>, with {plural(restoring.shows, "show")} and {plural(restoring.episodes, "episode")}</p>
+        <span class="muted mono path">{restoring.path}</span>
+        {#if restoreStep === "restart"}
+          <p>{inTauri ? "Restart Telly to finish restoring." : "Restart the dev server to finish restoring."}</p>
+        {:else}
+          <p>Restoring puts this library in place of the one here{restoring.showsHere ? ` (${plural(restoring.showsHere, "show")})` : ""}, and Telly restarts into it. Your rips stay as they are. If they aren’t where they were when the backup was made, Telly asks where they are now.</p>
+          <div class="actions">
+            <button type="button" class="btn" disabled={restoreStep === "unpacking"} onclick={restore}>{restoreStep === "unpacking" ? "Restoring…" : "Restore and restart"}</button>
+            <button type="button" class="btn quiet" disabled={restoreStep === "unpacking"} onclick={() => (restoring = null)}>Cancel</button>
+          </div>
+        {/if}
+      </div>
+    {:else}
+      <div class="actions">
+        <button type="button" class="btn quiet" disabled={backingUp} onclick={backUp}>{backingUp ? "Backing up…" : "Back up…"}</button>
+        <button type="button" class="btn quiet" onclick={chooseBackup}>Restore…</button>
+      </div>
+    {/if}
   </section>
 </div>
 

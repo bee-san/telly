@@ -32,7 +32,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 pub const FOLDER: &str = "hachidori.dictionaries";
 pub const MODEL: &str = "anki.noteType";
 pub const DECK: &str = "anki.deck";
-const INSTALLED: &str = "hachidori.installed";
+pub const INSTALLED: &str = "hachidori.installed";
 const DEFAULT_MODEL: &str = "kiku_typed";
 const DEFAULT_DECK: &str = "例文マイニング";
 /// Word dictionaries, by a word in their file name, in the order they go in.

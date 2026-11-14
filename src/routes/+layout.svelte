@@ -23,7 +23,7 @@
 </script>
 
 <div class="shell" class:dark={app.dark}>
-  {#if !app.fullscreen}<TitleBar />{/if}
+  {#if !app.fullscreen && !app.compact}<TitleBar />{/if}
   <main class="body">
     {@render children()}
   </main>

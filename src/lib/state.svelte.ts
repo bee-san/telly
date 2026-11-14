@@ -1,11 +1,12 @@
 // What every page shares: the background work in the title bar, and whether
-// the player (dark chrome) is up.
+// the player (dark chrome) is up, full screen or the small player.
 import { call, type Activity } from "./api";
 
-export const app = $state<{ activity: Activity | null; dark: boolean; fullscreen: boolean }>({
+export const app = $state<{ activity: Activity | null; dark: boolean; fullscreen: boolean; compact: boolean }>({
   activity: null,
   dark: false,
   fullscreen: false,
+  compact: false,
 });
 
 let timer: ReturnType<typeof setTimeout> | null = null;

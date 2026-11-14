@@ -4,8 +4,9 @@
   import { onMount } from "svelte";
   import Cover from "$lib/Cover.svelte";
   import Icon from "$lib/Icon.svelte";
-  import { call, callKept, errorText, kept, pickFile, pickFolder, setWindowTitle, type Anime, type EpisodeRow, type MissingRips, type ShowMove, type ShowView } from "$lib/api";
+  import { call, callKept, errorText, kept, pickFile, pickFolder, setWindowTitle, type Anime, type EpisodeRow, type Library, type MissingRips, type ShowMove, type ShowView } from "$lib/api";
   import { bytes, clock, mediaLabel, plural, statusOf, subsHelp, subsLabel } from "$lib/format";
+  import { animeOf, partsText } from "$lib/series";
   import { app } from "$lib/state.svelte";
   import { toast } from "$lib/toast-store.svelte";
 
@@ -19,6 +20,9 @@
   let busy = $state(false);
   /** What Find its folder… found in the folder chosen, before anything changes. */
   let moving = $state<ShowMove | null>(null);
+  /** Move to another anime… is open: the library's anime to choose from, and what's typed to find one. */
+  let regrouping = $state.raw<Library | null>(null);
+  let regroupFilter = $state("");
 
   async function load() {
     const show = id;
@@ -60,6 +64,7 @@
     menu = null;
     matching = false;
     moving = null;
+    regrouping = null;
     allRows = false;
     let timer: ReturnType<typeof setTimeout>;
     // Stopped when the page is left, even with an answer on its way.
@@ -139,6 +144,32 @@
     const show = card.id;
     matching = false;
     await act(() => call("rematch", { id: show, anilistId: a.id }));
+  }
+
+  /** The anime this show could be listed under: every other one in the library, those whose name has what's typed. */
+  const otherAnime = $derived.by(() => {
+    if (!regrouping || !card) return [];
+    const typed = regroupFilter.trim().toLowerCase();
+    return animeOf(regrouping.shows.filter((s) => s.id !== card.id))
+      .filter((a) => a.id !== card.series.id && (!typed || [a.title, a.native].some((t) => t.toLowerCase().includes(typed))))
+      .sort((a, b) => a.title.localeCompare(b.title));
+  });
+
+  async function openRegroup() {
+    regroupFilter = "";
+    try {
+      regrouping = await callKept<Library>("library");
+    } catch (e) {
+      toast({ key: "showerr", state: "failed", title: "That didn’t work", text: errorText(e) });
+    }
+  }
+
+  /** Lists this show under the anime `to` (its key), on its own (0), or where AniList has it (null). */
+  async function regroup(to: number | null) {
+    if (!card) return;
+    const show = card.id;
+    regrouping = null;
+    await act(() => call("moveShow", { id: show, to }));
   }
 
   async function freeSpace() {
@@ -244,7 +275,11 @@
 </script>
 
 <div class="showpg scroll">
-  <button type="button" class="back" onclick={() => goto("/")}><Icon name="back" /><span>Back to library</span></button>
+  {#if card && card.series.parts > 1}
+    <button type="button" class="back" onclick={() => card && goto(`/anime?id=${card.series.id}`)}><Icon name="back" /><span>Back to {card.series.title}</span></button>
+  {:else}
+    <button type="button" class="back" onclick={() => goto("/")}><Icon name="back" /><span>Back to library</span></button>
+  {/if}
   {#if error}<p class="err">{error}</p>{/if}
   {#if card && st}
     <div class="sp-head">
@@ -303,6 +338,7 @@
           <span class="grow"></span>
           <button type="button" class="btn quiet" onclick={() => card && goto(`/premine?show=${card.id}`)} title="Make cards for the words that take you to the share of the show you choose">Premine</button>
           <button type="button" class="btn quiet" onclick={() => { matching = true; query = card?.titleRomaji || card?.title || ""; found = []; search(); }}>Change match…</button>
+          <button type="button" class="btn quiet" onclick={openRegroup} title="List it in the Library under another anime, with that anime’s seasons and movies, or on its own">Move to another anime…</button>
           {#if missing > 0 && view?.whisper.ready}
             <button type="button" class="btn quiet" onclick={whisperAll} title="For the {missing} episodes without subtitles; marked as machine-made">Make subtitles with {maker}</button>
           {:else if missing > 0 && view?.whisper.needsModel}
@@ -392,6 +428,31 @@
   </div>
 {/if}
 
+{#if regrouping && card}
+  <div class="modal-bg" role="presentation" onclick={(e) => e.target === e.currentTarget && (regrouping = null)}>
+    <div class="sheet" role="dialog" aria-modal="true" aria-label="Move to another anime">
+      <input class="input" bind:value={regroupFilter} placeholder="Search" aria-label="Search the library’s anime" />
+      <div class="results scroll">
+        {#if view?.seriesMoved}
+          <button type="button" class="result plain" onclick={() => regroup(null)}><span class="r-body"><span class="r-en">Put back where AniList has it</span></span></button>
+        {/if}
+        {#if card.series.parts > 1}
+          <button type="button" class="result plain" onclick={() => regroup(0)}><span class="r-body"><span class="r-en">List on its own</span></span></button>
+        {/if}
+        {#each otherAnime as a (a.id)}
+          <button type="button" class="result plain" onclick={() => regroup(a.id)}>
+            <span class="r-body">
+              <span class="r-en">{a.title}</span>
+              <span class="r-meta">{a.parts.length > 1 ? partsText(a.parts) : a.native}</span>
+            </span>
+          </button>
+        {/each}
+      </div>
+      <div class="sheet-foot"><button type="button" class="btn quiet" onclick={() => (regrouping = null)}>Cancel</button></div>
+    </div>
+  </div>
+{/if}
+
 {#if matching}
   <div class="modal-bg" role="presentation" onclick={(e) => e.target === e.currentTarget && (matching = false)}>
     <div class="sheet" role="dialog" aria-modal="true" aria-label="Change match">
@@ -475,6 +536,8 @@
   .results { display: grid; gap: 4px; max-height: 460px; overflow: auto; }
   .result { all: unset; display: grid; grid-template-columns: 46px minmax(0, 1fr); gap: 12px; align-items: center; padding: 6px; border-radius: 6px; cursor: pointer; }
   .result:hover { background: var(--sunk); }
+  .result:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
+  .result.plain { grid-template-columns: minmax(0, 1fr); padding: 9px 8px; }
   .result img, .result .noimg { width: 46px; aspect-ratio: 135 / 190; object-fit: cover; border-radius: 2px; background: var(--sunk); display: block; }
   .r-body { display: grid; gap: 2px; min-width: 0; }
   .r-jp { font: 800 15px/1.25 var(--font-jp-title); }

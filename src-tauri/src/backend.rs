@@ -22,6 +22,7 @@ use crate::recommend;
 use crate::relink;
 use crate::scan;
 use crate::search;
+use crate::series;
 use crate::stats;
 use crate::subs::Line;
 use crate::sync;
@@ -131,6 +132,8 @@ pub struct Backend {
     media_folder: RwLock<Option<PathBuf>>,
     /// What Telly is downloading (torrents.rs).
     pub downloads: Downloads,
+    /// AniList's entries and the anime each belongs to (series.rs).
+    pub series: series::Kept,
 }
 
 /// Where "Earlier/Later from here" last moved an episode's lines from, so
@@ -207,6 +210,8 @@ pub struct ShowCard {
     pub status: String,
     pub next: Option<NextUp>,
     pub cards: i64,
+    /// The anime it's listed under in the Library, with its other seasons and movies.
+    pub series: series::Place,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -503,6 +508,7 @@ impl Backend {
             moved: Mutex::new(None),
             media_folder: RwLock::new(None),
             downloads: Downloads::default(),
+            series: series::Kept::default(),
         })
     }
 
@@ -520,6 +526,7 @@ impl Backend {
             torrents::start(backend.clone());
             backend.watch_folders();
             backend.fill_covers();
+            series::gather(&backend);
             recommend::gather(&backend);
             premine::start_shares(&backend, None);
             premine::start_daily_shares(&backend);
@@ -781,6 +788,8 @@ impl Backend {
             cards: cards_by_show.get(&show.id).copied().unwrap_or(0),
             movie: is_movie(&show.format, show.anilist_id.is_some(), &lengths),
             cover_caption: !cover.is_empty() && self.db.setting_bool(&frame_setting(show.id), false),
+            // On its own, until the Library says which anime it's part of (`library`).
+            series: series::Place { id: -show.id, title: show.title.clone(), native: show.title_native.clone(), order: 0, parts: 1 },
             show,
             cover,
             episodes: episodes.len(),
@@ -882,10 +891,14 @@ impl Backend {
         for e in self.db.all_episodes()? {
             by_show.entry(e.show_id).or_default().push(e);
         }
+        let mut places = series::places(&series::graph(self), &shows, &self.db.settings()?);
         let mut cards = Vec::with_capacity(shows.len());
         for s in shows {
             let episodes = by_show.remove(&s.id).unwrap_or_default();
-            cards.push(self.card(s, &episodes, &cards_by_show, &scores)?);
+            let place = places.remove(&s.id);
+            let mut card = self.card(s, &episodes, &cards_by_show, &scores)?;
+            card.series = place.unwrap_or(card.series);
+            cards.push(card);
         }
         Ok(json!({ "shows": cards, "activity": self.activity(), "setup": self.setup(), "downloaded": torrents::offers(self) }))
     }
@@ -897,7 +910,8 @@ impl Backend {
         let next_id = jobs::next_episode(&episodes).map(|e| e.id);
         // Find its folder… is offered when its rips aren't where Telly has them.
         let rips_missing = relink::missing(&show, &episodes);
-        let card = self.card(show, &episodes, &cards_by_show, &self.db.word_scores().unwrap_or_default())?;
+        let mut card = self.card(show, &episodes, &cards_by_show, &self.db.word_scores().unwrap_or_default())?;
+        card.series = series::places(&series::graph(self), &self.db.shows()?, &self.db.settings()?).remove(&id).unwrap_or(card.series);
         let (shares, words_error) = premine::shares(self);
         let rows: Vec<EpisodeRow> = episodes
             .into_iter()
@@ -916,7 +930,7 @@ impl Backend {
             "needsModel": listener.is_none() && tools.whisper.is_some(),
             "maker": listener.map_or("Whisper", |l| l.name()),
         });
-        Ok(json!({ "card": card, "episodes": rows, "activity": self.activity(), "whisper": whisper, "wordsError": words_error, "completion": self.db.show_completion(id)?, "ripsMissing": rips_missing }))
+        Ok(json!({ "card": card, "episodes": rows, "activity": self.activity(), "whisper": whisper, "wordsError": words_error, "completion": self.db.show_completion(id)?, "ripsMissing": rips_missing, "seriesMoved": self.db.setting(&format!("series.of.{id}"))?.is_some() }))
     }
 
     fn scan(&self, folder: &str) -> Result<Value> {
@@ -1099,6 +1113,7 @@ impl Backend {
         let new = Self::new_show_from(anime.as_ref(), new);
         let id = self.db.add_show(&new)?;
         self.fetch_cover(id, new.cover_url.clone());
+        series::gather(self);
         recommend::gather(self);
         self.jobs.poke();
         Ok(json!({ "id": id }))
@@ -1111,6 +1126,7 @@ impl Backend {
         self.db.set_show_anilist(id, &new)?;
         self.remove_cover(id);
         self.fetch_cover(id, new.cover_url.clone());
+        series::gather(self);
         recommend::gather(self);
         // Subtitles were found, or found missing and queued to be made, under the old show's name.
         self.db.requeue_subs(Some(id), &["none", "failed", "check", "synced", "nokey", "whisper"])?;
@@ -1565,6 +1581,10 @@ impl Backend {
             "readBackup" => backup::read(self, &arg::<String>(&args, "path")?),
             "restoreBackup" => backup::stage(self, &arg::<String>(&args, "path")?),
             "removeShow" => self.remove_show(arg(&args, "id")?),
+            "moveShow" => {
+                series::move_show(self, arg(&args, "id")?, arg(&args, "to")?)?;
+                Ok(json!({}))
+            }
             "renumber" => {
                 let order: Vec<(i64, i64)> = arg(&args, "order")?;
                 self.db.renumber(arg(&args, "id")?, &order)?;

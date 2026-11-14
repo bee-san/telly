@@ -7,7 +7,8 @@
   import Icon from "$lib/Icon.svelte";
   import Scene from "$lib/Scene.svelte";
   import { call, callKept, errorText, kept, mediaUrl, pickFolder, setWindowTitle, type FoundLine, type LineSearch, type Library, type Settings, type ShowCard } from "$lib/api";
-  import { clock, plural, statusOf } from "$lib/format";
+  import { clock, plural } from "$lib/format";
+  import { animeOf, animeStatus, lastWatched, partsText, watching as isWatching, wordsOf, type AnimeCard } from "$lib/series";
   import { app } from "$lib/state.svelte";
   import { toast } from "$lib/toast-store.svelte";
 
@@ -15,7 +16,7 @@
   let error = $state("");
   let q = $state("");
   let adding = $state<string | null>(null);
-  let menu = $state<{ show: ShowCard; x: number; y: number } | null>(null);
+  let menu = $state<{ anime: AnimeCard; x: number; y: number } | null>(null);
 
   async function load() {
     try {
@@ -62,17 +63,17 @@
   function matches(s: ShowCard): boolean {
     const t = q.trim().toLowerCase();
     if (!t) return true;
-    return [s.title, s.titleNative, s.titleEnglish, s.titleRomaji].some((title) => title.toLowerCase().includes(t))
+    return [s.title, s.titleNative, s.titleEnglish, s.titleRomaji, s.series.title, s.series.native].some((title) => title.toLowerCase().includes(t))
       || (titleMatches?.q === q.trim() && titleMatches.ids.has(s.id));
   }
 
 
-  const shows = $derived((lib?.shows ?? []).filter((s) => matches(s)));
-  const inProgress = (s: ShowCard) => s.status === "watching" || (s.status === "getting" && (s.watched > 0 || !!s.next?.resume));
-  /** The shows being watched among `list`, the last one watched first. */
-  const beingWatched = (list: ShowCard[]) => list.filter(inProgress).sort((a, b) => (b.lastWatchedAt ?? 0) - (a.lastWatchedAt ?? 0));
+  // An anime is listed once, with its seasons and movies inside (series.ts).
+  const shows = $derived(animeOf((lib?.shows ?? []).filter((s) => matches(s))));
+  /** The anime being watched among `list`, the last one watched first. */
+  const beingWatched = (list: AnimeCard[]) => list.filter(isWatching).sort((a, b) => lastWatched(b) - lastWatched(a));
   const watching = $derived(beingWatched(shows));
-  const rest = $derived(shows.filter((s) => !watching.includes(s)));
+  const rest = $derived(shows.filter((a) => !watching.includes(a)));
 
   // Which of the Library's shows are listed, and in what order. Kept in Settings.
   type Kind = "all" | "series" | "movies";
@@ -86,21 +87,30 @@
     call("setSetting", { key, value }).catch(() => {});
   }
 
-  /** The share of a show's words you know, in per cent; null when none of its episodes is scored yet. */
-  const knownOf = (s: ShowCard) => (s.wordsUses ? (100 * s.wordsKnown) / s.wordsUses : null);
+  /** The share of an anime's words you know, in per cent; null when none of its episodes is scored yet. */
+  const knownOf = (a: AnimeCard) => {
+    const words = wordsOf(a);
+    return words.uses ? (100 * words.known) / words.uses : null;
+  };
+  /** The year an anime came out: its first part's. */
+  const yearOf = (a: AnimeCard) => a.parts[0].year ?? 0;
 
   /** `list` (one made for this) in the order Sort chose. */
-  function sorted(list: ShowCard[]): ShowCard[] {
-    const byName = (a: ShowCard, b: ShowCard) => a.title.localeCompare(b.title);
+  function sorted(list: AnimeCard[]): AnimeCard[] {
+    const byName = (a: AnimeCard, b: AnimeCard) => a.title.localeCompare(b.title);
     if (sort === "name") return list.sort(byName);
-    // Newest first; a show with no year goes last.
-    if (sort === "released") return list.sort((a, b) => (b.year ?? 0) - (a.year ?? 0) || byName(a, b));
-    // Most words known first; a show with no score yet goes last.
+    // Newest first; an anime with no year goes last.
+    if (sort === "released") return list.sort((a, b) => yearOf(b) - yearOf(a) || byName(a, b));
+    // Most words known first; an anime with no score yet goes last.
     if (sort === "known") return list.sort((a, b) => (knownOf(b) ?? -1) - (knownOf(a) ?? -1) || byName(a, b));
     return list;
   }
 
-  const listed = $derived(sorted(rest.filter((s) => kind === "all" || (kind === "movies") === s.movie)));
+  /** An anime that's only movies (ten Pokémon films) is listed under Movies; one with a season under Series. */
+  const listed = $derived(sorted(rest.filter((a) => kind === "all" || (kind === "movies") === a.parts.every((p) => p.movie))));
+
+  /** Where an anime's name leads: its one show's page, or its own page of seasons and movies. */
+  const pageOf = (a: AnimeCard) => (a.parts.length === 1 ? `/show?id=${a.parts[0].id}` : `/anime?id=${a.id}`);
 
   // ---- Lines the search finds in the subtitles (search.rs) ----
 
@@ -151,15 +161,16 @@
   /** The lines found, show by show. A show with a line you can read comes first, and so do such
    *  lines in it; among equals, shows are in the page's order and lines as they come in the show. */
   const groups = $derived.by(() => {
-    const all = lib?.shows ?? [];
-    const now = beingWatched(all);
+    const anime = animeOf(lib?.shows ?? []);
+    const now = beingWatched(anime);
     const of = new Map<number, FoundLine[]>();
     for (const l of found) {
       const list = of.get(l.showId);
       if (list) list.push(l);
       else of.set(l.showId, [l]);
     }
-    return [...now, ...sorted(all.filter((s) => !now.includes(s)))]
+    return [...now, ...sorted(anime.filter((a) => !now.includes(a)))]
+      .flatMap((a) => a.parts)
       .filter((show) => of.has(show.id))
       .map((show) => {
         const lines = of.get(show.id)!.sort((a, b) => reach(a) - reach(b) || a.number - b.number || a.start - b.start);
@@ -196,20 +207,21 @@
     if (folder) adding = folder;
   }
 
-  /** The pointer is on a show: its page is fetched now, to be there on the click. */
-  function ahead(s: ShowCard) {
-    callKept("show", { id: s.id }).catch(() => {});
+  /** The pointer is on an anime: the page of the show that's next is fetched now, to be there on the click. */
+  function ahead(a: AnimeCard) {
+    callKept("show", { id: a.current.id }).catch(() => {});
   }
 
-  function open(s: ShowCard) {
-    if (s.next && s.next.ready) goto(`/watch?ep=${s.next.episodeId}`);
-    else goto(`/show?id=${s.id}`);
+  function open(a: AnimeCard) {
+    const next = a.current.next;
+    if (next && next.ready) goto(`/watch?ep=${next.episodeId}`);
+    else goto(pageOf(a));
   }
 
-  function context(e: MouseEvent, s: ShowCard) {
+  function context(e: MouseEvent, a: AnimeCard) {
     e.preventDefault();
     e.stopPropagation();
-    menu = { show: s, x: e.clientX, y: e.clientY };
+    menu = { anime: a, x: e.clientX, y: e.clientY };
   }
 
   async function remove(s: ShowCard) {
@@ -277,20 +289,21 @@
     </div>
     {#if watching.length}
       <div class="watching" bind:this={row} onscroll={measure}>
-        {#each watching as s (s.id)}
-          {@const st = statusOf(s)}
-          <div class="wcard card" role="presentation" onpointerenter={() => ahead(s)} oncontextmenu={(e) => context(e, s)}>
-            <button type="button" class="hit" onclick={() => open(s)} aria-label="{s.title}. {st.text}. {st.sub}" title={s.title}></button>
+        {#each watching as a (a.id)}
+          {@const st = animeStatus(a)}
+          {@const s = a.parts[0]}
+          <div class="wcard card" role="presentation" onpointerenter={() => ahead(a)} oncontextmenu={(e) => context(e, a)}>
+            <button type="button" class="hit" onclick={() => open(a)} aria-label="{a.title}. {st.text}. {st.sub}" title={a.title}></button>
             <span class="wcv">
-              <Cover cover={s.cover} color={s.coverColor} native={s.titleNative} title={s.title} caption={s.coverCaption} />
+              <Cover cover={s.cover} color={s.coverColor} native={a.native} title={a.title} caption={s.coverCaption} />
               <span class="wplay"><Icon name="play" /></span>
             </span>
             <span class="w-body">
-              <a class="w-jp title" lang={s.titleNative ? "ja" : undefined} href="/show?id={s.id}" title={s.titleNative || s.title}>{s.titleNative || s.title}</a>
-              <span class="w-en">{s.titleNative ? s.title : ""}</span>
+              <a class="w-jp title" lang={a.native ? "ja" : undefined} href={pageOf(a)} title={a.native || a.title}>{a.native || a.title}</a>
+              <span class="w-en">{a.native ? a.title : ""}</span>
               <span class="w-next">{st.text}</span>
               <span class="w-sub">{st.sub}</span>
-              <span class="bar"><i style:width="{Math.round((100 * s.watched) / Math.max(1, s.episodes))}%"></i></span>
+              <span class="bar"><i style:width="{Math.round((100 * a.current.watched) / Math.max(1, a.current.episodes))}%"></i></span>
             </span>
           </div>
         {/each}
@@ -321,17 +334,20 @@
     </div>
     {#if listed.length}
       <div class="libgrid">
-        {#each listed as s (s.id)}
-          {@const st = statusOf(s)}
-          <div class="lcard card" role="presentation" onpointerenter={() => ahead(s)} oncontextmenu={(e) => context(e, s)}>
-            <button type="button" class="hit" onclick={() => open(s)} aria-label="{s.title}. {st.text}. {st.sub}"></button>
-            <Cover cover={s.cover} color={s.coverColor} native={s.titleNative} title={s.title} caption={s.coverCaption} />
-            <a class="l-title title" href="/show?id={s.id}" title={s.title}>{s.title}</a>
+        {#each listed as a (a.id)}
+          {@const st = animeStatus(a)}
+          {@const s = a.parts[0]}
+          {@const known = knownOf(a)}
+          <div class="lcard card" role="presentation" onpointerenter={() => ahead(a)} oncontextmenu={(e) => context(e, a)}>
+            <button type="button" class="hit" onclick={() => open(a)} aria-label="{a.title}. {st.text}. {st.sub}"></button>
+            <Cover cover={s.cover} color={s.coverColor} native={a.native} title={a.title} caption={s.coverCaption} />
+            <a class="l-title title" href={pageOf(a)} title={a.title}>{a.title}</a>
             <span class="l-status" class:ok={st.ok}>{st.text}</span>
             <span class="l-sub">{st.sub}</span>
-            {#if s.wordsUses}<span class="l-known">{Math.round((100 * s.wordsKnown) / s.wordsUses)}% known</span>{/if}
-            {#if s.status === "getting" && s.next}
-              <span class="bar"><i style:width="{Math.round(s.next.mediaProgress * 100)}%"></i></span>
+            {#if a.parts.length > 1 && !st.ok}<span class="l-sub">{partsText(a.parts)}</span>{/if}
+            {#if known !== null}<span class="l-known">{Math.round(known)}% known</span>{/if}
+            {#if a.current.status === "getting" && a.current.next}
+              <span class="bar"><i style:width="{Math.round(a.current.next.mediaProgress * 100)}%"></i></span>
             {/if}
           </div>
         {/each}
@@ -385,12 +401,16 @@
 {/if}
 
 {#if menu}
+  {@const one = menu.anime.parts.length === 1}
+  {@const now = menu.anime.current}
   <div class="menu" style:left="{menu.x}px" style:top="{menu.y}px" role="menu">
-    <button type="button" role="menuitem" onclick={() => menu && goto(`/show?id=${menu.show.id}`)}>Show episodes</button>
-    {#if menu.show.next?.ready}
-      <button type="button" role="menuitem" onclick={() => menu?.show.next && goto(`/watch?ep=${menu.show.next.episodeId}`)}>Play Episode {menu.show.next.number}</button>
+    <button type="button" role="menuitem" onclick={() => menu && goto(pageOf(menu.anime))}>{one ? "Show episodes" : "Show seasons and movies"}</button>
+    {#if now.next?.ready}
+      <button type="button" role="menuitem" onclick={() => now.next && goto(`/watch?ep=${now.next.episodeId}`)}>{now.movie ? `Play ${now.title}` : `Play Episode ${now.next.number}`}</button>
     {/if}
-    <button type="button" role="menuitem" class="danger" onclick={() => menu && remove(menu.show)}>Remove from Telly…</button>
+    {#if one}
+      <button type="button" role="menuitem" class="danger" onclick={() => menu && remove(menu.anime.parts[0])}>Remove from Telly…</button>
+    {/if}
   </div>
 {/if}
 

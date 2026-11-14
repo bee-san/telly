@@ -99,6 +99,17 @@ export interface ShowCard extends Show {
   status: "new" | "watching" | "finished" | "getting";
   next: NextUp | null;
   cards: number;
+  /** The anime it's listed under in the Library, with its other seasons and movies (series.rs `Place`). */
+  series: {
+    /** The anime's key: its first season's AniList ID, or minus a show's ID for one AniList doesn't know. */
+    id: number;
+    title: string;
+    native: string;
+    /** Where it comes among the anime's parts: the day it started, as 20150707. */
+    order: number;
+    /** How many shows in the library the anime has. */
+    parts: number;
+  };
 }
 
 export interface Task {
@@ -253,6 +264,8 @@ export interface ShowView {
   wordsError: string;
   /** Its rips that aren't where Telly has them, for Find its folder… (null when they all are). */
   ripsMissing: MissingRips | null;
+  /** You moved it to the anime it's under (Move to another anime…): AniList has it elsewhere. */
+  seriesMoved: boolean;
 }
 
 /** A show whose rips aren't all where Telly has them: its folder isn't there (its drive unplugged, or the folder moved), or some of its episodes' files aren't. */

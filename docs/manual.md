@@ -15,7 +15,7 @@
 - [Getting started](#-getting-started): installing, the first time it opens, running it from source, Hachidori in Telly
 - [Keys](#%EF%B8%8F-keys)
 - [Explain and Previously on](#-explain-and-previously-on) · [Filters](#-filters) · [Character names](#-character-names) · [Premining](#-premining)
-- [Searching shows and lines](#-searching-shows-and-lines) · [Recommended](#-recommended) · [Downloading](#%EF%B8%8F-downloading) · [Stats](#-stats) · [Your AniList list](#-your-anilist-list)
+- [Seasons and movies](#%EF%B8%8F-seasons-and-movies) · [Searching shows and lines](#-searching-shows-and-lines) · [Recommended](#-recommended) · [Downloading](#%EF%B8%8F-downloading) · [Stats](#-stats) · [Your AniList list](#-your-anilist-list)
 - [How subtitles are matched](#-how-subtitles-are-matched) · [Machine-made subtitles](#-machine-made-subtitles) · [Getting a library ready](#-getting-a-library-ready)
 - [When your rips move](#-when-your-rips-move) · [Backing up, and moving to another computer](#-backing-up-and-moving-to-another-computer) · [Where things go](#-where-things-go)
 - [Developing](#-developing) · [Built on](#-built-on) · [Licence](#-licence)
@@ -43,7 +43,7 @@
 ### 📚 Your library
 
 - 🔎 **Shows worked out:** it works out the show on AniList and puts the episodes in order.
-- 🗂️ **A library to browse:** it lists your library as movies, series or both, sorted by when it was added, name, year released or the share of its words you know; what you're watching is one row that scrolls sideways.
+- 🗂️ **A library to browse:** it lists each anime once, [its seasons and movies inside](#%EF%B8%8F-seasons-and-movies), as movies, series or both, sorted by when it was added, name, year released or the share of its words you know; what you're watching is one row that scrolls sideways.
 - 🖼️ **A cover for everything:** what AniList doesn't know (live action, a folder of specials) gets a cover too: the poster from Wikipedia's article of that very name, else a frame from the video, taken at random when it's added, with the title drawn over it as on a poster. Every cover gets a small copy when it's got, which is what the app draws, so the Library scrolls without waiting for pictures. A film is listed as a movie, with its length.
 - 🔁 **Every time through:** each show or film's page in the Library shows when you first finished it and the dates you completed full rewatches.
 - 💡 **[Something to watch next](#-recommended):** it recommends anime to watch next, from what AniList's users recommend to people who liked the shows in your library and on your AniList list.
@@ -212,6 +212,17 @@ The 10 episodes of Cyberpunk: Edgerunners season 2 (5,300 lines, 3,300 different
 `cargo run --profile measure --example words_check -- <data folder> <port> <dictionaries folder> <subtitle files>` times it against a copy of Telly's Hachidori open in a browser (see the example for how; `--shares` times the Library's pass).
 
 </details>
+
+## 🗂️ Seasons and movies
+
+AniList keeps each season, movie and OVA of an anime as an entry of its own, and so does Telly: each is a show with its own episodes, subtitles and place on your AniList list. The Library lists them together, as one anime.
+
+- **Which belong together:** AniList says how its entries are related (sequel, prequel, parent, side story, summary, spin-off and so on). Telly follows those links out from your shows, through entries you don't have, so ten Pokémon movies are one anime though the TV series they hang off isn't in your library. It asks when Telly starts and when a show is added, and about everything again after a week.
+- **The card** is named after the anime's first TV series, whether or not you have it, and has the cover of the first part you have. It says what's next and in which part, and how many seasons, movies, OVAs and specials you have. Pressing it plays what's next. An anime of one show looks and opens as it always did. One that's only movies is listed under Movies; one with a season, under Series.
+- **Currently watching** has an anime while a part of it is being watched, and between seasons: when you've finished one and the next waits.
+- **Its page** (press its name) lists the parts in the order they came out, each with how much you've watched and the share of its words you know. A part opens its own page of episodes. **Look for new episodes**, **Find subtitles again**, **Free up space** and **Remove…** there work on every part.
+- **Specials AniList doesn't know** (a `Season 00` folder) join the anime whose folders theirs sits beside.
+- **Move to another anime…**, on a show's page, lists it under another anime in your library, or on its own, and your choice is kept. **Put back where AniList has it** undoes it.
 
 ## 🔎 Searching shows and lines
 

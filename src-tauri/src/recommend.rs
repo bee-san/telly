@@ -7,6 +7,7 @@
 
 use crate::anilist::{self, Anime, Listed};
 use crate::backend::Backend;
+use crate::series::SAME_SERIES;
 use crate::util::now_ms;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -19,8 +20,6 @@ use std::sync::{Arc, Mutex};
 const HIDDEN: &str = "recommended.hidden";
 /// AniList is asked about a show again after a week.
 const KEPT_MS: i64 = 7 * 24 * 3600 * 1000;
-/// Relations that make two entries the same series: its seasons, films and side stories.
-const SAME_SERIES: &[&str] = &["PREQUEL", "SEQUEL", "PARENT", "SIDE_STORY", "SUMMARY", "ALTERNATIVE", "SPIN_OFF", "COMPILATION", "CONTAINS"];
 /// A pick's share of a show's votes is counted as if the show had this many
 /// more, for none of its picks, so a show with only a handful of votes has a
 /// smaller say.

@@ -35,6 +35,7 @@ pub mod relay;
 pub mod relink;
 pub mod scan;
 pub mod search;
+pub mod series;
 pub mod stats;
 pub mod subs;
 pub mod sync;

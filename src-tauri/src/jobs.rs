@@ -17,6 +17,9 @@
 //!      couple of minutes and Settings allows it, as copies take disk space
 //!
 //! Episodes you've watched get subtitles last and are never converted.
+//!
+//! While a game is running (games.rs), no worker takes another episode until
+//! it closes; one already being worked on is finished.
 
 use crate::backend::Backend;
 use crate::db::{Episode, Show};
@@ -24,12 +27,12 @@ use crate::media::{self, Plan};
 use crate::subs::{self, Line};
 use crate::sync;
 use crate::jimaku;
-use crate::{anilist, aniskip, heard, matching, openrouter, scan};
+use crate::{anilist, aniskip, games, heard, matching, openrouter, scan};
 use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -218,6 +221,10 @@ pub struct Jobs {
     jimaku: Mutex<()>,
     /// Turns at each drive rips are on (see `drive`).
     drives: Mutex<HashMap<PathBuf, Arc<Turns>>>,
+    /// The game running, by its program's name, as `games::watch` last found it.
+    pub game: Mutex<Option<String>>,
+    /// How many workers are waiting for that game to close (see `after_the_game`).
+    held: AtomicUsize,
 }
 
 impl Default for Jobs {
@@ -239,6 +246,8 @@ impl Default for Jobs {
             jimaku_entries: Mutex::new(HashMap::new()),
             jimaku: Mutex::new(()),
             drives: Mutex::new(HashMap::new()),
+            game: Mutex::new(None),
+            held: AtomicUsize::new(0),
         }
     }
 }
@@ -278,9 +287,17 @@ impl Jobs {
         }
     }
 
-    /// What the workers are doing now, for the title bar.
+    /// What the workers are doing now, for the title bar: last, which game
+    /// they're waiting for, when that's all there is to say.
     pub fn tasks(&self) -> Vec<Task> {
-        [&self.media, &self.probing].into_iter().chain(&self.subs).chain([&self.catching_up, &self.download]).filter_map(|slot| slot.lock().ok()?.clone()).collect()
+        let mut tasks: Vec<Task> = [&self.media, &self.probing].into_iter().chain(&self.subs).chain([&self.catching_up, &self.download]).filter_map(|slot| slot.lock().ok()?.clone()).collect();
+        if self.held.load(Ordering::SeqCst) > 0 {
+            if let Some(game) = self.game.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+                let label = format!("Waiting for {game} to close");
+                tasks.push(Task { show_id: 0, episode_id: 0, number: 0, title: "Telly".into(), label, progress: 0.0 });
+            }
+        }
+        tasks
     }
 
     /// The episodes whose words are still to work out (`words_worker`), first first.
@@ -472,12 +489,32 @@ fn after_the_player(backend: &Backend, rip: &Path) {
     }
 }
 
+/// Waits while a game is running (see games.rs), before a worker takes an
+/// episode it picked: converting, syncing and making pictures take the
+/// processor and the drive from the game. Whether it waited, in which case
+/// the worker picks again, as the library may have changed meanwhile.
+fn after_the_game(backend: &Backend) -> bool {
+    if games::running(backend).is_none() {
+        return false;
+    }
+    backend.jobs.held.fetch_add(1, Ordering::SeqCst);
+    while games::running(backend).is_some() {
+        std::thread::sleep(Duration::from_secs(2));
+    }
+    backend.jobs.held.fetch_sub(1, Ordering::SeqCst);
+    true
+}
+
 /// Takes the most useful episode waiting for `kind` work ("media", "probe" or
-/// "subs") for one worker. The claim is what keeps two workers off one episode:
-/// only the first to make it gets the episode, and the other looks again.
+/// "subs") for one worker, once no game is running. The claim is what keeps
+/// two workers off one episode: only the first to make it gets the episode,
+/// and the other looks again.
 fn take(backend: &Backend, kind: &str) -> Option<(Show, Episode, usize)> {
     loop {
         let (show, episode, count) = pick(backend, kind)?;
+        if after_the_game(backend) {
+            continue;
+        }
         let claimed = if kind == "subs" { backend.db.claim_subs(episode.id) } else { backend.db.claim_media(episode.id) };
         if claimed.unwrap_or(false) {
             return Some((show, episode, count));
@@ -509,6 +546,7 @@ pub fn start(backend: Arc<Backend>) {
     for n in 0..SUBS_WORKERS {
         start(format!("telly-subs-{n}"), subs_worker, n);
     }
+    games::watch(backend);
 }
 
 // ---- video ---------------------------------------------------------------------
@@ -583,6 +621,9 @@ fn catch_up_worker(backend: &Backend) {
             remembered = true;
         }
         while let Some((show, episode, _)) = pick(backend, "catch up") {
+            if after_the_game(backend) {
+                continue;
+            }
             backend.jobs.caught_up.lock().unwrap_or_else(|e| e.into_inner()).insert(episode.id);
             let Some(probe) = stored_probe(backend, episode.id) else { continue };
             let rip = Path::new(&episode.path);
@@ -912,6 +953,9 @@ fn subs_worker(backend: &Backend, n: usize) {
                 continue;
             }
             if let Some((show, episode, _)) = pick(backend, "whisper") {
+                if after_the_game(backend) {
+                    continue;
+                }
                 let name = listener.name();
                 if backend.db.claim_whisper(episode.id, &format!("{name} is listening")).unwrap_or(false) {
                     set_task(slot, Some(task(&show, &episode, &format!("{name} is listening to"))));
@@ -2391,6 +2435,49 @@ mod tests {
         let e = backend.db.episode(id).unwrap().unwrap();
         assert_eq!((e.subs_state.as_str(), e.subs_file.as_str()), ("synced", "mine.srt"));
         assert_eq!(read_lines(&backend, id)[0].text, "選んだ");
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn no_episode_is_taken_while_a_game_is_running() {
+        let dir = std::env::temp_dir().join(format!("telly-game-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Arc::new(Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap());
+        let episodes = (1..=2).map(|number| crate::db::NewEpisode { number, path: format!("{number}.mkv"), size: 1, duration: 1400.0 }).collect();
+        let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let game = |name: Option<&str>| *backend.jobs.game.lock().unwrap() = name.map(str::to_string);
+        let worker = || {
+            let backend = backend.clone();
+            std::thread::spawn(move || take(&backend, "subs").map(|(_, e, _)| e.number))
+        };
+        let labels = || backend.jobs.tasks().into_iter().map(|t| t.label).collect::<Vec<_>>();
+        // What the title bar says within 5 seconds.
+        let says = |label: &str| {
+            for _ in 0..50 {
+                if labels() == [label] {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            false
+        };
+        let pending = || backend.db.episodes(show).unwrap().iter().filter(|e| e.subs_state == "pending").count();
+        // A worker waits for the game to close, takes nothing meanwhile, and the title bar says why.
+        game(Some("Wow.exe"));
+        let first = worker();
+        assert!(says("Waiting for Wow.exe to close"), "{:?}", labels());
+        assert_eq!(pending(), 2);
+        game(None);
+        assert_eq!(first.join().unwrap(), Some(1));
+        assert!(labels().is_empty(), "{:?}", labels());
+        // Turned off in Settings, the work goes on while the game runs.
+        game(Some("Wow.exe"));
+        let second = worker();
+        assert!(says("Waiting for Wow.exe to close"), "{:?}", labels());
+        backend.db.set_setting(games::WAIT, &serde_json::json!(false)).unwrap();
+        assert_eq!(second.join().unwrap(), Some(2));
+        assert!(labels().is_empty(), "{:?}", labels());
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

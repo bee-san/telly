@@ -517,6 +517,14 @@
   </section>
 
   <section>
+    <h2>Games</h2>
+    <div class="rows">
+      <label class="check"><input type="checkbox" checked={bool("games.wait", true)} onchange={(e) => set("games.wait", e.currentTarget.checked)} /><span>Wait while a game is running<small>No episode starts converting, getting its subtitles or its seek bar’s pictures until the game closes, so the game has the processor and the drive. A game is a program in a Steam, Epic, GOG, Riot or Xbox games folder, or World of Warcraft.</small></span></label>
+      <label class="field"><span>More games</span><input class="input mono" value={str("games.names")} placeholder="ffxiv_dx11.exe, eldenring.exe" onchange={(e) => set("games.names", e.currentTarget.value.trim())} /><small>Program names, separated by commas, as Task Manager’s Details tab lists them.</small></label>
+    </div>
+  </section>
+
+  <section>
     <h2>Machine-made subtitles</h2>
     {#if str("openrouter.key")}
       <p class="lede">Ready. On a show’s page, <b>Make subtitles with {routerMaker}</b> covers the episodes Jimaku has nothing for. They’re marked as machine-made.</p>

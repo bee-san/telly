@@ -6,6 +6,11 @@
 //! watched) and adds them up, and leaves out what you have or have started.
 //! The seasons and movies you don't have of an anime you do are picks too,
 //! by how much you liked the parts you have (series.rs has which they are).
+//!
+//! The page also lists what's trending on AniList, the ten series and the
+//! ten movies most watched and talked about there now (asked once a day, kept
+//! in trending.json), and searches AniList for an anime that's neither a pick
+//! nor trending, so anything can be found to download.
 
 use crate::anilist::{self, Anime, Listed};
 use crate::backend::Backend;
@@ -82,6 +87,10 @@ pub struct Pick {
     pub from: Vec<From>,
     /// The anime it's another season or movie of, one you have ("" for a pick people recommend).
     pub more_of: String,
+    /// The show in your library that it is, by its ID, when it's one that's trending or was searched for.
+    pub show: Option<i64>,
+    /// It isn't out yet, so there's nothing of it to download.
+    pub unreleased: bool,
     #[serde(skip)]
     score: f64,
 }
@@ -304,6 +313,8 @@ pub fn rank(owned: &[Owned], listed: &[Listed], sources: &[Source], hidden: &Has
                 // Only the shows that say for it: it isn't recommended from one you dropped.
                 from: from.into_iter().filter(|f| f.0 > 0.0).map(|f| f.1).collect(),
                 more_of: String::new(),
+                show: None,
+                unreleased: false,
             }
         })
         .filter(|p| p.score > 0.0)
@@ -331,6 +342,8 @@ pub fn rank(owned: &[Owned], listed: &[Listed], sources: &[Source], hidden: &Has
                 description: e.description.clone(),
                 from: vec![From { title: title.to_string(), votes: 0 }],
                 more_of: name.clone(),
+                show: None,
+                unreleased: false,
                 score: liking / (nth + 1) as f64,
             });
         }
@@ -360,7 +373,92 @@ pub fn gather(backend: &Arc<Backend>) {
     });
 }
 
-/// The Recommended page: the picks, and how many shows, in the library or on your list, they come from.
+/// AniList is asked what's trending again after a day.
+const TRENDING_MS: i64 = 24 * 3600 * 1000;
+
+/// What's trending on AniList: the ten series and the ten movies most watched and talked about there now.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+struct Trending {
+    fetched_at: i64,
+    series: Vec<Like>,
+    movies: Vec<Like>,
+}
+
+/// One anime of a list AniList answers with, and whether it's still to come out.
+fn listed_anime(media: &Value) -> Option<(Like, bool)> {
+    let like = Like {
+        votes: 0,
+        anime: Anime::from_api(media)?,
+        genres: list(media, "/genres").iter().filter_map(Value::as_str).map(str::to_string).collect(),
+        description: media.get("description").and_then(Value::as_str).unwrap_or("").to_string(),
+    };
+    Some((like, media.get("status").and_then(Value::as_str) == Some("NOT_YET_RELEASED")))
+}
+
+/// The ten most trending of one of the answer's lists that are out: one still to come has nothing to download.
+fn top_ten(answer: &Value, name: &str) -> Vec<Like> {
+    list(answer, &format!("/data/{name}/media")).iter().filter_map(listed_anime).filter(|(_, unreleased)| !unreleased).map(|(like, _)| like).take(10).collect()
+}
+
+fn fetch_trending() -> Result<Trending> {
+    let page = |format: &str| format!("Page(perPage: 25) {{ media(type: ANIME, format: {format}, sort: TRENDING_DESC, isAdult: false) {{ genres description(asHtml: false) {} }} }}", anilist::FIELDS);
+    let q = format!("query {{ series: {} movies: {} }}", page("TV"), page("MOVIE"));
+    let answer = anilist::query_patiently(&q, json!({}))?;
+    Ok(Trending { fetched_at: now_ms(), series: top_ten(&answer, "series"), movies: top_ten(&answer, "movies") })
+}
+
+/// What's trending: the kept answer while it's under a day old, else a fresh one, else (offline) the kept one however old.
+fn trending(backend: &Backend) -> Trending {
+    static ASKING: Mutex<()> = Mutex::new(());
+    let _asking = ASKING.lock();
+    let path = backend.dirs.local.join("trending.json");
+    let kept: Trending = std::fs::read(&path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+    if now_ms() - kept.fetched_at < TRENDING_MS {
+        return kept;
+    }
+    match fetch_trending() {
+        Ok(fresh) => {
+            if let Ok(bytes) = serde_json::to_vec(&fresh) {
+                let _ = crate::util::write_whole(&path, bytes);
+            }
+            fresh
+        }
+        Err(_) => kept,
+    }
+}
+
+/// The show in the library that each AniList entry is.
+fn in_library(backend: &Backend) -> Result<HashMap<i64, i64>> {
+    Ok(backend.db.shows()?.iter().filter_map(|s| Some((s.anilist_id?, s.id))).collect())
+}
+
+/// A pick that's listed, not recommended: one that's trending, or found by a search.
+fn listed_pick(like: &Like, unreleased: bool, have: &HashMap<i64, i64>) -> Pick {
+    Pick {
+        title: like.anime.short_title(),
+        anime: like.anime.clone(),
+        genres: like.genres.clone(),
+        description: like.description.clone(),
+        from: Vec::new(),
+        more_of: String::new(),
+        show: have.get(&like.anime.id).copied(),
+        unreleased,
+        score: 0.0,
+    }
+}
+
+/// The anime AniList finds for `text`, for downloading one that's neither a
+/// pick nor trending: each with the show in your library it is, when you
+/// have it, and whether it's still to come out.
+pub fn search(backend: &Backend, text: &str) -> Result<Vec<Pick>> {
+    let q = format!("query ($search: String) {{ Page(perPage: 20) {{ media(search: $search, type: ANIME, sort: SEARCH_MATCH) {{ genres description(asHtml: false) {} }} }} }}", anilist::FIELDS);
+    let answer = anilist::query_patiently(&q, json!({ "search": text.split_whitespace().collect::<Vec<_>>().join(" ") }))?;
+    let have = in_library(backend)?;
+    Ok(list(&answer, "/data/Page/media").iter().filter_map(listed_anime).map(|(like, unreleased)| listed_pick(&like, unreleased, &have)).collect())
+}
+
+/// The Recommended page: the picks, and how many shows, in the library or on
+/// your list, they come from; and the series and movies trending on AniList.
 pub fn view(backend: &Backend) -> Result<Value> {
     let mut owned = Vec::new();
     for show in backend.db.shows()? {
@@ -384,7 +482,15 @@ pub fn view(backend: &Backend) -> Result<Value> {
     let sources = if ids.is_empty() { Vec::new() } else { sources_for(backend, &ids)? };
     let mut left_out = hidden(backend);
     left_out.extend(listed.iter().map(|l| l.id));
-    Ok(json!({ "shows": ids.len(), "picks": rank(&owned, &listed, &sources, &left_out, now_ms(), &crate::series::graph(backend)) }))
+    let trending = trending(backend);
+    let have = in_library(backend)?;
+    let listed_picks = |likes: &[Like]| likes.iter().map(|like| listed_pick(like, false, &have)).collect::<Vec<_>>();
+    Ok(json!({
+        "shows": ids.len(),
+        "picks": rank(&owned, &listed, &sources, &left_out, now_ms(), &crate::series::graph(backend)),
+        "series": listed_picks(&trending.series),
+        "movies": listed_picks(&trending.movies),
+    }))
 }
 
 #[cfg(test)]
@@ -410,6 +516,21 @@ mod tests {
 
     fn ids(picks: &[Pick]) -> Vec<i64> {
         picks.iter().map(|p| p.anime.id).collect()
+    }
+
+    #[test]
+    fn the_top_ten_trending_are_the_first_ten_that_are_out() {
+        let media: Vec<Value> = (1..=14)
+            .map(|id| json!({ "id": id, "format": "TV", "status": if id == 2 || id == 5 { "NOT_YET_RELEASED" } else { "RELEASING" }, "title": { "romaji": format!("Anime {id}") }, "genres": ["Drama"], "description": "About it." }))
+            .collect();
+        let answer = json!({ "data": { "series": { "media": media }, "movies": { "media": [] } } });
+        let top = top_ten(&answer, "series");
+        assert_eq!(top.iter().map(|l| l.anime.id).collect::<Vec<_>>(), [1, 3, 4, 6, 7, 8, 9, 10, 11, 12]);
+        assert_eq!((top[0].genres.as_slice(), top[0].description.as_str()), (&["Drama".to_string()][..], "About it."));
+        assert!(top_ten(&answer, "movies").is_empty());
+        // One that's trending and in the library says which show it is.
+        let pick = listed_pick(&top[1], false, &HashMap::from([(3, 42)]));
+        assert_eq!((pick.show, pick.unreleased, pick.title.as_str()), (Some(42), false, "Anime 3"));
     }
 
     #[test]

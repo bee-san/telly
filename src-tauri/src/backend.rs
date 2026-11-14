@@ -1863,6 +1863,7 @@ impl Backend {
             "ownHachidori" => to_value(own_hachidori::report(self)),
             "premineCards" => to_value(premine::start_cards(self, arg(&args, "words")?)?),
             "recommendations" => recommend::view(self),
+            "searchPicks" => to_value(recommend::search(self, &arg::<String>(&args, "q")?)?),
             "stats" => stats::overview(self),
             "showStats" => stats::show(self, arg(&args, "id")?),
             "anilistSignIn" => Ok(json!({ "user": anilist_list::sign_in(self, &arg::<String>(&args, "token")?)? })),

@@ -654,6 +654,10 @@ export interface Pick extends Anime {
   from: { title: string; votes: number }[];
   /** The anime it's another season or movie of, one you have ("" for a pick people recommend). */
   moreOf: string;
+  /** The show in your library that it is, by its ID, when it's one that's trending or was searched for. */
+  show: number | null;
+  /** It isn't out yet, so there's nothing of it to download. */
+  unreleased: boolean;
 }
 
 export interface Recommended {
@@ -661,6 +665,9 @@ export interface Recommended {
   shows: number;
   /** Every pick, best first. */
   picks: Pick[];
+  /** The ten series, and the ten movies, trending on AniList now that are out, the most trending first. */
+  series: Pick[];
+  movies: Pick[];
 }
 
 export interface Tools {

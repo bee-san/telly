@@ -516,6 +516,8 @@ export interface KnownSources {
   decks: string[];
   noteTypes: string[];
   studied: number;
+  /** The studied notes whose studied cards are all suspended, so their words aren't known. */
+  suspended: number;
   mature: number;
 }
 

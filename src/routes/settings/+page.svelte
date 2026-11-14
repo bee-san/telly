@@ -423,7 +423,7 @@
         </div>
         <small class="muted">Studied: reviewed at least once. Mature: its next review is 21 days or more away, as Anki counts it.</small>
       </div>
-      <p class="muted">{sources.studied.toLocaleString("en-GB")} {sources.studied === 1 ? "note" : "notes"} studied, {sources.mature.toLocaleString("en-GB")} of them mature.</p>
+      <p class="muted">{sources.studied.toLocaleString("en-GB")} {sources.studied === 1 ? "note" : "notes"} studied, {sources.mature.toLocaleString("en-GB")} of them mature. {#if sources.suspended}{sources.suspended.toLocaleString("en-GB")} {sources.suspended === 1 ? "is suspended and doesn’t" : "are suspended and don’t"} count.{/if}</p>
     {:else}
       <p class="muted">Open Anki to choose which cards count.</p>
     {/if}

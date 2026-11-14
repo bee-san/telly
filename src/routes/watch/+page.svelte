@@ -69,8 +69,8 @@
   let explaining = $state<{ index: number; text: string; done: boolean; error: string; ask: number } | null>(null);
   let explainResume = false;
   let explainPoll: ReturnType<typeof setTimeout> | null = null;
-  // Follow-up questions about the line explained, and their answers.
-  let thread = $state<{ q: string; a: string; done: boolean; error: string; ask: number }[]>([]);
+  // Follow-up questions about the line explained, and their answers (`kind` for Gist, Break it down and Nuance).
+  let thread = $state<{ q: string; a: string; done: boolean; error: string; ask: number; kind?: string }[]>([]);
   let question = $state("");
   let threadPoll: ReturnType<typeof setTimeout> | null = null;
   /** Goes up when the thread is dropped, so an answer on its way isn't followed. */
@@ -839,6 +839,32 @@
       if (run !== threadRun) return;
       thread[at].ask = r.ask ?? 0;
       followThread(at, run);
+    } catch (e) {
+      if (run === threadRun) thread[at] = { ...thread[at], done: true, error: errorText(e) };
+    }
+  }
+
+  /** The buttons above the question box: what each asks about the line explained. */
+  const MORE: { kind: string; label: string; title: string }[] = [
+    { kind: "gist", label: "Gist", title: "Just the important part, in a sentence or two" },
+    { kind: "breakdown", label: "Break it down", title: "Every word, particle and ending in order, back to its dictionary form" },
+    { kind: "nuance", label: "Nuance", title: "Why it’s put that way: tone, politeness, culture" },
+  ];
+
+  /** Asks one of the buttons’ questions about the line explained; an answer kept for the line comes straight back. */
+  async function explainMore(kind: string, label: string) {
+    if (!view || !explaining?.done || explaining.error || thread.some((item) => !item.done)) return;
+    const run = threadRun;
+    thread.push({ q: label, a: "", done: false, error: "", ask: 0, kind });
+    const at = thread.length - 1;
+    try {
+      const r = await call<AskProgress>("explainMore", { id: view.episode.id, index: explaining.index, explanation: explaining.text, kind });
+      if (run !== threadRun) return;
+      if (r.done) thread[at] = { ...thread[at], a: r.text ?? "", done: true };
+      else {
+        thread[at].ask = r.ask ?? 0;
+        followThread(at, run);
+      }
     } catch (e) {
       if (run === threadRun) thread[at] = { ...thread[at], done: true, error: errorText(e) };
     }
@@ -1741,6 +1767,11 @@
         {/if}
       </div>
       {#if explaining.done && !explaining.error}
+        <div class="ex-more">
+          {#each MORE as m (m.kind)}
+            <button type="button" title={m.title} disabled={thread.some((item) => !item.done || (item.kind === m.kind && !item.error))} onclick={() => explainMore(m.kind, m.label)}>{m.label}</button>
+          {/each}
+        </div>
         <form class="ex-ask" onsubmit={(e) => { e.preventDefault(); askFollowUp(); }}>
           <input bind:value={question} placeholder="Ask about this line" aria-label="Follow-up question" />
           <button type="submit" disabled={!question.trim() || thread.some((item) => !item.done)}>Ask</button>
@@ -1935,6 +1966,11 @@
   .ex-ask input:focus-visible { outline: 2px solid var(--vid-ink); outline-offset: 1px; }
   .ex-ask button { height: 34px; padding: 0 14px; font: 600 13px/1 var(--font-ui); color: var(--vid); background: var(--vid-ink); border: 0; border-radius: 6px; cursor: pointer; }
   .ex-ask button:disabled { opacity: .42; cursor: default; }
+  .ex-more { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 12px 0; border-top: 1px solid var(--vid-edge); }
+  .ex-more + .ex-ask { padding-top: 8px; border-top: 0; }
+  .ex-more button { height: 30px; padding: 0 12px; font: 600 12.5px/1 var(--font-ui); color: var(--vid-ink); background: rgba(255, 255, 255, .07); border: 1px solid var(--vid-edge); border-radius: 6px; cursor: pointer; }
+  .ex-more button:hover:not(:disabled) { background: var(--vid-hover); }
+  .ex-more button:disabled { opacity: .42; cursor: default; }
   .prow { display: flex; align-items: center; gap: 2px; margin-top: 4px; }
   .pbtn { display: grid; place-items: center; width: 38px; height: 38px; border: 0; border-radius: 6px; background: transparent; color: var(--vid-ink); cursor: pointer; flex: none; }
   .pbtn:hover { background: var(--vid-hover); }

@@ -3,7 +3,7 @@
   import { page } from "$app/state";
   import { onDestroy, onMount, tick as nextTick } from "svelte";
   import Icon from "$lib/Icon.svelte";
-  import { call, callKept, errorText, kept, mediaUrl, setFullscreen, setWindowTitle, type AskProgress, type CardEvent, type CastName, type ClaudeStatus, type Line, type Moment, type PlayerView, type Recap, type SeekSheet } from "$lib/api";
+  import { call, callKept, errorText, kept, mediaUrl, setFullscreen, setWindowTitle, type AskProgress, type CardEvent, type CastName, type ClaudeStatus, type EpisodeLite, type Line, type Moment, type PlayerView, type Recap, type SeekSheet } from "$lib/api";
   import { arrange, createRenderer, drawTiles, filters, toggle } from "$lib/filters";
   import { dragWindow, enterCompact, leaveCompact, setCompactShape } from "$lib/compact";
   import { clock, ownFile } from "$lib/format";
@@ -1297,6 +1297,12 @@
     stopCountdown();
   }
 
+  /** What's next, by name: "Episode 5", or the next season's first ("Overlord II · Episode 1") after a show's last. */
+  function nextName(next: EpisodeLite): string {
+    if (!next.show) return `Episode ${next.number}`;
+    return next.movie ? next.show : `${next.show} · Episode ${next.number}`;
+  }
+
   async function playNext() {
     stopWaiting();
     const next = view?.next;
@@ -1939,7 +1945,7 @@
     <div class="endov">
       <div class="end-card">
         <span class="small">Episode {view.episode.number} done{sat.seconds > 30 ? ` · logged to Tidepool` : ""}</span>
-        <h3>{view.next ? `Next: Episode ${view.next.number}` : `That’s the last episode here`}</h3>
+        <h3>{view.next ? `Next: ${nextName(view.next)}` : `That’s the last episode here`}</h3>
         <div class="end-stats">
           <div><b>{Math.round(sat.seconds / 60)}</b><span>minutes</span></div>
           <div><b>{sat.lines}</b><span>lines</span></div>
@@ -1947,7 +1953,7 @@
           <div><b>{sat.cards}</b><span>cards</span></div>
         </div>
         {#if view.next && !view.next.ready}
-          <p class="small">Episode {view.next.number} is getting ready{view.next.mediaState === "working" ? ` · ${Math.round(view.next.mediaProgress * 100)}%` : ""}. It’ll start when it can.</p>
+          <p class="small">{nextName(view.next)} is getting ready{view.next.mediaState === "working" ? ` · ${Math.round(view.next.mediaProgress * 100)}%` : ""}. It’ll start when it can.</p>
         {/if}
         <div class="end-actions">
           <button type="button" class="btn quiet" onclick={() => leave("/")}>Open library</button>

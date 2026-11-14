@@ -161,10 +161,19 @@ impl Graph {
         self.sequels_from(id).into_iter().filter(|e| e.is_series() || e.anime.id == id).collect()
     }
 
-    /// The season `id` carries on from: its prequel that's a series, the latest of them.
+    /// The season `id` carries on from: its prequel that's a series (the
+    /// latest, when it has several), found back through any films between.
     pub fn prequel(&self, id: i64) -> Option<&Entry> {
-        let entry = self.entries.get(&id)?;
-        entry.linked("PREQUEL").filter_map(|to| self.entries.get(&to)).filter(|e| e.is_series()).max_by_key(|e| (e.start, e.anime.id))
+        let mut seen = HashSet::from([id]);
+        let mut at = self.entries.get(&id)?;
+        loop {
+            let before: Vec<&Entry> = at.linked("PREQUEL").filter_map(|to| self.entries.get(&to)).filter(|e| !seen.contains(&e.anime.id)).collect();
+            if let Some(season) = before.iter().filter(|e| e.is_series()).max_by_key(|e| (e.start, e.anime.id)) {
+                return Some(season);
+            }
+            at = before.into_iter().max_by_key(|e| (e.start, e.anime.id))?;
+            seen.insert(at.anime.id);
+        }
     }
 }
 
@@ -240,6 +249,29 @@ pub fn places(graph: &Graph, shows: &[Show], settings: &Map<String, Value>) -> H
             (s.id, Place { id: k, title, native, order, parts: count[&k] })
         })
         .collect()
+}
+
+/// The show in the library that carries on from `show`: its sequel on
+/// AniList, past any films and specials between that you don't have. A
+/// season you don't have ends the search: the one after it isn't next.
+pub fn next_show(backend: &Backend, show: &Show) -> Option<Show> {
+    let graph = graph(backend);
+    let shows = backend.db.shows().ok()?;
+    for e in graph.sequels_from(show.anilist_id?).into_iter().skip(1) {
+        if let Some(next) = shows.iter().find(|s| s.anilist_id == Some(e.anime.id) && s.id != show.id) {
+            return Some(next.clone());
+        }
+        if e.is_series() {
+            return None;
+        }
+    }
+    None
+}
+
+/// The season in the library that `show` carries on from: its prequel on AniList.
+pub fn previous_show(backend: &Backend, show: &Show) -> Option<Show> {
+    let before = graph(backend).prequel(show.anilist_id?)?.anime.id;
+    backend.db.shows().ok()?.into_iter().find(|s| s.anilist_id == Some(before) && s.id != show.id)
 }
 
 /// The library's shows listed under the anime `key`, in the order they came out.
@@ -449,6 +481,14 @@ pub(crate) mod tests {
         assert_eq!(graph.sequel(20832).map(|e| e.anime.id), Some(98437));
         assert_eq!(graph.prequel(98437).map(|e| e.anime.id), Some(20832));
         assert_eq!(graph.prequel(20832).map(|e| e.anime.id), None);
+        // A season after a film is the sequel of the season before the film.
+        let sao = Graph::new(vec![
+            entry(1, "Sword Art Online II", "TV", 24, 20140705, &[("SEQUEL", 2)]),
+            entry(2, "Ordinal Scale", "MOVIE", 1, 20170218, &[("PREQUEL", 1), ("SEQUEL", 3)]),
+            entry(3, "Alicization", "TV", 24, 20181007, &[("PREQUEL", 2)]),
+        ]);
+        assert_eq!(sao.prequel(3).map(|e| e.anime.id), Some(1));
+        assert_eq!(sao.seasons_from(1).iter().map(|e| e.anime.id).collect::<Vec<_>>(), [1, 3]);
     }
 
     #[test]

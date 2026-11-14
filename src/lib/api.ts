@@ -332,6 +332,10 @@ export interface EpisodeLite {
   ready: boolean;
   mediaState: string;
   mediaProgress: number;
+  /** The show it's of, when it's the first episode of the show that carries on from this one (the next season). */
+  show?: string;
+  /** Whether that show is a film. */
+  movie?: boolean;
 }
 
 export interface PlayerView {

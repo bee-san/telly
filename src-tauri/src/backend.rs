@@ -1327,6 +1327,15 @@ impl Backend {
         let episodes = self.db.episodes(show.id)?;
         let i = episodes.iter().position(|e| e.id == id).unwrap_or(0);
         let lite = |e: &Episode| json!({ "id": e.id, "number": e.number, "ready": e.media_state == "ready", "mediaState": e.media_state, "mediaProgress": e.media_progress });
+        // After a show's last episode comes the first of the show that carries on from it: the next season you have.
+        let sequel = || {
+            let next = series::next_show(self, &show)?;
+            let its = self.db.episodes(next.id).ok()?;
+            let mut first = lite(its.first()?);
+            first["show"] = json!(next.title);
+            first["movie"] = json!(is_movie(&next.format, next.anilist_id.is_some(), &its.iter().map(|e| e.duration).collect::<Vec<_>>()));
+            Some(first)
+        };
         let lines: Vec<Line> = jobs::read_lines(self, id);
         // From what ffprobe found in the rip: its chapters, its opening (else AniSkip's) and its audio tracks.
         let probe = jobs::stored_probe(self, id).unwrap_or_default();
@@ -1355,7 +1364,7 @@ impl Backend {
             "episode": episode,
             "lines": lines,
             "prev": if i > 0 { Some(lite(&episodes[i - 1])) } else { None },
-            "next": episodes.get(i + 1).map(lite),
+            "next": episodes.get(i + 1).map(lite).or_else(sequel),
             "count": episodes.len(),
             "movie": is_movie(&show.format, show.anilist_id.is_some(), &episodes.iter().map(|e| e.duration).collect::<Vec<_>>()),
             "tried": jobs::read_tried(self, id),

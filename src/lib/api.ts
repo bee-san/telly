@@ -521,6 +521,12 @@ export interface KnownSources {
   mature: number;
 }
 
+/** Anki's decks and note types, by name. */
+export interface AnkiNames {
+  decks: string[];
+  noteTypes: string[];
+}
+
 // ---- Hachidori (app only) -----------------------------------------------------
 
 export interface HostStatus {
@@ -564,6 +570,17 @@ export async function pickFolder(title = "Add media"): Promise<string | null> {
   const { open } = await import("@tauri-apps/plugin-dialog");
   const picked = await open({ directory: true, multiple: false, title });
   return typeof picked === "string" ? picked : null;
+}
+
+/** Windows' folder picker, for one folder or several; a prompt for one in a browser. */
+export async function pickFolders(title: string): Promise<string[]> {
+  if (!inTauri) {
+    const one = window.prompt(`${title} (full path)`);
+    return one ? [one] : [];
+  }
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const picked = await open({ directory: true, multiple: true, title });
+  return Array.isArray(picked) ? picked : typeof picked === "string" ? [picked] : [];
 }
 
 export async function pickFile(title: string, extensions: string[], name: string): Promise<string | null> {

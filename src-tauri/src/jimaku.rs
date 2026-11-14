@@ -88,6 +88,18 @@ fn entries_from(v: &Value) -> Vec<Entry> {
         .collect()
 }
 
+/// Whether Jimaku takes `key`: one small search, for AniList's first entry (Cowboy Bebop).
+pub fn check_key(key: &str) -> Result<()> {
+    check_key_at(&api(), key)
+}
+
+fn check_key_at(api: &str, key: &str) -> Result<()> {
+    if key.trim().is_empty() {
+        return Err(anyhow!("There’s no Jimaku API key yet"));
+    }
+    get_json(key.trim(), &format!("{api}/entries/search?anilist_id=1&anime=true")).map(|_| ())
+}
+
 /// The show's entries on Jimaku: by AniList ID, else by name.
 pub fn find_entries(key: &str, anilist_id: Option<i64>, title: &str) -> Result<Vec<Entry>> {
     if let Some(id) = anilist_id {
@@ -282,6 +294,27 @@ mod tests {
         assert_eq!(episode_of("FAIRY TAIL S01E12.srt"), Some(12));
         assert_eq!(episode_of("フェアリーテイル 第12話.ass"), Some(12));
         assert_eq!(episode_of("Fairy Tail 175.srt"), Some(175));
+    }
+
+    #[test]
+    fn a_key_works_when_jimaku_answers_a_search_with_it() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let api = format!("http://{}/api", server.server_addr().to_ip().unwrap());
+        std::thread::spawn(move || {
+            for request in server.incoming_requests() {
+                let key = request.headers().iter().find(|h| h.field.equiv("Authorization")).map(|h| h.value.to_string());
+                let found = request.url().starts_with("/api/entries/search?");
+                let response = match (found, key.as_deref()) {
+                    (true, Some("good")) => tiny_http::Response::from_string("[]").with_status_code(200),
+                    (true, _) => tiny_http::Response::from_string("{}").with_status_code(401),
+                    _ => tiny_http::Response::from_string("").with_status_code(404),
+                };
+                let _ = request.respond(response);
+            }
+        });
+        assert!(check_key_at(&api, " good ").is_ok());
+        assert!(format!("{:#}", check_key_at(&api, "bad").unwrap_err()).contains("didn’t accept the API key"));
+        assert!(format!("{:#}", check_key_at(&api, " ").unwrap_err()).contains("no Jimaku API key"));
     }
 
     #[test]

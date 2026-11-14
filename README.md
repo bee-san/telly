@@ -34,17 +34,11 @@ npm run prepare:hachidori   # once: downloads Hachidori and sets it up for Telly
 npm run tauri dev
 ```
 
-Telly needs ffmpeg (with libsvtav1 and libopus for cards). It uses the one you choose in Settings, else one on PATH, else GameSentenceMiner's copy.
-
-Then in Settings:
-
-- add your Jimaku API key (jimaku.cc → Account)
-- check the card fields (Kiku's `Picture`, `SentenceAudio` and `MiscInfo` by default)
-- add `http://127.0.0.1:8773/anki/events` to Anki Beacon's addresses, so cards are finished the moment you add them (without Beacon, Telly asks AnkiConnect every 2 seconds while you watch)
+The first time Telly opens, a few screens set it up, finding out what they can before asking: the folders of your rips (read while you go on, then checked and added), ffmpeg (the one you choose, else one on PATH, else GameSentenceMiner's copy; cards need its libsvtav1 and libopus), your Jimaku API key, Anki (the deck, the note type and its card fields, and Anki Beacon's address, so cards are finished the moment you add them), your dictionaries, Claude Code (with a test question) and AniList. Each screen says whether its part works and can be skipped. Settings lists what isn't working, found by the same checks, and **Run setup again** opens the setup again. A library set up before there was a setup (one with shows or a Jimaku key) doesn't go through it.
 
 Hachidori in Telly is ready to mine on its own, in overlay mode (lookups on hover, no first-run page):
 
-- **Dictionaries:** it installs every Yomitan dictionary (.zip) in `Documents\dictionaries`, or the folder chosen in Settings → Hachidori, one at a time, and again when a file changes. The word dictionaries go in first (Jitendex, JMdict, then 大辞林 and 三省堂国語辞典), so they lead the popup and the card's definition; the rest follow, smallest first. Hachidori's own Settings (Settings → Hachidori → Open Hachidori Settings) can reorder them.
+- **Dictionaries:** it installs every Yomitan dictionary (.zip) in `Documents\dictionaries`, or the folder chosen in the setup or Settings → Hachidori, one at a time, and again when a file changes. The word dictionaries go in first (Jitendex, JMdict, then 大辞林 and 三省堂国語辞典), so they lead the popup and the card's definition; the rest follow, smallest first. Hachidori's own Settings (Settings → Hachidori → Open Hachidori Settings) can reorder them.
 - **Pronunciation:** local recordings come first, for lookups and word audio on cards. Telly tries [Yomitan Audio Fast](https://github.com/bee-san/yomitan-audio-fast)'s standalone server on `127.0.0.1:5052`, then the Local Audio Server Anki add-on on `127.0.0.1:5050` (Yomitan Audio Fast's drop-in add-on uses that same address), then your other sources. Install and run either server with your audio collection; the add-on needs Anki open. These defaults are set even if the server isn't running yet. Reorder, disable or remove sources in Hachidori's Audio Settings; Telly sets them up only once.
 - **Anki:** when a show starts playing, Hachidori's card template is set to the note type in Settings → Cards (kiku_typed) and the deck there (例文マイニング; `{show}` in its name stands for the show's title), with the tags `Telly` and the show's title (`Fairy_Tail`). Telly doesn't make the deck: only premining makes decks in Anki. The fields come from Hachidori's own mapping for Kiku, as its first-run setup makes them.
 

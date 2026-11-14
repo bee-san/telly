@@ -1,5 +1,6 @@
 //! AnkiConnect, for what Hachidori doesn't do from inside Telly: adding the
-//! moving picture and the line's audio to the card it just made.
+//! moving picture and the line's audio to the card it just made, and reading
+//! Anki's decks, note types and notes.
 
 use anyhow::{anyhow, Result};
 use serde_json::{json, Map, Value};
@@ -94,7 +95,16 @@ pub fn add_tags(url: &str, notes: &[i64], tags: &str) -> Result<()> {
 
 pub fn model_field_names(url: &str, model: &str) -> Result<Vec<String>> {
     let names = invoke(url, "modelFieldNames", json!({ "modelName": model }))?;
-    Ok(names.as_array().map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default())
+    Ok(strings(&names))
+}
+
+/// Anki's decks and its note types, by name.
+pub fn deck_and_model_names(url: &str) -> Result<(Vec<String>, Vec<String>)> {
+    Ok((strings(&invoke(url, "deckNames", json!({}))?), strings(&invoke(url, "modelNames", json!({}))?)))
+}
+
+fn strings(list: &Value) -> Vec<String> {
+    list.as_array().map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default()
 }
 
 /// A field's text without HTML, furigana brackets or spaces, for matching against subtitles.

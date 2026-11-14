@@ -1,7 +1,8 @@
 //! What Telly asks Claude (claude.rs): "Explain this line" in the player, with
 //! Gist, Break it down, Nuance and follow-up questions about it, and
 //! "Previously on", a recap of the story so far, with the moments of it to
-//! play back. Answers are kept (db answers), so asking twice is instant.
+//! play back. Answers are kept (db answers), so asking twice is instant. The
+//! setup also asks a test question, to see that Claude Code answers.
 //!
 //! Each episode's recap carries on from the one kept for the episode before,
 //! so the story so far grows by one episode's subtitles at a time.
@@ -287,6 +288,15 @@ pub fn explain_more(backend: &Arc<Backend>, episode_id: i64, index: usize, expla
         let _ = keeper.db.save_answer(episode_id, &kept_as, index as i64, &about, answer, language);
     });
     Ok(json!({ "ask": id }))
+}
+
+/// The setup's test question: one short question, asked as Explain asks, so
+/// its answer (or why there's none) says whether Claude Code works here. An
+/// ask to follow; not kept.
+pub fn test(backend: &Arc<Backend>) -> Value {
+    let prompt = format!("In {}, in a few words: what does 「はじめまして」 mean?", answer_in(backend));
+    let id = backend.asks.start(prompt, model(backend), EFFORT, false, |_| {});
+    json!({ "ask": id })
 }
 
 /// "Explain this line": a kept answer, or an ask to follow.

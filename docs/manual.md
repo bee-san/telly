@@ -238,8 +238,9 @@ On 850,000 lines in 2,700 episodes (made up, a tenth of them without their words
 
 **Recommended**, in the library's toolbar, lists anime to watch next. It goes on the shows in your library and needs no AniList sign-in. On AniList, people pair shows ("liked this, try that") and vote each pair up or down; Telly asks for the 25 most voted pairs of every show AniList knows, 50 shows to a request. It asks when Telly starts and when a show is added, about the shows it hasn't asked about that week, so the page opens with its answers.
 
-- **Adding up:** each show has a say on a pick, counted by the size of its votes (log2(1 + votes)): 6,000 votes count about twice as much as 80. So a pick liked from many of your shows beats one that a single well-known show carries. A show watched to the end counts double one not started.
-- **Series:** a show's seasons, films and side stories (AniList's relations) have one say between them, the most votes any of them gives. The rest of a series you have isn't offered as a pick.
+- **Adding up:** each show has a say on a pick, from the pick's share of that show's votes (its square root, so a quarter of the votes counts half as much as all of them). A little-known show's favourite counts as much as a famous show's, and a pick liked from many of your shows still beats one show's favourite. A show with only a handful of votes has a smaller say, as its share is worked out as if it had 50 more. Votes for the rest of the show's own series (its sequel, say) aren't counted.
+- **How much you've watched:** a show watched to the end counts 2; one you're watching, 1 to 2, by how much of it you've seen; one not started, 0.5, as having it only says you're curious; and one left part-way, with nothing of it watched for 30 days, 0.25.
+- **Series:** a show's seasons, films and side stories (AniList's relations) have one say between them, the biggest any of them gives. The rest of a series you have isn't offered as a pick.
 - **A pick** opens with its synopsis, the shows it's recommended from with their votes, and **Open on AniList**. **Hide** leaves it out from now on, for one you've seen elsewhere.
 
 AniList's answers are kept for a week. A show is asked about again after that, and a show you add is asked about the next time the page opens.

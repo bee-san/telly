@@ -1,8 +1,9 @@
 //! Recommended: anime to watch next, from AniList's community recommendations
 //! for the shows in the library ("liked X, try Y", voted up or down). No
-//! sign-in is needed: Telly asks about each show by its AniList ID, adds the
-//! votes up across the library, and leaves out what the library already has
-//! and, once you've signed in to AniList, what's on your list there.
+//! sign-in is needed: Telly asks about each show by its AniList ID, weighs
+//! each show's votes by how much of it you've watched and adds them up across
+//! the library, and leaves out what the library already has and, once you've
+//! signed in to AniList, what's on your list there.
 
 use crate::anilist::{self, Anime};
 use crate::backend::Backend;
@@ -20,6 +21,12 @@ const HIDDEN: &str = "recommended.hidden";
 const KEPT_MS: i64 = 7 * 24 * 3600 * 1000;
 /// Relations that make two entries the same series: its seasons, films and side stories.
 const SAME_SERIES: &[&str] = &["PREQUEL", "SEQUEL", "PARENT", "SIDE_STORY", "SUMMARY", "ALTERNATIVE", "SPIN_OFF", "COMPILATION", "CONTAINS"];
+/// A pick's share of a show's votes is counted as if the show had this many
+/// more, for none of its picks, so a show with only a handful of votes has a
+/// smaller say.
+const FEW_VOTES: f64 = 50.0;
+/// A show started and not finished, with nothing of it watched for 30 days, was left.
+const LEFT_MS: i64 = 30 * 24 * 3600 * 1000;
 
 /// What AniList says about one show in the library.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -48,6 +55,8 @@ pub struct Owned {
     pub title: String,
     pub episodes: usize,
     pub watched: usize,
+    /// When an episode of it was last watched (unix ms).
+    pub last_watched: Option<i64>,
 }
 
 /// A show in the library that a pick is recommended from.
@@ -175,52 +184,68 @@ fn series_of(series: &mut HashMap<i64, i64>, id: i64) -> i64 {
     root
 }
 
-/// The picks, best first. Each series in the library has one say on a pick:
-/// the most votes any of its entries gives it, counted by their size
-/// (log2(1 + votes)), so a pick liked from many shows beats one that a single
-/// well-known show carries. A series watched to the end counts double one not
-/// started. Left out: what's in the library, the rest of its series, and
-/// what's hidden.
-pub fn rank(owned: &[Owned], sources: &[Source], hidden: &HashSet<i64>) -> Vec<Pick> {
-    let mut series: HashMap<i64, i64> = HashMap::new();
-    for o in owned {
-        series.entry(o.anilist_id).or_insert(o.anilist_id);
+/// How much your liking a show counts for, from how much of it you've
+/// watched: 2 watched to the end, 1 to 2 as you watch it, 0.5 not started
+/// (having it only says you're curious) and 0.25 left part-way.
+fn liking(episodes: usize, watched: usize, last_watched: Option<i64>, now: i64) -> f64 {
+    if episodes > 0 && watched >= episodes {
+        2.0
+    } else if watched == 0 {
+        0.5
+    } else if last_watched.is_some_and(|at| now - at > LEFT_MS) {
+        0.25
+    } else {
+        1.0 + watched as f64 / episodes as f64
     }
-    let sources: Vec<&Source> = sources.iter().filter(|s| owned.iter().any(|o| o.anilist_id == s.id)).collect();
+}
+
+/// The picks, best first. Each series in the library has one say on a pick:
+/// the most any of its entries gives it, which is the square root of the
+/// pick's share of that entry's votes, times how much your liking the entry
+/// counts. So a little-known show's favourite counts as much as a famous
+/// show's, and a pick liked from many shows still beats one show's
+/// favourite. Left out: what's in the library, the rest of its series, and
+/// what's hidden.
+pub fn rank(owned: &[Owned], sources: &[Source], hidden: &HashSet<i64>, now: i64) -> Vec<Pick> {
+    // Each show's episodes, those watched, when it was last watched and its title, across the library's copies of it.
+    let mut shows: HashMap<i64, (usize, usize, Option<i64>, &str)> = HashMap::new();
+    for o in owned {
+        let show = shows.entry(o.anilist_id).or_insert((0, 0, None, o.title.as_str()));
+        *show = (show.0 + o.episodes, show.1 + o.watched, show.2.max(o.last_watched), show.3);
+    }
+    let mut series: HashMap<i64, i64> = shows.keys().map(|&id| (id, id)).collect();
+    let sources: Vec<&Source> = sources.iter().filter(|s| shows.contains_key(&s.id)).collect();
     for s in &sources {
         for &r in &s.related {
             let (a, b) = (series_of(&mut series, s.id), series_of(&mut series, r));
             series.insert(b, a);
         }
     }
-    let mut seen: HashMap<i64, (usize, usize)> = HashMap::new();
-    for o in owned {
-        let of = seen.entry(series_of(&mut series, o.anilist_id)).or_default();
-        *of = (of.0 + o.episodes, of.1 + o.watched);
-    }
-    // For each pick, each series' say: the entry that gives it the most votes.
-    let mut says: HashMap<i64, (&Like, HashMap<i64, (i64, &str)>)> = HashMap::new();
+    // For each pick, each series' say, and the votes and title of the entry that gives it.
+    let mut says: HashMap<i64, (&Like, HashMap<i64, (f64, i64, &str)>)> = HashMap::new();
     for s in &sources {
         let from = series_of(&mut series, s.id);
-        let title = owned.iter().find(|o| o.anilist_id == s.id).map_or("", |o| o.title.as_str());
+        let (episodes, watched, last_watched, title) = shows[&s.id];
+        let liking = liking(episodes, watched, last_watched, now);
+        // Its votes, but for the rest of its own series: those aren't recommendations.
+        let mut votes = 0;
+        for like in s.likes.iter().filter(|l| l.votes > 0) {
+            if !series.contains_key(&like.anime.id) || series_of(&mut series, like.anime.id) != from {
+                votes += like.votes;
+            }
+        }
         for like in s.likes.iter().filter(|l| l.votes > 0 && !series.contains_key(&l.anime.id) && !hidden.contains(&l.anime.id)) {
-            let say = says.entry(like.anime.id).or_insert_with(|| (like, HashMap::new())).1.entry(from).or_insert((0, title));
-            if like.votes > say.0 {
-                *say = (like.votes, title);
+            let say = liking * (like.votes as f64 / (votes as f64 + FEW_VOTES)).sqrt();
+            let best = says.entry(like.anime.id).or_insert_with(|| (like, HashMap::new())).1.entry(from).or_insert((0.0, 0, title));
+            if say > best.0 {
+                *best = (say, like.votes, title);
             }
         }
     }
     let mut picks: Vec<Pick> = says
         .into_values()
         .map(|(like, by_series)| {
-            let mut from: Vec<(f64, From)> = by_series
-                .into_iter()
-                .map(|(root, (votes, title))| {
-                    let (episodes, watched) = seen.get(&root).copied().unwrap_or_default();
-                    let weight = 1.0 + if episodes > 0 { watched as f64 / episodes as f64 } else { 0.0 };
-                    (weight * (1.0 + votes as f64).log2(), From { title: title.to_string(), votes })
-                })
-                .collect();
+            let mut from: Vec<(f64, From)> = by_series.into_values().map(|(say, votes, title)| (say, From { title: title.to_string(), votes })).collect();
             from.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.title.cmp(&b.1.title)));
             Pick {
                 title: like.anime.short_title(),
@@ -263,7 +288,13 @@ pub fn view(backend: &Backend) -> Result<Value> {
     for show in backend.db.shows()? {
         if let Some(anilist_id) = show.anilist_id {
             let episodes = backend.db.episodes(show.id)?;
-            owned.push(Owned { anilist_id, title: show.title, episodes: episodes.len(), watched: episodes.iter().filter(|e| e.watched_at.is_some()).count() });
+            owned.push(Owned {
+                anilist_id,
+                title: show.title,
+                episodes: episodes.len(),
+                watched: episodes.iter().filter(|e| e.watched_at.is_some()).count(),
+                last_watched: episodes.iter().filter_map(|e| e.watched_at).max(),
+            });
         }
     }
     let mut ids: Vec<i64> = owned.iter().map(|o| o.anilist_id).collect();
@@ -272,15 +303,19 @@ pub fn view(backend: &Backend) -> Result<Value> {
     let sources = if ids.is_empty() { Vec::new() } else { sources_for(backend, &ids)? };
     let mut left_out = hidden(backend);
     left_out.extend(crate::anilist_list::on_list(backend));
-    Ok(json!({ "shows": owned.len(), "picks": rank(&owned, &sources, &left_out) }))
+    Ok(json!({ "shows": owned.len(), "picks": rank(&owned, &sources, &left_out, now_ms()) }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const NOW: i64 = 1_800_000_000_000;
+    const DAY: i64 = 24 * 3600 * 1000;
+
+    /// A show in the library, its last episode watched today when any is.
     fn owned(anilist_id: i64, title: &str, episodes: usize, watched: usize) -> Owned {
-        Owned { anilist_id, title: title.into(), episodes, watched }
+        Owned { anilist_id, title: title.into(), episodes, watched, last_watched: (watched > 0).then_some(NOW) }
     }
 
     fn source(id: i64, related: &[i64], likes: &[(i64, i64)]) -> Source {
@@ -300,10 +335,19 @@ mod tests {
     fn many_shows_beat_one_well_known_show() {
         let library = [owned(1, "Your Name.", 1, 0), owned(2, "Clannad", 23, 0), owned(3, "Angel Beats!", 13, 0), owned(4, "K-ON!", 13, 0)];
         let answers = [source(1, &[], &[(100, 6000), (101, 150)]), source(2, &[], &[(101, 120)]), source(3, &[], &[(101, 90)]), source(4, &[], &[(101, 60)])];
-        let picks = rank(&library, &answers, &HashSet::new());
+        let picks = rank(&library, &answers, &HashSet::new(), NOW);
         assert_eq!(ids(&picks), [101, 100]);
+        // 150 is a sliver of Your Name.'s votes, and each other show's only pick.
         let from: Vec<(&str, i64)> = picks[0].from.iter().map(|f| (f.title.as_str(), f.votes)).collect();
-        assert_eq!(from, [("Your Name.", 150), ("Clannad", 120), ("Angel Beats!", 90), ("K-ON!", 60)]);
+        assert_eq!(from, [("Clannad", 120), ("Angel Beats!", 90), ("K-ON!", 60), ("Your Name.", 150)]);
+    }
+
+    #[test]
+    fn a_little_known_shows_favourite_counts_as_much_as_a_famous_ones() {
+        let library = [owned(1, "Famous", 12, 0), owned(2, "Little known", 12, 0)];
+        let answers = [source(1, &[], &[(100, 6000), (102, 5000), (101, 4000)]), source(2, &[], &[(200, 40), (201, 20)])];
+        // 40 of 60 votes is about as big a share as 6,000 of 15,000, and a bigger one than 5,000 of them.
+        assert_eq!(ids(&rank(&library, &answers, &HashSet::new(), NOW)), [100, 200, 102, 101, 201]);
     }
 
     #[test]
@@ -315,29 +359,34 @@ mod tests {
             source(1, &[2], &[(100, 400), (5, 50), (4, 30)]),
             source(2, &[1, 3], &[(100, 300), (3, 80)]),
             source(4, &[3], &[(100, 200)]),
-            source(9, &[], &[(200, 500), (1, 40)]),
+            source(9, &[], &[(200, 500), (201, 400), (1, 40)]),
         ];
-        let picks = rank(&library, &answers, &HashSet::new());
-        // 100 has 900 votes from the one series, 200 has 500 from another show: one say each.
-        assert_eq!(ids(&picks), [200, 100, 5]);
-        assert_eq!(picks[1].from, [From { title: "Titan".into(), votes: 400 }]);
+        let picks = rank(&library, &answers, &HashSet::new(), NOW);
+        assert_eq!(ids(&picks), [100, 200, 201, 5]);
+        // Its say is Season 2's alone: 300 of its 300 votes, as Season 3's 80 aren't a recommendation.
+        assert_eq!(picks[0].from, [From { title: "Titan Season 2".into(), votes: 300 }]);
+        assert!((picks[0].score - 0.5 * (300.0 / (300.0 + FEW_VOTES)).sqrt()).abs() < 1e-9);
     }
 
     #[test]
-    fn watched_shows_count_for_more() {
-        let library = [owned(1, "Seen", 12, 12), owned(2, "Not started", 12, 0)];
-        let answers = [source(1, &[], &[(100, 50)]), source(2, &[], &[(200, 300)])];
-        // log2(51) doubled is 11.3; log2(301) is 8.2.
-        assert_eq!(ids(&rank(&library, &answers, &HashSet::new())), [100, 200]);
+    fn how_much_of_a_show_you_watched_counts() {
+        assert_eq!(liking(12, 12, Some(NOW - 400 * DAY), NOW), 2.0);
+        assert_eq!(liking(12, 6, Some(NOW - DAY), NOW), 1.5);
+        assert_eq!(liking(12, 0, None, NOW), 0.5);
+        assert_eq!(liking(12, 3, Some(NOW - 31 * DAY), NOW), 0.25);
+        let left = Owned { last_watched: Some(NOW - 31 * DAY), ..owned(3, "Left", 12, 3) };
+        let library = [owned(1, "Seen", 12, 12), owned(2, "Not started", 12, 0), left];
+        let answers = [source(1, &[], &[(100, 50)]), source(2, &[], &[(200, 300)]), source(3, &[], &[(300, 300)])];
+        assert_eq!(ids(&rank(&library, &answers, &HashSet::new(), NOW)), [100, 200, 300]);
         let unwatched = [owned(1, "Seen", 12, 0), owned(2, "Not started", 12, 0)];
-        assert_eq!(ids(&rank(&unwatched, &answers, &HashSet::new())), [200, 100]);
+        assert_eq!(ids(&rank(&unwatched, &answers, &HashSet::new(), NOW)), [200, 100]);
     }
 
     #[test]
     fn leaves_out_hidden_and_voted_down_picks_and_shows_since_removed() {
         let library = [owned(1, "Death Note", 37, 0)];
         let answers = [source(1, &[], &[(100, 90), (101, 80), (102, -3), (103, 0)]), source(7, &[], &[(104, 999)])];
-        assert_eq!(ids(&rank(&library, &answers, &HashSet::from([100]))), [101]);
+        assert_eq!(ids(&rank(&library, &answers, &HashSet::from([100]), NOW)), [101]);
     }
 
     #[test]

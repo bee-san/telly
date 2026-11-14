@@ -30,6 +30,7 @@ pub mod own_hachidori;
 pub mod premine;
 pub mod recommend;
 pub mod relay;
+pub mod relink;
 pub mod scan;
 pub mod search;
 pub mod stats;

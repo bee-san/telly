@@ -21,10 +21,12 @@
     type NamesStatus,
     type OwnHachidori,
     type KnownSources, type Settings,
+    type MissingRips,
+    type ShowMove,
     type Status,
   } from "$lib/api";
   import { STEPS, askAnki, askJimaku, checks, dictionariesCheck, hachidoriCheck, linked as linkedTo, problems, type AnkiFacts } from "$lib/checks";
-  import { bytes } from "$lib/format";
+  import { bytes, plural } from "$lib/format";
   import { app } from "$lib/state.svelte";
   import { toast } from "$lib/toast-store.svelte";
 
@@ -44,6 +46,11 @@
   /** Whether Jimaku takes the key, and what Anki has, for the list of what's not working. */
   let jimakuWorks = $state<string | null>(null);
   let ankiHas = $state<AnkiFacts | null>(null);
+  /** Shows whose rips aren't where Telly has them, and Moved rips' folders and what it found. */
+  let away = $state<MissingRips[]>([]);
+  let movedFrom = $state("");
+  let movedTo = $state("");
+  let moved = $state<ShowMove[] | null>(null);
 
   /** Every part is asked for at once, and shows as it comes. */
   async function load() {
@@ -62,6 +69,7 @@
         callKept<OwnHachidori>("ownHachidori").then((o) => (own = o)),
         callKept<ClaudeStatus>("claudeStatus").then((c) => (claude = c)),
         callKept<KnownSources>("knownSources").then((k) => (sources = k)).catch(() => (sources = null)),
+        loadAway(),
       ]);
     } catch (e) {
       error = errorText(e);
@@ -194,6 +202,49 @@
     const folder = await pickFolder("Choose the folder for copies");
     if (folder) await moveCopies(folder);
   }
+
+  /** The folders that shows whose folders aren't there were in, for "They were in". */
+  const oldFolders = $derived([...new Set(away.filter((a) => a.folderMissing).map((a) => a.folder.replace(/[\\/][^\\/]*[\\/]?$/, "")))]);
+
+  async function loadAway() {
+    away = await call<MissingRips[]>("missingRips").catch(() => away);
+    if (!movedFrom && oldFolders.length === 1) movedFrom = oldFolders[0];
+  }
+
+  async function chooseMoved(which: "from" | "to") {
+    const folder = await pickFolder(which === "from" ? "Choose the folder your rips were in" : "Choose the folder your rips are in now");
+    if (!folder) return;
+    if (which === "from") movedFrom = folder;
+    else movedTo = folder;
+    moved = null;
+  }
+
+  /** Shows what Telly finds of the rips of every show in "They were in", in "They’re in now", before anything changes. */
+  async function findMoved() {
+    try {
+      moved = await call<ShowMove[]>("relinkLibrary", { from: movedFrom, to: movedTo });
+    } catch (e) {
+      moved = null;
+      toast({ key: "moved", state: "failed", title: "Couldn’t find them", text: errorText(e) });
+    }
+  }
+
+  async function useMoved() {
+    try {
+      const done = await call<ShowMove[]>("relinkLibrary", { from: movedFrom, to: movedTo, apply: true });
+      const found = done.reduce((n, m) => n + m.found.length, 0);
+      const shows = done.filter((m) => m.found.length).length;
+      toast({ key: "moved", state: "done", title: `Found ${plural(found, "episode")} of ${plural(shows, "show")}`, text: movedTo });
+      moved = null;
+    } catch (e) {
+      toast({ key: "moved", state: "failed", title: "Nothing was changed", text: errorText(e) });
+    }
+    loadAway();
+  }
+
+  const movedFound = $derived(moved?.reduce((n, m) => n + m.found.length, 0) ?? 0);
+  const movedTotal = $derived(moved?.reduce((n, m) => n + m.found.length + m.missing.length, 0) ?? 0);
+  const movedShows = $derived(moved?.filter((m) => m.found.length).length ?? 0);
 
   async function chooseDictionaries() {
     const folder = await pickFolder("Choose the dictionaries folder");
@@ -604,6 +655,50 @@
   </section>
 
   <section>
+    <h2>Moved rips</h2>
+    <p class="lede">If your rips moved to another folder or drive, or the drive’s letter changed, Telly can find them there and keep where you were, what you watched, your cards and subtitles. It matches each episode to a file in the new folder; the rips aren’t moved or changed.</p>
+    {#if away.length}
+      <p class="muted">Not where they were: {away.map((a) => a.title).join(", ")}</p>
+    {/if}
+    <div class="rows two">
+      <div class="field">
+        <span>They were in</span>
+        <span class="inline"><input class="input grow mono" list="moved-from" bind:value={movedFrom} oninput={() => (moved = null)} placeholder="D:\Anime" aria-label="The folder your rips were in" /><button type="button" class="btn quiet" onclick={() => chooseMoved("from")}>Choose…</button></span>
+      </div>
+      <div class="field">
+        <span>They’re in now</span>
+        <span class="inline"><input class="input grow mono" bind:value={movedTo} oninput={() => (moved = null)} placeholder="E:\Anime" aria-label="The folder your rips are in now" /><button type="button" class="btn quiet" onclick={() => chooseMoved("to")}>Choose…</button></span>
+      </div>
+    </div>
+    <datalist id="moved-from">
+      {#each oldFolders as folder (folder)}<option value={folder}></option>{/each}
+    </datalist>
+    {#if moved}
+      <div class="moved">
+        <p><b>{movedFound} of {plural(movedTotal, "episode")} found</b>, in {plural(moved.length, "show")}</p>
+        <ul class="moved-list">
+          {#each moved as m (m.showId)}
+            <li>
+              <span>{m.title}</span>
+              <span class="right">{m.found.length} of {m.found.length + m.missing.length}</span>
+              <span class="muted mono path">{m.to}</span>
+              {#if m.missing.length}<span class="muted">Not found, left as they are: {m.missing.length === 1 ? "episode" : "episodes"} {m.missing.map((x) => x.number).join(", ")}</span>{/if}
+            </li>
+          {/each}
+        </ul>
+        <div class="actions">
+          <button type="button" class="btn" disabled={!movedShows} onclick={useMoved}>Use the new folder for {plural(movedShows, "show")}</button>
+          <button type="button" class="btn quiet" onclick={() => (moved = null)}>Cancel</button>
+        </div>
+      </div>
+    {:else}
+      <div class="actions">
+        <button type="button" class="btn quiet" disabled={!movedFrom.trim() || !movedTo.trim()} onclick={findMoved}>Find them</button>
+      </div>
+    {/if}
+  </section>
+
+  <section>
     <h2>AniList</h2>
     {#if str("anilist.user")}
       <p class="lede">Signed in as {str("anilist.user")}. Episodes watched from now on go on your AniList list.</p>
@@ -650,5 +745,10 @@
   .status-list i.ok { background: var(--ok-dot); }
   .status-list i.warn { background: var(--warn-dot); }
   .status-list i.bad { background: var(--bad-dot); }
+  .moved { display: grid; gap: 10px; font-size: 13.5px; }
+  .moved-list { display: grid; margin: 0; padding: 0; border-top: 1px solid var(--rule); }
+  .moved-list li { list-style: none; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; padding: 8px 2px; border-bottom: 1px solid var(--rule); }
+  .moved-list .right { justify-self: end; font-variant-numeric: tabular-nums; }
+  .moved-list .muted { grid-column: 1 / -1; }
   code { background: var(--sunk); padding: .1em .36em; border-radius: 4px; overflow-wrap: anywhere; }
 </style>

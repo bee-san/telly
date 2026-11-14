@@ -4,7 +4,7 @@
   import { onMount } from "svelte";
   import Cover from "$lib/Cover.svelte";
   import Icon from "$lib/Icon.svelte";
-  import { call, callKept, errorText, kept, pickFile, setWindowTitle, type Anime, type EpisodeRow, type ShowView } from "$lib/api";
+  import { call, callKept, errorText, kept, pickFile, pickFolder, setWindowTitle, type Anime, type EpisodeRow, type MissingRips, type ShowMove, type ShowView } from "$lib/api";
   import { bytes, clock, mediaLabel, plural, statusOf, subsHelp, subsLabel } from "$lib/format";
   import { app } from "$lib/state.svelte";
   import { toast } from "$lib/toast-store.svelte";
@@ -17,6 +17,8 @@
   let query = $state("");
   let found = $state<Anime[]>([]);
   let busy = $state(false);
+  /** What Find its folder… found in the folder chosen, before anything changes. */
+  let moving = $state<ShowMove | null>(null);
 
   async function load() {
     const show = id;
@@ -57,6 +59,7 @@
     error = "";
     menu = null;
     matching = false;
+    moving = null;
     allRows = false;
     let timer: ReturnType<typeof setTimeout>;
     // Stopped when the page is left, even with an answer on its way.
@@ -188,6 +191,42 @@
     load();
   }
 
+  /** What the page says when a show's rips aren't where Telly has them. */
+  function awayText(m: MissingRips): string {
+    if (m.folderMissing) return "This folder isn’t there: its drive may be unplugged, or the folder moved.";
+    if (m.missing === m.episodes) return "Its rips aren’t where they were.";
+    return m.missing === 1 ? `1 of its ${m.episodes} rips isn’t where it was.` : `${m.missing} of its ${m.episodes} rips aren’t where they were.`;
+  }
+
+  /** Asks which folder the show is in now, and shows what Telly finds of its rips there. */
+  async function findFolder() {
+    if (!card) return;
+    const show = card;
+    const folder = await pickFolder(`Find the folder ${show.title} is in now`);
+    if (!folder) return;
+    try {
+      moving = await call<ShowMove>("relinkShow", { id: show.id, folder });
+    } catch (e) {
+      toast({ key: "relink", state: "failed", title: "Couldn’t look in that folder", text: errorText(e) });
+    }
+  }
+
+  /** Points the show at the folder found, and its episodes at their rips there. */
+  async function useFolder() {
+    const found = moving;
+    if (!found) return;
+    moving = null;
+    try {
+      const done = await call<ShowMove>("relinkShow", { id: found.showId, folder: found.to, apply: true });
+      const left = done.missing.map((m) => m.number).join(", ");
+      const text = done.missing.length ? `Not found, and left as before: ${done.missing.length === 1 ? "episode" : "episodes"} ${left}` : done.to;
+      toast({ key: "relink", state: "done", title: `Found ${plural(done.found.length, "episode")}`, text });
+    } catch (e) {
+      toast({ key: "relink", state: "failed", title: "The show’s folder wasn’t changed", text: errorText(e) });
+    }
+    load();
+  }
+
   async function remove() {
     const show = card;
     if (!show || !confirm(`Remove ${show.title} from Telly? The video files stay where they are. Telly’s copies and subtitles are deleted.`)) return;
@@ -217,6 +256,12 @@
           {#if !card.movie}· {card.episodes}{card.anilistEpisodes ? ` of ${card.anilistEpisodes}` : ""} episodes here{/if}
         </p>
         <p class="sp-folder mono">{card.folder}</p>
+        {#if view?.ripsMissing}
+          <p class="sp-away">
+            <span>{awayText(view.ripsMissing)}</span>
+            <button type="button" class="btn small quiet" onclick={findFolder} title="Choose the folder its rips are in now: where you were, what you watched, your cards and subtitles stay">Find its folder…</button>
+          </p>
+        {/if}
         {#if completion && (completion.finishedAt !== null || completion.rewatches.length)}
           <dl class="sp-history">
             {#if completion.finishedAt !== null}
@@ -314,6 +359,38 @@
   </div>
 {/if}
 
+{#if moving}
+  {@const total = moving.found.length + moving.missing.length}
+  <div class="modal-bg" role="presentation" onclick={(e) => e.target === e.currentTarget && (moving = null)}>
+    <div class="sheet" role="dialog" aria-modal="true" aria-label="Find its folder">
+      <div class="mv-head">
+        <h3>{moving.found.length} of {plural(total, "episode")} found</h3>
+        <p class="sheet-note mono">{moving.to}</p>
+      </div>
+      {#if moving.missing.length}
+        <div class="mv-missing">
+          <p class="sheet-note">Not found, and left as they are:</p>
+          <ul class="mv-list scroll">
+            {#each moving.missing as m (m.id)}
+              <li><span class="ep-n">{m.number}</span><span class="mono" title={m.path}>{m.path.split(/[\\/]/).pop()}</span></li>
+            {/each}
+          </ul>
+        </div>
+      {/if}
+      <p class="sheet-note">
+        {moving.found.length
+          ? "Telly will play them from here, and keep where you were, what you watched, your cards and subtitles. The rips aren’t moved or changed."
+          : "None of this show’s rips are in this folder."}
+      </p>
+      <div class="sheet-foot">
+        <button type="button" class="btn quiet" onclick={() => (moving = null)}>Cancel</button>
+        <button type="button" class="btn quiet" onclick={findFolder}>Choose another folder…</button>
+        <button type="button" class="btn" disabled={!moving.found.length} onclick={useFolder}>Use this folder</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 {#if matching}
   <div class="modal-bg" role="presentation" onclick={(e) => e.target === e.currentTarget && (matching = false)}>
     <div class="sheet" role="dialog" aria-modal="true" aria-label="Change match">
@@ -344,6 +421,13 @@
   .sp-head h2 { font: 800 30px/1.2 var(--font-jp-title); letter-spacing: .02em; }
   .sp-meta { font-size: 13.5px; color: var(--ink-2); margin-top: 4px; }
   .sp-folder { font-size: 12px; color: var(--ink-3); margin-top: 2px; overflow-wrap: anywhere; }
+  .sp-away { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; font-size: 13px; color: var(--warn); }
+  .mv-head { display: grid; gap: 4px; }
+  .mv-head h3 { font: 600 17px/1.3 var(--font-ui); }
+  .mv-missing { display: grid; gap: 6px; }
+  .mv-list { display: grid; max-height: 220px; overflow: auto; margin: 0; padding: 0; border-top: 1px solid var(--rule); }
+  .mv-list li { list-style: none; display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 12px; padding: 7px 6px; border-bottom: 1px solid var(--rule); font-size: 13px; }
+  .mv-list .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sp-history { display: grid; gap: 3px; margin: 8px 0 0; font-size: 13px; color: var(--ink-2); }
   .sp-history > div, .sp-history ul { display: flex; flex-wrap: wrap; gap: 2px 9px; }
   .sp-history dt { font-weight: 600; color: var(--ink); }

@@ -17,6 +17,7 @@ use crate::names::{self, Names};
 use crate::own_hachidori::{self, Own};
 use crate::premine::{self, Premining};
 use crate::recommend;
+use crate::relink;
 use crate::scan;
 use crate::search;
 use crate::stats;
@@ -437,8 +438,14 @@ impl Backend {
         let log = Log::open(&dirs.roaming.join("telly-log.sqlite"))?;
         let _ = log.tidy();
         let lines = search::Index::open(&dirs.local.join("telly-lines.sqlite"))?;
-        // Failed subtitles get another go each time Telly starts (Jimaku may have been down).
-        let _ = db.requeue_subs(None, &["failed"]);
+        // Failed subtitles get another go each time Telly starts (Jimaku may
+        // have been down), but not a show whose folder isn't there: its drive
+        // may be unplugged, and they'd only fail again.
+        for show in db.shows().unwrap_or_default() {
+            if Path::new(&show.folder).is_dir() {
+                let _ = db.requeue_subs(Some(show.id), &["failed"]);
+            }
+        }
         // Subtitles synced by an older way of matching are synced again: since
         // version 2 files are matched to the rip's own subtitles when it has
         // them, or FireRedVAD's view of the speech, and season folders are numbered right.
@@ -867,6 +874,8 @@ impl Backend {
         let cards_by_show = self.db.cards_per_show().unwrap_or_default();
         let episodes = self.db.episodes(id)?;
         let next_id = jobs::next_episode(&episodes).map(|e| e.id);
+        // Find its folder… is offered when its rips aren't where Telly has them.
+        let rips_missing = relink::missing(&show, &episodes);
         let card = self.card(show, &episodes, &cards_by_show, &self.db.word_scores().unwrap_or_default())?;
         let (shares, words_error) = premine::shares(self);
         let rows: Vec<EpisodeRow> = episodes
@@ -886,7 +895,7 @@ impl Backend {
             "needsModel": listener.is_none() && tools.whisper.is_some(),
             "maker": listener.map_or("Whisper", |l| l.name()),
         });
-        Ok(json!({ "card": card, "episodes": rows, "activity": self.activity(), "whisper": whisper, "wordsError": words_error, "completion": self.db.show_completion(id)? }))
+        Ok(json!({ "card": card, "episodes": rows, "activity": self.activity(), "whisper": whisper, "wordsError": words_error, "completion": self.db.show_completion(id)?, "ripsMissing": rips_missing }))
     }
 
     fn scan(&self, folder: &str) -> Result<Value> {
@@ -905,7 +914,9 @@ impl Backend {
     }
 
     /// Looks in a show's folder again for episodes that weren't there, or
-    /// couldn't be read (still downloading), when it was added. Returns how many it added.
+    /// couldn't be read (still downloading), when it was added. Returns how
+    /// many it added. An episode's rip moved within the folder is found where
+    /// it is now, keeping everything (relink.rs).
     pub fn rescan(&self, id: i64) -> Result<usize> {
         let show = self.db.show(id)?.ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?;
         let existing = self.db.episodes(id)?;
@@ -935,12 +946,21 @@ impl Backend {
             let mut named = existing.iter().filter_map(|e| parsed.get(e.path.as_str()).map(|p| *p == Some(e.number))).peekable();
             named.peek().is_some() && named.all(|by_name| by_name)
         };
-        // Episodes whose rip isn't there any more: a new file of the same number replaces it.
+        // Episodes whose rip isn't there any more. A file of its name and size
+        // elsewhere in the folder is that rip, moved; else a new file of the
+        // same number replaces it.
+        let gone_episodes: Vec<Episode> = existing.iter().filter(|e| !Path::new(&e.path).is_file()).cloned().collect();
+        let unknown: Vec<(String, i64)> = scan.files.iter().filter(|f| !known.contains_key(&f.path)).map(|f| (f.path.clone(), f.size)).collect();
+        let moved = relink::find(&show.folder, &show.folder, &gone_episodes, &unknown);
+        if !moved.is_empty() {
+            relink::relink_episodes(self, &[], &moved.iter().collect::<Vec<_>>())?;
+        }
+        let moved_to: std::collections::HashSet<&str> = moved.iter().map(|m| m.to.as_str()).collect();
         let mut gone: std::collections::HashMap<i64, i64> =
-            existing.iter().filter(|e| !Path::new(&e.path).is_file()).map(|e| (e.number, e.id)).collect();
+            gone_episodes.iter().filter(|e| !moved.iter().any(|m| m.id == e.id)).map(|e| (e.number, e.id)).collect();
         let mut new = Vec::new();
         let mut replaced = 0;
-        for f in scan.files.iter().filter(|f| f.reason.is_empty() && !known.contains_key(&f.path)) {
+        for f in scan.files.iter().filter(|f| f.reason.is_empty() && !known.contains_key(&f.path) && !moved_to.contains(f.path.as_str())) {
             let number = match f.parsed {
                 Some(n) if by_names => {
                     if let Some(episode) = gone.remove(&n) {
@@ -1506,6 +1526,15 @@ impl Backend {
                 Ok(json!({ "added": added }))
             }
             "rematch" => self.rematch(arg(&args, "id")?, arg(&args, "anilistId")?),
+            "missingRips" => to_value(relink::missing_shows(self)?),
+            "relinkShow" => {
+                let apply = arg::<Option<bool>>(&args, "apply")?.unwrap_or(false);
+                to_value(relink::show(self, arg(&args, "id")?, &arg::<String>(&args, "folder")?, apply)?)
+            }
+            "relinkLibrary" => {
+                let apply = arg::<Option<bool>>(&args, "apply")?.unwrap_or(false);
+                to_value(relink::library(self, &arg::<String>(&args, "from")?, &arg::<String>(&args, "to")?, apply)?)
+            }
             "removeShow" => self.remove_show(arg(&args, "id")?),
             "renumber" => {
                 let order: Vec<(i64, i64)> = arg(&args, "order")?;

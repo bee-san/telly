@@ -239,6 +239,33 @@ export interface ShowView {
   whisper: { ready: boolean; needsModel: boolean; maker: string };
   /** Why episodes have no share of known words ("" when they do, or it's being worked out). */
   wordsError: string;
+  /** Its rips that aren't where Telly has them, for Find its folder… (null when they all are). */
+  ripsMissing: MissingRips | null;
+}
+
+/** A show whose rips aren't all where Telly has them: its folder isn't there (its drive unplugged, or the folder moved), or some of its episodes' files aren't. */
+export interface MissingRips {
+  showId: number;
+  title: string;
+  folder: string;
+  folderMissing: boolean;
+  episodes: number;
+  /** How many of its episodes' rips aren't there: all of them when its folder isn't. */
+  missing: number;
+}
+
+/**
+ * What Telly found of a show's rips in the folder it's in now (`to`), which
+ * it has as `from`: each episode found, where it was and where it is now, and
+ * those not found, which are left as they are.
+ */
+export interface ShowMove {
+  showId: number;
+  title: string;
+  from: string;
+  to: string;
+  found: { id: number; number: number; from: string; to: string }[];
+  missing: { id: number; number: number; path: string }[];
 }
 
 export interface Line {

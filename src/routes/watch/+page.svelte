@@ -1004,7 +1004,7 @@
   }
 
   /** The moments to play: those whose episode can play here, of the episode just left unless it’s the whole story. */
-  const moments = $derived((recap?.data?.moments ?? []).filter((m) => m.playable && (recap?.full || m.number === recap?.data?.lastNumber)));
+  const moments = $derived((recap?.data?.moments ?? []).filter((m) => m.playable && (recap?.full || m.latest)));
   const canRecap = $derived(!!(view?.recap?.possible || view?.resume?.possible));
   const canMontage = $derived(recap?.state === "ready" && moments.length > 0);
 

@@ -369,6 +369,8 @@ export interface Moment {
   listedAudio: number;
   playable: boolean;
   nudgeMs: number;
+  /** Whether it's from the episode you left: the moments that play when you're back within a few days. */
+  latest: boolean;
 }
 
 /** A line a search found (search.rs). */

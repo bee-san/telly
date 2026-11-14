@@ -1140,7 +1140,9 @@
     });
   }
 
-  const startLabel = $derived(ended ? "Close" : `${recapAt === null ? "Start" : "Resume"}${view?.movie ? "" : ` Episode ${view?.episode.number ?? ""}`}`);
+  /** Where the episode carries on from when the recap closes: where you stopped, or where it is. */
+  const resumeFrom = $derived(recapAt ?? Math.max(startAt(), now));
+  const startLabel = $derived(ended ? "Close" : `${resumeFrom > 5 ? "Resume" : "Start"}${view?.movie ? "" : ` Episode ${view?.episode.number ?? ""}`}`);
   /** The language Claude writes the recap and Explain in (Settings → Claude), so Japanese is drawn with Japanese, not Chinese, kanji. */
   const recapLang = $derived(settings["claude.language"] === "ja" ? "ja" : "en");
 
@@ -1194,12 +1196,11 @@
   function intoEpisode() {
     if (bridge || !view) return;
     const run = ++montageRun;
-    const resuming = recapAt !== null;
     // A film's card names the film.
     bridge = {
       kicker: view.movie ? "" : view.show.title,
       title: view.movie ? view.show.title : `Episode ${view.episode.number}`,
-      sub: resuming ? `From ${clock(recapAt ?? 0)}` : "",
+      sub: resumeFrom > 5 ? `From ${clock(resumeFrom)}` : "",
       out: false,
     };
     exitAt = performance.now();

@@ -653,15 +653,24 @@ fn tells(lines: &[Line]) -> bool {
     spoken(lines).count() >= 20
 }
 
+/// How far into an episode, in seconds, there's a recap up to where you
+/// stopped. Before that it would be of the cold open, and the recap of the
+/// episode before is the one to see.
+const RESUME_FROM_S: f64 = 300.0;
+
 /// What the recap before `episode` is made from: the episodes before it with
 /// subtitles, back to the nearest one with a recap kept (which tells the story
 /// before), six at most. With `at`, `episode` itself is the last of them, as
-/// far as `at` seconds in. Nothing when the last of them has too few lines.
+/// far as `at` seconds in. Nothing when the last of them has too few lines, or
+/// `at` is in the first 5 minutes.
 fn source(backend: &Backend, episode: &Episode, at: Option<f64>) -> Result<Source> {
     let all = backend.db.episodes(episode.show_id)?;
     let Some(i) = all.iter().position(|e| e.id == episode.id) else { return Ok(Source::default()) };
     let mut source = Source::default();
     if let Some(at) = at {
+        if at < RESUME_FROM_S {
+            return Ok(source);
+        }
         let mut lines = jobs::read_lines(backend, episode.id);
         let nudge = episode.subs_nudge_ms as f64 / 1000.0;
         lines.truncate(lines.iter().take_while(|l| l.start + nudge < at).count());
@@ -942,7 +951,8 @@ pub fn recaps_on(backend: &Backend) -> bool {
 
 /// Writes the recap for coming back, in the background, so it's ready then.
 /// Called when you leave the player: after most of an episode, the recap
-/// before the next one; part-way through (`resume_at`), the recap up to there.
+/// before the next one; part-way through (`resume_at`), the recap up to there,
+/// or in its first 5 minutes the recap before it.
 pub fn prepare_recaps(backend: &Arc<Backend>, episode_id: i64, finished: bool, resume_at: Option<f64>) {
     if !recaps_on(backend) || claude::find().is_none() {
         return;
@@ -956,8 +966,8 @@ pub fn prepare_recaps(backend: &Arc<Backend>, episode_id: i64, finished: bool, r
             let _ = recap(backend, next.id, true, None);
         }
     }
-    if resume_at.is_some() {
-        let _ = recap(backend, episode_id, true, resume_at);
+    if let Some(at) = resume_at {
+        let _ = recap(backend, episode_id, true, (at >= RESUME_FROM_S).then_some(at));
     }
 }
 
@@ -1308,6 +1318,24 @@ mod tests {
         // Clips that run into each other count once.
         assert_eq!(length(&[clip(3, 0.0), clip(3, 20.0)]), 50.0);
         assert_eq!(length(&[clip(2, 0.0), clip(3, 20.0)]), 60.0);
+    }
+
+    #[test]
+    fn picking_up_in_the_first_5_minutes_recaps_the_episode_before() {
+        let lines: Vec<Line> = (0..30).map(|i| line(100.0 + i as f64 * 3.0, 102.0 + i as f64 * 3.0, &format!("台詞{i}"))).collect();
+        let (backend, episodes, dir) = library("early", 2, &lines);
+        // Four minutes into Episode 2, its 30 lines would be a recap of the cold open: there's none up to there.
+        assert_eq!(recap_state(&backend, &episodes[1], Some(240.0)), json!({ "possible": false }));
+        assert_eq!(recap_state(&backend, &episodes[1], Some(400.0)), json!({ "possible": true, "ready": false }));
+        // The player opens on the recap before it, Episode 1's, and plays its Last time and scenes.
+        keep(&backend, &episodes[1], &Recap { last: "Roman runs.".into(), moments: vec![Pick { episode: 1, line: 10, caption: "Roman runs.".into() }], ..Recap::default() });
+        backend.db.save_position(episodes[1].id, 240.0).unwrap();
+        let view = backend.call("openPlayer", json!({ "id": episodes[1].id })).unwrap();
+        assert_eq!((&view["resume"]["possible"], &view["recap"]), (&json!(false), &json!({ "possible": true, "ready": true })));
+        let recap = super::recap(&backend, episodes[1].id, false, None).unwrap();
+        assert_eq!((&recap["last"], &recap["lastNumber"], played(&recap)), (&json!("Roman runs."), &json!(1), vec![(130.0, true)]));
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -5,6 +5,7 @@
   import Icon from "$lib/Icon.svelte";
   import { call, errorText, mediaUrl, setFullscreen, setWindowTitle, type AskProgress, type CardEvent, type CastName, type ClaudeStatus, type Line, type Moment, type PlayerView, type Recap, type SeekSheet } from "$lib/api";
   import { arrange, createRenderer, drawTiles, filters, toggle } from "$lib/filters";
+  import { dragWindow, enterCompact, leaveCompact, setCompactShape } from "$lib/compact";
   import { clock, ownFile } from "$lib/format";
   import { app } from "$lib/state.svelte";
   import { toast, toasts } from "$lib/toast-store.svelte";
@@ -162,6 +163,8 @@
   const autoplay = $derived(settings["player.autoplay"] !== false);
   const skipEndings = $derived(settings["player.skipEndings"] === true);
   const subSize = $derived(Number(settings["player.subtitleSize"] ?? 36) || 36);
+  /** The subtitles' size: in the small player, scaled to its width, from 14 px up to their usual size. */
+  const subFont = $derived(app.compact ? `clamp(14px, ${subSize / 10}vw, ${subSize}px)` : `${subSize}px`);
 
   function esc(s: string): string {
     return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c] as string);
@@ -378,6 +381,7 @@
     if (at > 0) video.currentTime = at;
     lastT = video.currentTime;
     video.playbackRate = rate;
+    if (app.compact && video.videoWidth) setCompactShape(video.videoWidth / video.videoHeight).catch(() => {});
     firstFrame();
     if (!holdPlay && !reload?.paused) video.play().catch(() => {});
   }
@@ -477,7 +481,14 @@
     }
   }
 
-  function picMove() {
+  function picMove(e: PointerEvent) {
+    // In the small player, a press on the picture that moves drags the window.
+    if (pressAt && e.buttons === 1 && Math.hypot(e.clientX - pressAt.x, e.clientY - pressAt.y) > 4) {
+      pressAt = null;
+      dragged = true;
+      dragWindow().catch(() => {});
+      return;
+    }
     wake();
     if (!pausedByHover || popupOpen || resumeTimer) return;
     resumeTimer = setTimeout(() => {
@@ -501,9 +512,19 @@
   // waits a moment for a second one, so a double-click doesn't pause and play.
   let clickTimer: ReturnType<typeof setTimeout> | null = null;
   let clickToggled = false;
+  /** In the small player: where a press on the picture started, till it's let go, and whether it dragged the window (then it's no click). */
+  let pressAt: { x: number; y: number } | null = null;
+  let dragged = false;
+
+  function picDown(e: PointerEvent) {
+    dragged = false;
+    if (!app.compact || e.button !== 0) return;
+    pressAt = { x: e.clientX, y: e.clientY };
+    window.addEventListener("pointerup", () => (pressAt = null), { once: true });
+  }
 
   function picClick(e: MouseEvent) {
-    if (e.detail !== 1) return;
+    if (e.detail !== 1 || dragged) return;
     clickToggled = false;
     clickTimer = setTimeout(() => {
       clickTimer = null;
@@ -672,8 +693,19 @@
   }
 
   async function toggleFull() {
+    // From the small player: back to the window as it was, then full screen if it isn't already.
+    if (app.compact) {
+      await leaveCompact().catch(() => {});
+      if (app.fullscreen) return;
+    }
     app.fullscreen = !app.fullscreen;
     await setFullscreen(app.fullscreen).catch(() => {});
+  }
+
+  /** I: the small player, on top of other windows, the shape of the picture; and back to the window as it was. */
+  async function toggleCompact() {
+    if (app.compact) await leaveCompact().catch(() => {});
+    else await enterCompact(video?.videoWidth ? video.videoWidth / video.videoHeight : 16 / 9).catch(() => {});
   }
 
   // ---- filters (V) ------------------------------------------------------------------
@@ -1289,6 +1321,7 @@
   async function leave(to = "/") {
     stopWaiting();
     await close();
+    if (app.compact) await leaveCompact(false).catch(() => {});
     if (app.fullscreen) await toggleFull();
     goto(to);
   }
@@ -1399,6 +1432,10 @@
       case "F":
         toggleFull();
         break;
+      case "i":
+      case "I":
+        toggleCompact();
+        break;
       case "z":
       case "Z":
         setNudge(nudge - 100);
@@ -1427,6 +1464,7 @@
         else if (filterPanel) filterPanel = false;
         else if (audioMenu) audioMenu = false;
         else if (app.fullscreen) toggleFull();
+        else if (app.compact) toggleCompact();
         break;
     }
   }
@@ -1454,7 +1492,8 @@
     ["E", "Explain the line"],
     ["P", "Show Previously on"],
     ["F", "Fullscreen"],
-    ["Esc", "Close, or leave fullscreen"],
+    ["I", "Small player, on top of other windows"],
+    ["Esc", "Close, or leave fullscreen or the small player"],
     ["?", "Show shortcuts"],
   ];
 
@@ -1498,6 +1537,8 @@
       call("closePlayer", { id, position }).catch(() => {});
     };
     window.addEventListener("beforeunload", unload);
+    // Reloaded in the small player: the window goes back as it was.
+    leaveCompact(false).catch(() => {});
     wake();
     return () => window.removeEventListener("beforeunload", unload);
   });
@@ -1518,6 +1559,7 @@
     window.removeEventListener("hachidori-popup-hidden", popupHidden);
     close();
     app.dark = false;
+    if (app.compact) leaveCompact(false).catch(() => {});
     if (app.fullscreen) {
       app.fullscreen = false;
       setFullscreen(false).catch(() => {});
@@ -1543,8 +1585,8 @@
   }
 </script>
 
-<div class="player" class:idle class:paused onpointermove={wake} role="application" aria-label="Player">
-  <div class="pic" onpointermove={picMove} onpointerleave={clearResume} onclick={picClick} ondblclick={picDoubleClick} role="presentation">
+<div class="player" class:idle class:paused class:compact={app.compact} onpointermove={wake} role="application" aria-label="Player">
+  <div class="pic" onpointerdown={picDown} onpointermove={picMove} onpointerleave={clearResume} onclick={picClick} ondblclick={picDoubleClick} role="presentation">
     {#if view && view.episode.mediaState === "ready"}
       <!-- svelte-ignore a11y_media_has_caption -->
       <video
@@ -1574,7 +1616,7 @@
     {/if}
   </div>
 
-  <div class="subs" class:off={!subsOn} style:--sub-size="{subSize}px">
+  <div class="subs" class:off={!subsOn} style:--sub-size={subFont}>
     {#each translated as line (line.start + line.text)}
       <p class="tr-line">{line.speaker ? `(${line.speaker}) ` : ""}{line.text}</p>
     {/each}
@@ -1598,10 +1640,10 @@
     {#if view}
       <span class="ptitle"><b title={view.show.title}>{view.show.title}</b><span>Episode {view.episode.number} of {view.count}</span></span>
       <span class="grow"></span>
-      <span class="subnote" title={view.episode.subsFile}>
+      <span class="subnote wide" title={view.episode.subsFile}>
         {#if view.episode.subsState === "synced"}<Icon name="check" />{/if}{syncNote}{#if nudge !== 0} · {nudge > 0 ? "+" : ""}{(nudge / 1000).toFixed(1)} s{/if}
       </span>
-      <button type="button" class="pbtn txt" onclick={() => leave(`/show?id=${view?.show.id}`)}>Show episodes</button>
+      <button type="button" class="pbtn txt wide" onclick={() => leave(`/show?id=${view?.show.id}`)}>Show episodes</button>
     {/if}
   </div>
 
@@ -1645,20 +1687,20 @@
       <button type="button" class="pbtn" aria-label="Next line" title="Next line (→)" onclick={nextLine}><Icon name="nextLine" /></button>
       <span class="ptime">{clock(now)} / {clock(duration)}</span>
       <button type="button" class="pbtn" aria-label={muted ? "Unmute" : "Mute"} title="{muted ? "Unmute" : "Mute"} (0)" onclick={toggleMute}><Icon name={muted || volume === 0 ? "muted" : "volume"} /></button>
-      <input class="vol" type="range" min="0" max="1" step="0.05" value={muted ? 0 : volume} aria-label="Volume" title="Volume (- and =)"
+      <input class="vol wide" type="range" min="0" max="1" step="0.05" value={muted ? 0 : volume} aria-label="Volume" title="Volume (- and =)"
         oninput={(e) => setVolume(Number(e.currentTarget.value))} onchange={(e) => { saveSound(); e.currentTarget.blur(); }} />
       <span class="grow"></span>
       {#if rate !== 1}<button type="button" class="pbtn txt" title="Speed ([ and ])" onclick={() => setRate(1)}>{rate.toFixed(1)}×</button>{/if}
       <button type="button" class="pbtn" class:on={subsOn} aria-label="Subtitles" title="Subtitles (S)" onclick={toggleSubs}><Icon name="subs" /></button>
-      <button type="button" class="pbtn" class:on={blur} aria-label="Blur until hovered" title="Blur until hovered (B)" onclick={toggleBlur}><Icon name="blur" /></button>
-      <button type="button" class="pbtn" class:on={transcript} aria-label="Transcript" title="Transcript (T)" onclick={() => (transcript = !transcript)}><Icon name="transcript" /></button>
-      <button type="button" class="pbtn txt" class:on={!!explaining} title="Explain the line with Claude (E)" onclick={() => explainLine()}>Explain</button>
+      <button type="button" class="pbtn wide" class:on={blur} aria-label="Blur until hovered" title="Blur until hovered (B)" onclick={toggleBlur}><Icon name="blur" /></button>
+      <button type="button" class="pbtn wide" class:on={transcript} aria-label="Transcript" title="Transcript (T)" onclick={() => (transcript = !transcript)}><Icon name="transcript" /></button>
+      <button type="button" class="pbtn txt wide" class:on={!!explaining} title="Explain the line with Claude (E)" onclick={() => explainLine()}>Explain</button>
       {#if canRecap}
-        <button type="button" class="pbtn txt" title="Previously on (P)" onclick={() => openRecap()}>Recap</button>
+        <button type="button" class="pbtn txt wide" title="Previously on (P)" onclick={() => openRecap()}>Recap</button>
       {/if}
-      <button type="button" class="pbtn txt" class:on={filterPanel} aria-expanded={filterPanel} title="Filters (V)" onclick={() => (filterPanel = !filterPanel)}>Filters</button>
+      <button type="button" class="pbtn txt wide" class:on={filterPanel} aria-expanded={filterPanel} title="Filters (V)" onclick={() => (filterPanel = !filterPanel)}>Filters</button>
       {#if view && view.audio.length > 1}
-        <span class="menuwrap">
+        <span class="menuwrap wide">
           <button type="button" class="pbtn txt" class:on={audioMenu} aria-haspopup="menu" aria-expanded={audioMenu} title="Choose the audio track" onclick={() => { audioMenu = !audioMenu; subMenu = false; }}>Audio ▾</button>
           {#if audioMenu}
             <div class="submenu" role="menu">
@@ -1670,7 +1712,7 @@
           {/if}
         </span>
       {/if}
-      <span class="menuwrap">
+      <span class="menuwrap wide">
         <button type="button" class="pbtn txt" class:on={subMenu} aria-haspopup="menu" aria-expanded={subMenu} title="Fix the subtitle timing" onclick={() => { subMenu = !subMenu; audioMenu = false; }}>Sync ▾</button>
         {#if subMenu && view}
           <div class="submenu" role="menu">
@@ -1696,8 +1738,10 @@
           </div>
         {/if}
       </span>
-      <button type="button" class="pbtn txt" class:on={help} aria-label="Show shortcuts" title="Show shortcuts (?)" onclick={() => (help = !help)}>?</button>
-      <button type="button" class="pbtn" aria-label="Fullscreen" title="Fullscreen (F)" onclick={toggleFull}><Icon name={app.fullscreen ? "exitFull" : "full"} /></button>
+      <button type="button" class="pbtn txt wide" class:on={help} aria-label="Show shortcuts" title="Show shortcuts (?)" onclick={() => (help = !help)}>?</button>
+      <button type="button" class="pbtn" class:on={app.compact} aria-label={app.compact ? "Back to the full window" : "Small player on top of other windows"}
+        title="{app.compact ? "Back to the full window" : "Small player on top of other windows"} (I)" onclick={toggleCompact}><Icon name="mini" /></button>
+      <button type="button" class="pbtn wide" aria-label="Fullscreen" title="Fullscreen (F)" onclick={toggleFull}><Icon name={app.fullscreen ? "exitFull" : "full"} /></button>
     </div>
   </div>
 
@@ -1853,7 +1897,7 @@
         <span class="montage-label">Previously on {view.show.title} · Episode {moments[montage.i].number} · {montage.i + 1} of {moments.length}</span>
         {#if moments[montage.i].caption}<p class="montage-caption" lang={recapLang} aria-live="polite">{moments[montage.i].caption}</p>{/if}
       </div>
-      <div class="subs montage-subs" style:--sub-size="{subSize}px">
+      <div class="subs montage-subs" style:--sub-size={subFont}>
         {#each montageLines as l (l.start + l.text)}
           <p class="sub-line" lang="ja">{@html lineHtml(l)}</p>
         {/each}
@@ -2087,4 +2131,32 @@
   @keyframes veil-in { from { opacity: 0; } }
   @keyframes veil-out { to { opacity: 0; } }
   .montage-actions .pbtn { background: var(--vid-panel); border: 1px solid var(--vid-edge); }
+  /* The small player: the picture and its subtitles, sized to the window, with the controls only while
+     the pointer is over it, and only those it has room for (the rest are on their keys). The bars let a
+     press through to the picture, which drags the window. */
+  .player.compact .wide { display: none; }
+  .player.compact:not(:hover) .ptop, .player.compact:not(:hover) .pctl { opacity: 0; }
+  .player.compact .ptop, .player.compact .pctl { pointer-events: none; }
+  .player.compact:hover:not(.idle) .ptop .pbtn, .player.compact:hover:not(.idle) .pctl .pbtn, .player.compact:hover:not(.idle) .seek { pointer-events: auto; }
+  .player.compact .ptop { gap: 8px; padding: 6px 8px 22px; }
+  .player.compact .ptitle { gap: 8px; }
+  .player.compact .ptitle b { font-size: 13px; }
+  .player.compact .ptitle span { font-size: 12px; }
+  .player.compact .pctl { padding: 20px 6px 2px; }
+  .player.compact .prow { margin-top: 0; }
+  .player.compact .pbtn { height: 32px; }
+  .player.compact .pbtn:not(.txt) { width: 32px; }
+  .player.compact .pbtn :global(svg) { width: 18px; height: 18px; }
+  .player.compact .pbtn.big :global(svg) { width: 21px; height: 21px; }
+  .player.compact .ptime { margin-left: 6px; font-size: 12px; }
+  .player.compact .subs { bottom: 56px; }
+  .player.compact .paused-note { display: none; }
+  .player.compact .flash { top: 44px; padding: 7px 11px; font-size: 13px; }
+  .player.compact .skip { top: 44px; right: 8px; bottom: auto; height: 32px; padding: 0 12px; font-size: 13px; }
+  .player.compact .tx { inset: 6px; width: auto; }
+  .player.compact .end-card { width: calc(100% - 24px); max-height: calc(100% - 24px); overflow: auto; gap: 10px; padding: 14px 16px; }
+  .player.compact .end-card h3 { font-size: 17px; }
+  .player.compact .end-stats div { padding: 6px 0; }
+  .player.compact .end-stats b { font-size: 16px; }
+  .player.compact .cd { top: 10px; right: 14px; }
 </style>

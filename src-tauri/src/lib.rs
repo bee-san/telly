@@ -297,6 +297,7 @@ pub fn run() {
             let mut main = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
                 .title("Telly")
                 .inner_size(1280.0, 820.0)
+                // The small player (src/lib/compact.ts) lifts this, and puts it back.
                 .min_inner_size(960.0, 600.0)
                 .decorations(false)
                 .browser_extensions_enabled(cfg!(windows))

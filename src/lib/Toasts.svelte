@@ -4,7 +4,7 @@
   import { app } from "./state.svelte";
 </script>
 
-<div class="toasts" class:over-player={app.dark} aria-live="polite">
+<div class="toasts" class:over-player={app.dark} class:compact={app.compact} aria-live="polite">
   {#each toasts.list as t (t.key)}
     <div class="toast {t.state}">
       <span class="t-ic">

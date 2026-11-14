@@ -173,12 +173,6 @@
       <a href="/settings" class="link-btn">Open Settings</a>
     </p>
   {/if}
-  {#each lib?.downloaded ?? [] as d (d.folder)}
-    <p class="setup">
-      <span>Downloaded: <b>{d.name}</b>{d.downloading ? " (the rest is still downloading)" : ""}</span>
-      <button type="button" class="link-btn" onclick={() => (adding = d.folder)}>Add to library…</button>
-    </p>
-  {/each}
   {#if error}<p class="err">{error}</p>{/if}
 
   {#if lib && lib.shows.length === 0}

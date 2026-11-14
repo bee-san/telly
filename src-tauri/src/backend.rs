@@ -909,7 +909,7 @@ impl Backend {
             card.series = place.unwrap_or(card.series);
             cards.push(card);
         }
-        Ok(json!({ "shows": cards, "activity": self.activity(), "setup": self.setup(), "downloaded": torrents::offers(self) }))
+        Ok(json!({ "shows": cards, "activity": self.activity(), "setup": self.setup() }))
     }
 
     fn show_view(&self, id: i64) -> Result<Value> {

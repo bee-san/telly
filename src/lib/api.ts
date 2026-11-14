@@ -172,8 +172,6 @@ export interface Library {
   shows: ShowCard[];
   activity: Activity;
   setup: Setup;
-  /** Folders of finished downloads that aren't shows in the library yet. */
-  downloaded: DownloadOffer[];
 }
 
 export interface Episode {

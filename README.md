@@ -1,6 +1,19 @@
-# Telly
+<h1 align="center">Telly</h1>
 
-An anime player for learning Japanese, for Windows. Point it at a folder of rips and it:
+<p align="center">An anime player for learning Japanese, for Windows.</p>
+
+<p align="center">
+  <a href="https://github.com/bee-san/telly/releases/latest">Download</a> ·
+  <a href="#running-it">Running it</a> ·
+  <a href="#explain-and-previously-on">Previously on</a> ·
+  <a href="#filters">Filters</a> ·
+  <a href="#premining">Premining</a> ·
+  <a href="#stats">Stats</a>
+</p>
+
+![Looking up ゴチャゴチャ in a subtitle line with Hachidori](docs/lookup.webp)
+
+Point it at a folder of rips and it:
 
 - works out the show on AniList and puts the episodes in order
 - lists your library as movies, series or both, sorted by when it was added, name, year released or the share of its words you know; what you're watching is one row that scrolls sideways
@@ -19,6 +32,8 @@ An anime player for learning Japanese, for Windows. Point it at a folder of rips
 - recommends anime to watch next, from what AniList's users recommend to people who liked the shows in your library
 - logs what you watch for [Tidepool](https://github.com/bee-san/tidepool), and on your AniList list once you've signed in
 - shows when you first finished each show or film and the dates you completed full rewatches, on its page in the Library
+
+![The Library: what you're watching, then every show with the share of its words you know](docs/library.webp)
 
 The design, plans and build order are in the [design artifact](https://claude.ai/artifact/VbgPYuAenU9pXpGiVTWGjn).
 
@@ -46,6 +61,8 @@ Settings → Hachidori can link it to the Hachidori in your browser instead, so 
 
 ## Explain and Previously on
 
+![Previously on: the moments from the episode you left, each with a caption, then the episode starts](docs/previously-on.gif)
+
 Both use [Claude Code](https://claude.com/claude-code), installed and signed in on this computer: Telly runs `claude -p` with no tools, the way Gromit Reader does, so it uses your own sign-in and needs no API key. It asks Haiku 5.5 unless Settings → Claude picks another model, and answers in English or simple Japanese.
 
 Claude Code takes 3 to 15 seconds to start, longer than Haiku takes to answer. So while the player is open Telly keeps one Claude Code started and past its first turn, and Explain asks in it: the answer starts 1 to 3 seconds after you press E and is complete within 4 (measured over 12 questions: first words after 1.1 to 3.3 s, the whole answer after 1.8 to 4.1 s, against 24 s starting Claude Code for each question with its default model). What's left is Haiku's own time to answer. Telly also starts Claude Code with its non-essential traffic off (update checks, telemetry), which saves a few seconds more.
@@ -54,6 +71,8 @@ Claude Code takes 3 to 15 seconds to start, longer than Haiku takes to answer. S
 - **Previously on** (P, or Recap) tells the story so far: the story cut into its arcs, each with what happens in it and the episodes it spans, then **Last time** for the episode you left, then up to three scenes from the episode you left and up to six across the whole story, each with a caption. The clips give each exchange time to finish before fading into the next scene. Each recap carries on from the one kept for the episode before, so only the episode you just left is read (up to six when there's no recap to carry on from). When you come back to a show after 8 hours (Settings → Claude), the moments play first, opening on "Previously on" and the show's title, each one's sound crossfading into the next's as the next dissolves in, as a TV recap is cut, and the episode starts after them, through a card naming it (and where it picks up); Read recap shows the text instead. Back within 3 days, it's only Last time and that episode's moments, with the rest behind Show story so far. Picking up in the middle of an episode, the recap runs up to where you stopped. It's written when you leave the player, so it's ready next time (Haiku takes about 15 seconds for one episode); if it isn't, the episode starts and Telly says when the recap is ready.
 
 ## Filters
+
+![Filters: clicking Anime4K, Restore and others on and off, each tile showing the frame through its filter](docs/filters.gif)
 
 **Filters** in the player (V) opens a panel of tiles, each showing the frame through one filter. Click filters to put them on, and they run one after another in the order you clicked them, each on the picture the one before left: with two or more, each tile says where it comes, 1, 2, 3. Click one again to take it out, or None to take them all off. The filters are drawn over the picture only, so the subtitles stay sharp, and they're remembered for each show. When an episode fills well over its own size on screen (1.5× or more) and its show has no filter picked, a note suggests Anime4K, once.
 
@@ -69,6 +88,8 @@ Denoise, Restore, Thin Lines and Darken Lines are Anime4K's too. An upscaler wor
 The shaders and where they come from are in `src/lib/filters/shaders`.
 
 ## Character names
+
+![ハク looked up in a subtitle line: his name card from Telly characters, with his portrait](docs/names.webp)
 
 Telly fetches the casts of the 6 shows you watched last from AniList, with their portraits, and builds a Yomitan dictionary with [characterdictionary.tokyo](https://github.com/bee-san/Japanese_Character_Name_Dictionary)'s own builder (copied into `src-tauri/src/names`): each character's full name, its parts, kana spellings and honorifics (ナツさん, ルーシィ様…), with a card showing who they are. Names written with ・ (ナツ・ドラグニル) get each part. To keep a cast of hundreds a sensible size, main characters get every honorific, supporting characters the common ones, and background characters none.
 
@@ -113,6 +134,8 @@ On 850,000 lines in 2,700 episodes (made up, a tenth of them without their words
 
 ## Recommended
 
+![Recommended: anime to watch next, each with the shows in your library it's recommended from](docs/recommended.webp)
+
 **Recommended**, in the library's toolbar, lists anime to watch next. It goes on the shows in your library and needs no AniList sign-in. On AniList, people pair shows ("liked this, try that") and vote each pair up or down; Telly asks for the 25 most voted pairs of every show AniList knows, 50 shows to a request. It asks when Telly starts and when a show is added, about the shows it hasn't asked about that week, so the page opens with its answers.
 
 - **Adding up:** each show has a say on a pick, counted by the size of its votes (log2(1 + votes)): 6,000 votes count about twice as much as 80. So a pick liked from many of your shows beats one that a single well-known show carries. A show watched to the end counts double one not started.
@@ -122,6 +145,8 @@ On 850,000 lines in 2,700 episodes (made up, a tenth of them without their words
 AniList's answers are kept for a week. A show is asked about again after that, and a show you add is asked about the next time the page opens.
 
 ## Stats
+
+![Stats for 7 days: time watched, episodes, lines, cards mined, each day's watching and words known](docs/stats.webp)
 
 **Stats**, in the library's toolbar, adds up what you've watched, mined and learnt over the last 7 days, 30 days, 12 months or all time. It's all from what Telly already keeps.
 

@@ -303,7 +303,7 @@
               <span class="w-en">{a.native ? a.title : ""}</span>
               <span class="w-next">{st.text}</span>
               <span class="w-sub">{st.sub}</span>
-              <span class="bar"><i style:width="{Math.round((100 * (a.current.watched + part)) / Math.max(1, a.current.episodes))}%"></i></span>
+              <span class="bar"><i style:width="{Math.round(100 * part)}%"></i></span>
             </span>
           </div>
         {/each}

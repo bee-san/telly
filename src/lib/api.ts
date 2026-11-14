@@ -319,6 +319,8 @@ export interface PlayerView {
   prev: EpisodeLite | null;
   next: EpisodeLite | null;
   count: number;
+  /** Whether the show is a film. */
+  movie?: boolean;
   tried: Tried[];
   /** The rip's chapters. */
   chapters: { start: number; end: number; title: string }[];
@@ -369,7 +371,7 @@ export interface Moment {
   listedAudio: number;
   playable: boolean;
   nudgeMs: number;
-  /** Whether it's from the episode you left: the moments that play when you're back within a few days. */
+  /** Whether it's from the episode you left (in a film, any of it): the moments that play when you're back within a few days. */
   latest: boolean;
 }
 

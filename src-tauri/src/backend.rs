@@ -303,7 +303,7 @@ fn to_value<T: Serialize>(v: T) -> Result<Value> {
 
 /// Whether a show is a film: AniList says so (`format`), or AniList doesn't
 /// know it (`matched` is false) and it's one file, an hour or more long.
-fn is_movie(format: &str, matched: bool, lengths: &[f64]) -> bool {
+pub(crate) fn is_movie(format: &str, matched: bool, lengths: &[f64]) -> bool {
     format == "MOVIE" || (!matched && lengths.len() == 1 && lengths[0] >= 3600.0)
 }
 
@@ -1232,6 +1232,7 @@ impl Backend {
             "prev": if i > 0 { Some(lite(&episodes[i - 1])) } else { None },
             "next": episodes.get(i + 1).map(lite),
             "count": episodes.len(),
+            "movie": is_movie(&show.format, show.anilist_id.is_some(), &episodes.iter().map(|e| e.duration).collect::<Vec<_>>()),
             "tried": jobs::read_tried(self, id),
         }))
     }

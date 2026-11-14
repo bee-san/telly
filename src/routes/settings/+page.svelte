@@ -23,6 +23,7 @@
     type KnownSources, type Settings,
     type Status,
   } from "$lib/api";
+  import { STEPS, askAnki, askJimaku, checks, dictionariesCheck, hachidoriCheck, linked as linkedTo, problems, type AnkiFacts } from "$lib/checks";
   import { bytes } from "$lib/format";
   import { app } from "$lib/state.svelte";
   import { toast } from "$lib/toast-store.svelte";
@@ -40,6 +41,9 @@
   let own = $state<OwnHachidori | null>(kept<OwnHachidori>("ownHachidori"));
   /** What Known words chooses from; null while Anki is closed. */
   let sources = $state<KnownSources | null>(kept<KnownSources>("knownSources"));
+  /** Whether Jimaku takes the key, and what Anki has, for the list of what's not working. */
+  let jimakuWorks = $state<string | null>(null);
+  let ankiHas = $state<AnkiFacts | null>(null);
 
   /** Every part is asked for at once, and shows as it comes. */
   async function load() {
@@ -48,6 +52,8 @@
         callKept<Settings>("settings").then((s) => {
           settings = s;
           key = String(s["jimaku.key"] ?? "");
+          askJimaku(s).then((j) => (jimakuWorks = j));
+          askAnki(s).then((a) => (ankiHas = a));
         }),
         callKept<Status>("status").then((s) => (status = s)),
         hachidoriInfo().then((h) => (hd = h)),
@@ -85,6 +91,7 @@
       relay = await relayStatus().catch(() => relay);
       names = await call<NamesStatus>("namesStatus").catch(() => names);
       own = await call<OwnHachidori>("ownHachidori").catch(() => own);
+      if (status?.anki && !ankiHas) ankiHas = await askAnki(settings);
     }, 5000);
     return () => {
       left = true;
@@ -99,6 +106,9 @@
       await call("setSetting", { key: k, value });
       saved[k] = true;
       setTimeout(() => (saved[k] = false), 1500);
+      // What's not working is checked again for what changed.
+      if (k === "jimaku.key") askJimaku(settings).then((j) => (jimakuWorks = j));
+      if (k.startsWith("anki.")) askAnki(settings).then((a) => (ankiHas = a));
     } catch (e) {
       toast({ key: "set", state: "failed", title: "Not saved", text: errorText(e) });
     }
@@ -192,18 +202,9 @@
     own = await call<OwnHachidori>("ownHachidori").catch(() => own);
   }
 
-  const linked = $derived(hd?.status?.state === "linked" || hd?.status?.state === "connecting");
+  const linked = $derived(linkedTo(hd));
 
-  const dictText = $derived.by(() => {
-    if (!own) return "";
-    if (linked) return "Linked, so the dictionaries are the browser Hachidori’s.";
-    if (!own.folder) return "Choose the folder your Yomitan dictionaries (.zip files) are in.";
-    if (!own.total) return "There are no dictionaries (.zip files) in this folder.";
-    const failed = own.failed.length ? ` Couldn’t install: ${own.failed.join(", ")}.` : "";
-    if (own.installing) return `Installing ${own.installing} · ${own.installed} of ${own.total} installed.${failed}`;
-    if (own.installed === own.total) return `All ${own.total} are installed.${failed}`;
-    return `${own.installed} of ${own.total} installed; the rest go in while Telly is open.${failed}`;
-  });
+  const dictText = $derived(own ? dictionariesCheck(own, hd).text : "");
 
   const ankiText = $derived.by(() => {
     if (!own || linked) return "";
@@ -222,26 +223,10 @@
     }
   }
 
-  const hdText = $derived.by(() => {
-    if (!inTauri) return "Hachidori runs in the app only.";
-    if (!hd?.prepared) return "Not set up. Run npm run prepare:hachidori, then restart Telly.";
-    const s = hd.status;
-    if (!s) return "Starting…";
-    switch (s.state) {
-      case "linked":
-        return `Linked to the browser’s Hachidori${s.host ? ` (${s.host})` : ""}: its dictionaries, settings, and Anki setup.`;
-      case "connecting":
-        return `Connecting to the browser’s Hachidori…${s.detail ? ` ${s.detail}` : ""}`;
-      case "standalone":
-        return "Running on its own, with the dictionaries and Anki setup below.";
-      case "link-failed":
-        return `Couldn’t link: ${s.detail}. Open Anki with Hachidori Relay, or leave Telly’s relay on, then open Hachidori in the browser.`;
-      case "error":
-        return s.detail;
-      default:
-        return "Starting…";
-    }
-  });
+  const hdText = $derived(hachidoriCheck(hd).text);
+
+  /** What isn't working, found by the setup's own checks, once enough is known to say. */
+  const broken = $derived(status && claude && (hd || !inTauri) ? problems(checks({ settings, status, jimaku: jimakuWorks, anki: ankiHas, own, hd, claude })) : null);
 
   const relayText = $derived(
     ({ Off: "Off", Running: "Relaying on 127.0.0.1:8771 while Anki is closed", Anki: "Anki is open, so Hachidori Relay does it", PortBusy: "Another program holds port 8771" } as Record<string, string>)[relay] ?? relay,
@@ -342,6 +327,26 @@
   <button type="button" class="back" onclick={() => goto("/")}><Icon name="back" /><span>Back to library</span></button>
   <h1>Settings</h1>
   {#if error}<p class="err">{error}</p>{/if}
+
+  <section>
+    <h2>Setup</h2>
+    {#if !broken}
+      <p class="lede">Checking what works…</p>
+    {:else if broken.length}
+      <p class="lede">What’s not working:</p>
+      <div class="status-list">
+        {#each broken as c (c.id)}
+          <p><i class:warn={c.state === "warn"} class:bad={c.state === "bad"}></i><span>{c.text} <button type="button" class="link-btn" onclick={() => goto(`/setup?step=${c.step}`)}>{STEPS.find((s) => s.id === c.step)?.setUp}</button></span></p>
+        {/each}
+      </div>
+    {:else}
+      <p class="lede">Everything Telly checks is working.</p>
+    {/if}
+    <div class="actions">
+      <button type="button" class="btn quiet" onclick={() => goto("/setup")}>Run setup again</button>
+      <button type="button" class="btn quiet" onclick={load}>Check again</button>
+    </div>
+  </section>
 
   <section>
     <h2>Subtitles</h2>

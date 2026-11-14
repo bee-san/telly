@@ -4,7 +4,8 @@
   import { clock, plural } from "./format";
   import Icon from "./Icon.svelte";
 
-  let { folder, onclose, onadded }: { folder: string; onclose: () => void; onadded: (id: number) => void } = $props();
+  /** `scanned`: the folder's scan, when it was started before the sheet opened (the setup starts it while you go on). */
+  let { folder, scanned, onclose, onadded }: { folder: string; scanned?: Promise<ScanResult>; onclose: () => void; onadded: (id: number) => void } = $props();
 
   type Phase = "scanning" | "groups" | "match" | "search" | "adding";
   let phase = $state<Phase>("scanning");
@@ -20,11 +21,11 @@
   let searching = $state(false);
   let dragging = $state<number | null>(null);
 
-  async function scan(path: string) {
+  async function scan(path: string, started?: Promise<ScanResult>) {
     phase = "scanning";
     error = "";
     try {
-      const r = await call<ScanResult>("scan", { folder: path });
+      const r = await (started ?? call<ScanResult>("scan", { folder: path }));
       result = r;
       files = r.scan.files.map((f) => ({ ...f, include: f.number !== null }));
       byOrder = r.scan.numbering === "order";
@@ -39,7 +40,7 @@
   }
 
   onMount(() => {
-    scan(folder);
+    scan(folder, scanned);
     const key = (e: KeyboardEvent) => e.key === "Escape" && onclose();
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);

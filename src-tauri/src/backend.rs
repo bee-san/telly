@@ -70,6 +70,8 @@ const SUBS_ENGINE: i64 = 2;
 /// Telly's own Hachidori has your dictionaries and Anki setup (own_hachidori.rs),
 /// so it stops waiting on a browser to link to, once.
 const OWN_HACHIDORI: i64 = 1;
+/// Setting: whether the first-time setup is done (true), begun (false) or not yet shown (none).
+const SETUP_DONE: &str = "setup.done";
 
 /// The episode open in the player.
 struct Playing {
@@ -447,6 +449,11 @@ impl Backend {
         if db.setting_i64("hachidori.own", 0) < OWN_HACHIDORI {
             let _ = db.set_setting("hachidori.link", &json!(false));
             let _ = db.set_setting("hachidori.own", &json!(OWN_HACHIDORI));
+        }
+        // A library from before the first-time setup was set up without it, so
+        // it doesn't go through it. One that's begun the setup has it false.
+        if db.setting(SETUP_DONE)?.is_none() && (!db.shows()?.is_empty() || !db.setting_str("jimaku.key").trim().is_empty()) {
+            let _ = db.set_setting(SETUP_DONE, &json!(true));
         }
         // What ffmpeg can do is asked once Telly is open (start): that takes a few seconds.
         let found = tools::find_files(&dirs.tools(), &dirs.models(), &db.setting_str("tools.ffmpeg"), &db.setting_str("whisper.model"));
@@ -1683,6 +1690,15 @@ impl Backend {
                 let model: String = arg(&args, "model")?;
                 to_value(crate::anki::model_field_names(&url, &model)?)
             }
+            "ankiNames" => {
+                let (decks, note_types) = crate::anki::deck_and_model_names(&cards::anki_url(self))?;
+                Ok(json!({ "decks": decks, "noteTypes": note_types }))
+            }
+            "checkJimaku" => {
+                crate::jimaku::check_key(&self.db.setting_str("jimaku.key"))?;
+                Ok(json!({}))
+            }
+            "testClaude" => Ok(ask::test(self)),
             _ => Err(anyhow!("Telly doesn’t know the request \"{cmd}\"")),
         }
     }
@@ -1789,6 +1805,34 @@ mod tests {
         assert_eq!(backend.ahead.at.lock().unwrap().0, path);
         drop(backend);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_a_library_set_up_before_the_setup_existed_skips_it() {
+        let setup = |name: &str, prepare: &dyn Fn(&Backend)| {
+            let dir = std::env::temp_dir().join(format!("telly-setup-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            let dirs = Dirs { local: dir.clone(), roaming: dir.clone() };
+            prepare(&Backend::open(dirs.clone()).unwrap());
+            let done = Backend::open(dirs).unwrap().db.setting(SETUP_DONE).unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+            done
+        };
+        // A new library: the setup shows.
+        assert_eq!(setup("new", &|_| {}), None);
+        // A library with shows, or a Jimaku key: set up already.
+        let show = |b: &Backend| {
+            let episodes = vec![crate::db::NewEpisode { number: 1, path: "a.mkv".into(), size: 10, duration: 1400.0 }];
+            b.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        };
+        assert_eq!(setup("shows", &show), Some(json!(true)));
+        assert_eq!(setup("key", &|b| b.db.set_setting("jimaku.key", &json!("key")).unwrap()), Some(json!(true)));
+        // Begun, and a show added on its first screen: it still shows.
+        let begun = |b: &Backend| {
+            b.db.set_setting(SETUP_DONE, &json!(false)).unwrap();
+            show(b);
+        };
+        assert_eq!(setup("begun", &begun), Some(json!(false)));
     }
 
     #[test]

@@ -7,10 +7,13 @@
 //! The seasons and movies you don't have of an anime you do are picks too,
 //! by how much you liked the parts you have (series.rs has which they are).
 //!
-//! The page also lists what's trending on AniList, the ten series and the
-//! ten movies most watched and talked about there now (asked once a day, kept
-//! in trending.json), and searches AniList for an anime that's neither a pick
-//! nor trending, so anything can be found to download.
+//! The page also lists rows from AniList's charts, asked for once a day and
+//! kept in charts.json: the ten series and ten movies trending now, what's
+//! popular this season, what has just finished airing, short series, hidden
+//! gems, the best rated, and the most popular of each genre, the genres you
+//! watch most first. Rows of "Because you watched" come from the
+//! recommendations of the shows you watched last. A search finds any other
+//! anime on AniList, so anything can be found to download.
 
 use crate::anilist::{self, Anime, Listed};
 use crate::backend::Backend;
@@ -53,6 +56,12 @@ pub struct Like {
     pub anime: Anime,
     pub genres: Vec<String>,
     pub description: String,
+    /// AniList's wide picture of it, for the top of the page ("" when it has none).
+    #[serde(default)]
+    pub banner: String,
+    /// It carries on from another entry (AniList calls that its prequel): not one to start with.
+    #[serde(default)]
+    pub sequel: bool,
 }
 
 /// A show in the library, as the ranking sees it.
@@ -91,6 +100,10 @@ pub struct Pick {
     pub show: Option<i64>,
     /// It isn't out yet, so there's nothing of it to download.
     pub unreleased: bool,
+    /// AniList's wide picture of it, for the top of the page ("" when it has none).
+    pub banner: String,
+    /// Where it stands in a ranked row: "No. 3 of the series trending on AniList this week".
+    pub standing: String,
     #[serde(skip)]
     score: f64,
 }
@@ -101,7 +114,7 @@ fn query() -> String {
   media(id_in: $ids, type: ANIME) {{ id
     relations {{ edges {{ relationType(version: 2) node {{ id type }} }} }}
     recommendations(sort: RATING_DESC, perPage: 25) {{ nodes {{ rating
-      mediaRecommendation {{ type genres description(asHtml: false) {} }} }} }} }} }} }}",
+      mediaRecommendation {{ type genres description(asHtml: false) bannerImage {} }} }} }} }} }} }}",
         anilist::FIELDS
     )
 }
@@ -131,6 +144,8 @@ fn sources(answer: &Value, now: i64) -> Vec<Source> {
                         anime: Anime::from_api(to)?,
                         genres: list(to, "/genres").iter().filter_map(Value::as_str).map(str::to_string).collect(),
                         description: to.get("description").and_then(Value::as_str).unwrap_or("").to_string(),
+                        banner: to.get("bannerImage").and_then(Value::as_str).unwrap_or("").to_string(),
+                        sequel: false,
                     })
                 })
                 .collect();
@@ -315,6 +330,8 @@ pub fn rank(owned: &[Owned], listed: &[Listed], sources: &[Source], hidden: &Has
                 more_of: String::new(),
                 show: None,
                 unreleased: false,
+                banner: like.banner.clone(),
+                standing: String::new(),
             }
         })
         .filter(|p| p.score > 0.0)
@@ -344,6 +361,8 @@ pub fn rank(owned: &[Owned], listed: &[Listed], sources: &[Source], hidden: &Has
                 more_of: name.clone(),
                 show: None,
                 unreleased: false,
+                banner: String::new(),
+                standing: String::new(),
                 score: liking / (nth + 1) as f64,
             });
         }
@@ -373,15 +392,29 @@ pub fn gather(backend: &Arc<Backend>) {
     });
 }
 
-/// AniList is asked what's trending again after a day.
-const TRENDING_MS: i64 = 24 * 3600 * 1000;
+/// AniList is asked for its charts again after a day.
+const CHARTS_MS: i64 = 24 * 3600 * 1000;
+/// How many anime a row holds.
+const ROW: usize = 20;
+/// AniList's genres, each a row of its most popular. Ecchi shows only when it's one you watch most.
+const GENRES: &[&str] = &[
+    "Action", "Adventure", "Comedy", "Drama", "Ecchi", "Fantasy", "Horror", "Mahou Shoujo", "Mecha", "Music", "Mystery",
+    "Psychological", "Romance", "Sci-Fi", "Slice of Life", "Sports", "Supernatural", "Thriller",
+];
 
-/// What's trending on AniList: the ten series and the ten movies most watched and talked about there now.
+/// AniList's charts, as they were when last asked: each list by its key ("series", "genre:Romance"…).
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
-struct Trending {
+struct Charts {
     fetched_at: i64,
-    series: Vec<Like>,
-    movies: Vec<Like>,
+    /// The season "Popular this season" is of: "Autumn 2026".
+    season: String,
+    lists: Vec<(String, Vec<Like>)>,
+}
+
+impl Charts {
+    fn list(&self, key: &str) -> &[Like] {
+        self.lists.iter().find(|(k, _)| k == key).map_or(&[], |(_, likes)| likes.as_slice())
+    }
 }
 
 /// One anime of a list AniList answers with, and whether it's still to come out.
@@ -391,35 +424,100 @@ fn listed_anime(media: &Value) -> Option<(Like, bool)> {
         anime: Anime::from_api(media)?,
         genres: list(media, "/genres").iter().filter_map(Value::as_str).map(str::to_string).collect(),
         description: media.get("description").and_then(Value::as_str).unwrap_or("").to_string(),
+        banner: media.get("bannerImage").and_then(Value::as_str).unwrap_or("").to_string(),
+        sequel: list(media, "/relations/edges").iter().any(|e| e.get("relationType").and_then(Value::as_str) == Some("PREQUEL")),
     };
     Some((like, media.get("status").and_then(Value::as_str) == Some("NOT_YET_RELEASED")))
 }
 
-/// The ten most trending of one of the answer's lists that are out: one still to come has nothing to download.
-fn top_ten(answer: &Value, name: &str) -> Vec<Like> {
-    list(answer, &format!("/data/{name}/media")).iter().filter_map(listed_anime).filter(|(_, unreleased)| !unreleased).map(|(like, _)| like).take(10).collect()
+/// The anime of one of the answer's lists that are out: one still to come has nothing to download.
+fn out_now(answer: &Value, name: &str) -> Vec<Like> {
+    list(answer, &format!("/data/{name}/media")).iter().filter_map(listed_anime).filter(|(_, unreleased)| !unreleased).map(|(like, _)| like).collect()
 }
 
-fn fetch_trending() -> Result<Trending> {
-    let page = |format: &str| format!("Page(perPage: 25) {{ media(type: ANIME, format: {format}, sort: TRENDING_DESC, isAdult: false) {{ genres description(asHtml: false) {} }} }}", anilist::FIELDS);
-    let q = format!("query {{ series: {} movies: {} }}", page("TV"), page("MOVIE"));
-    let answer = anilist::query_patiently(&q, json!({}))?;
-    Ok(Trending { fetched_at: now_ms(), series: top_ten(&answer, "series"), movies: top_ten(&answer, "movies") })
+/// The year, month and day of a time (unix ms), in UTC.
+fn date_of(ms: i64) -> (i64, i64, i64) {
+    // Howard Hinnant's days-to-civil.
+    let z = ms.div_euclid(86_400_000) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    (yoe + era * 400 + i64::from(month <= 2), month, day)
 }
 
-/// What's trending: the kept answer while it's under a day old, else a fresh one, else (offline) the kept one however old.
-fn trending(backend: &Backend) -> Trending {
+/// AniList's season at a time, its year, and its name: December is the next year's winter.
+fn season_at(ms: i64) -> (&'static str, i64, &'static str) {
+    let (year, month, _) = date_of(ms);
+    match month {
+        12 => ("WINTER", year + 1, "Winter"),
+        1 | 2 => ("WINTER", year, "Winter"),
+        3..=5 => ("SPRING", year, "Spring"),
+        6..=8 => ("SUMMER", year, "Summer"),
+        _ => ("FALL", year, "Autumn"),
+    }
+}
+
+/// Each chart's key and what AniList is asked for it, at `now`.
+fn chart_queries(now: i64) -> Vec<(String, String)> {
+    let (season, year, _) = season_at(now);
+    let (y, m, d) = date_of(now - 90 * 86_400_000);
+    let mut out = vec![
+        ("series".to_string(), "format: TV, sort: TRENDING_DESC".to_string()),
+        ("movies".to_string(), "format: MOVIE, sort: TRENDING_DESC".to_string()),
+        ("season".to_string(), format!("season: {season}, seasonYear: {year}, format_in: [TV, ONA], sort: POPULARITY_DESC")),
+        ("finished".to_string(), format!("format: TV, status: FINISHED, endDate_greater: {}, sort: POPULARITY_DESC", y * 10_000 + m * 100 + d)),
+        ("short".to_string(), "format: TV, status: FINISHED, episodes_lesser: 14, sort: POPULARITY_DESC".to_string()),
+        ("gems".to_string(), "format_in: [TV, MOVIE], averageScore_greater: 77, popularity_lesser: 40000, sort: SCORE_DESC".to_string()),
+        ("top".to_string(), "format_in: [TV, MOVIE], sort: SCORE_DESC".to_string()),
+    ];
+    for genre in GENRES {
+        out.push((format!("genre:{genre}"), format!("genre: \"{genre}\", format_in: [TV, MOVIE, ONA], sort: POPULARITY_DESC")));
+    }
+    out
+}
+
+fn fetch_charts(now: i64) -> Result<Charts> {
+    let mut lists = Vec::new();
+    // A few lists to a request, so none is too much for AniList at once.
+    for batch in chart_queries(now).chunks(5) {
+        let pages: Vec<String> = batch
+            .iter()
+            .enumerate()
+            .map(|(i, (_, filter))| {
+                format!(
+                    "l{i}: Page(perPage: 50) {{ media(type: ANIME, isAdult: false, {filter}) {{ genres description(asHtml: false) bannerImage relations {{ edges {{ relationType }} }} {} }} }}",
+                    anilist::FIELDS
+                )
+            })
+            .collect();
+        let answer = anilist::query_patiently(&format!("query {{ {} }}", pages.join(" ")), json!({}))?;
+        for (i, (key, _)) in batch.iter().enumerate() {
+            lists.push((key.clone(), out_now(&answer, &format!("l{i}"))));
+        }
+    }
+    let (_, year, name) = season_at(now);
+    Ok(Charts { fetched_at: now, season: format!("{name} {year}"), lists })
+}
+
+/// AniList's charts: the kept answer while it's under a day old, else a fresh one, else (offline) the kept one however old.
+fn charts(backend: &Backend) -> Charts {
     static ASKING: Mutex<()> = Mutex::new(());
     let _asking = ASKING.lock();
-    let path = backend.dirs.local.join("trending.json");
-    let kept: Trending = std::fs::read(&path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
-    if now_ms() - kept.fetched_at < TRENDING_MS {
+    let path = backend.dirs.local.join("charts.json");
+    let kept: Charts = std::fs::read(&path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+    if now_ms() - kept.fetched_at < CHARTS_MS {
         return kept;
     }
-    match fetch_trending() {
+    match fetch_charts(now_ms()) {
         Ok(fresh) => {
             if let Ok(bytes) = serde_json::to_vec(&fresh) {
                 let _ = crate::util::write_whole(&path, bytes);
+                // What Telly 0.6.1 kept before these rows: only the two top tens.
+                let _ = std::fs::remove_file(backend.dirs.local.join("trending.json"));
             }
             fresh
         }
@@ -432,7 +530,7 @@ fn in_library(backend: &Backend) -> Result<HashMap<i64, i64>> {
     Ok(backend.db.shows()?.iter().filter_map(|s| Some((s.anilist_id?, s.id))).collect())
 }
 
-/// A pick that's listed, not recommended: one that's trending, or found by a search.
+/// A pick that's listed, not recommended: one from a chart, or found by a search.
 fn listed_pick(like: &Like, unreleased: bool, have: &HashMap<i64, i64>) -> Pick {
     Pick {
         title: like.anime.short_title(),
@@ -443,22 +541,129 @@ fn listed_pick(like: &Like, unreleased: bool, have: &HashMap<i64, i64>) -> Pick 
         more_of: String::new(),
         show: have.get(&like.anime.id).copied(),
         unreleased,
+        banner: like.banner.clone(),
+        standing: String::new(),
         score: 0.0,
     }
 }
 
-/// The anime AniList finds for `text`, for downloading one that's neither a
-/// pick nor trending: each with the show in your library it is, when you
-/// have it, and whether it's still to come out.
+/// The anime AniList finds for `text`, for downloading one that's in no row:
+/// each with the show in your library it is, when you have it, and whether
+/// it's still to come out.
 pub fn search(backend: &Backend, text: &str) -> Result<Vec<Pick>> {
-    let q = format!("query ($search: String) {{ Page(perPage: 20) {{ media(search: $search, type: ANIME, sort: SEARCH_MATCH) {{ genres description(asHtml: false) {} }} }} }}", anilist::FIELDS);
+    let q = format!("query ($search: String) {{ Page(perPage: 20) {{ media(search: $search, type: ANIME, sort: SEARCH_MATCH) {{ genres description(asHtml: false) bannerImage {} }} }} }}", anilist::FIELDS);
     let answer = anilist::query_patiently(&q, json!({ "search": text.split_whitespace().collect::<Vec<_>>().join(" ") }))?;
     let have = in_library(backend)?;
     Ok(list(&answer, "/data/Page/media").iter().filter_map(listed_anime).map(|(like, unreleased)| listed_pick(&like, unreleased, &have)).collect())
 }
 
-/// The Recommended page: the picks, and how many shows, in the library or on
-/// your list, they come from; and the series and movies trending on AniList.
+/// One row of the page.
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Row {
+    /// What the row is: "suggested" (its Show all lists every pick), "more", "because", "series", "genre:Romance"…
+    pub key: String,
+    pub title: String,
+    /// A few words beside the title: "Trending on AniList".
+    pub note: String,
+    /// Its anime are numbered, as a top ten.
+    pub ranked: bool,
+    pub picks: Vec<Pick>,
+}
+
+/// The genres you watch most, most first: each of your shows' genres, by how
+/// many of its episodes you've watched (one more for having it), and Ecchi only
+/// when it's among your first three.
+fn your_genres(owned: &[Owned], graph: &Graph) -> Vec<String> {
+    let mut weight: HashMap<&str, f64> = HashMap::new();
+    for o in owned {
+        let Some(entry) = graph.entry(o.anilist_id) else { continue };
+        for genre in &entry.genres {
+            *weight.entry(genre.as_str()).or_default() += o.watched as f64 + 1.0;
+        }
+    }
+    let mut genres: Vec<(&str, f64)> = GENRES.iter().map(|g| (*g, weight.get(g).copied().unwrap_or(0.0))).collect();
+    genres.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    genres.into_iter().enumerate().filter(|(i, (g, _))| *g != "Ecchi" || *i < 3).map(|(_, (g, _))| g.to_string()).collect()
+}
+
+/// A genre's name as the page writes it: "Slice of life".
+fn genre_name(genre: &str) -> String {
+    match genre {
+        "Mahou Shoujo" => "Magical girls".into(),
+        "Sci-Fi" => "Sci-fi".into(),
+        "Slice of Life" => "Slice of life".into(),
+        g => g.into(),
+    }
+}
+
+/// The page's rows, in the order they're shown. `picks` are the
+/// recommendations, best first; `left_out` what's on your AniList list or
+/// hidden; `have` the library's shows by their AniList ID.
+fn rows(picks: &[Pick], charts: &Charts, owned: &[Owned], sources: &[Source], graph: &Graph, have: &HashMap<i64, i64>, left_out: &HashSet<i64>) -> Vec<Row> {
+    let row = |key: &str, title: String, note: &str, ranked: bool, picks: Vec<Pick>| Row { key: key.into(), title, note: note.into(), ranked, picks };
+    // A chart's row: what you don't have or have on your list, and that isn't a sequel you can't start with.
+    let fresh = |key: &str| -> Vec<Pick> {
+        charts.list(key).iter().filter(|l| !l.sequel && !have.contains_key(&l.anime.id) && !left_out.contains(&l.anime.id)).take(ROW).map(|l| listed_pick(l, false, have)).collect()
+    };
+    let top_ten = |key: &str, what: &str| -> Vec<Pick> {
+        charts.list(key).iter().take(10).enumerate().map(|(i, l)| Pick { standing: format!("No. {} of the {what} trending on AniList this week", i + 1), ..listed_pick(l, false, have) }).collect()
+    };
+
+    // Because you watched: the shows you watched last, a different anime each, by AniList's users' recommendations for them.
+    let yours: HashSet<i64> = owned.iter().filter_map(|o| graph.root(o.anilist_id)).collect();
+    let mut watched: Vec<&Owned> = owned.iter().filter(|o| o.last_watched.is_some()).collect();
+    watched.sort_by_key(|o| std::cmp::Reverse(o.last_watched));
+    let mut because: Vec<Row> = Vec::new();
+    let mut seen_anime: HashSet<i64> = HashSet::new();
+    for o in watched {
+        if because.len() == 2 {
+            break;
+        }
+        if !seen_anime.insert(graph.root(o.anilist_id).unwrap_or(o.anilist_id)) {
+            continue;
+        }
+        let Some(source) = sources.iter().find(|s| s.id == o.anilist_id) else { continue };
+        let mut likes: Vec<&Like> = source
+            .likes
+            .iter()
+            .filter(|l| l.votes > 0 && !have.contains_key(&l.anime.id) && !left_out.contains(&l.anime.id))
+            .filter(|l| graph.root(l.anime.id).is_none_or(|root| !yours.contains(&root)))
+            .collect();
+        likes.sort_by_key(|l| std::cmp::Reverse(l.votes));
+        if likes.len() < 5 {
+            continue;
+        }
+        let picks = likes.into_iter().take(ROW).map(|l| Pick { from: vec![From { title: o.title.clone(), votes: l.votes }], ..listed_pick(l, false, have) }).collect();
+        because.push(row("because", format!("Because you watched {}", o.title), "", false, picks));
+    }
+    let mut because = because.into_iter();
+
+    let genres = your_genres(owned, graph);
+    let genre_row = |genre: &str, yours: bool| row(&format!("genre:{genre}"), genre_name(genre), if yours { "One you watch a lot" } else { "Most popular on AniList" }, false, fresh(&format!("genre:{genre}")));
+    let mut out = vec![
+        row("suggested", "Suggested for you".into(), "", false, picks.iter().filter(|p| p.more_of.is_empty()).take(ROW).cloned().collect()),
+        row("more", "More of your anime".into(), "Seasons and movies you don’t have", false, picks.iter().filter(|p| !p.more_of.is_empty()).take(ROW).cloned().collect()),
+        row("series", "Top 10 series this week".into(), "Trending on AniList", true, top_ten("series", "series")),
+    ];
+    out.extend(because.next());
+    out.extend(genres.first().map(|g| genre_row(g, true)));
+    out.push(row("movies", "Top 10 movies this week".into(), "Trending on AniList", true, top_ten("movies", "movies")));
+    out.push(row("season", "Popular this season".into(), &charts.season, false, fresh("season")));
+    out.extend(genres.get(1).map(|g| genre_row(g, true)));
+    out.extend(because.next());
+    out.push(row("finished", "Just finished".into(), "Every episode out", false, fresh("finished")));
+    out.extend(genres.get(2).map(|g| genre_row(g, true)));
+    out.push(row("gems", "Hidden gems".into(), "Loved by the few who’ve seen them", false, fresh("gems")));
+    out.push(row("short", "Short series".into(), "13 episodes or fewer", false, fresh("short")));
+    out.push(row("top", "Best rated of all time".into(), "By AniList’s users", false, fresh("top")));
+    out.extend(genres.iter().skip(3).filter(|g| g.as_str() != "Ecchi").map(|g| genre_row(g, false)));
+    out.retain(|r| !r.picks.is_empty());
+    out
+}
+
+/// The Recommended page: the picks, how many shows (in the library or on
+/// your list) they come from, and the page's rows.
 pub fn view(backend: &Backend) -> Result<Value> {
     let mut owned = Vec::new();
     for show in backend.db.shows()? {
@@ -482,15 +687,10 @@ pub fn view(backend: &Backend) -> Result<Value> {
     let sources = if ids.is_empty() { Vec::new() } else { sources_for(backend, &ids)? };
     let mut left_out = hidden(backend);
     left_out.extend(listed.iter().map(|l| l.id));
-    let trending = trending(backend);
-    let have = in_library(backend)?;
-    let listed_picks = |likes: &[Like]| likes.iter().map(|like| listed_pick(like, false, &have)).collect::<Vec<_>>();
-    Ok(json!({
-        "shows": ids.len(),
-        "picks": rank(&owned, &listed, &sources, &left_out, now_ms(), &crate::series::graph(backend)),
-        "series": listed_picks(&trending.series),
-        "movies": listed_picks(&trending.movies),
-    }))
+    let graph = crate::series::graph(backend);
+    let picks = rank(&owned, &listed, &sources, &left_out, now_ms(), &graph);
+    let rows = rows(&picks, &charts(backend), &owned, &sources, &graph, &in_library(backend)?, &left_out);
+    Ok(json!({ "shows": ids.len(), "picks": picks, "rows": rows }))
 }
 
 #[cfg(test)]
@@ -519,18 +719,37 @@ mod tests {
     }
 
     #[test]
-    fn the_top_ten_trending_are_the_first_ten_that_are_out() {
-        let media: Vec<Value> = (1..=14)
-            .map(|id| json!({ "id": id, "format": "TV", "status": if id == 2 || id == 5 { "NOT_YET_RELEASED" } else { "RELEASING" }, "title": { "romaji": format!("Anime {id}") }, "genres": ["Drama"], "description": "About it." }))
-            .collect();
-        let answer = json!({ "data": { "series": { "media": media }, "movies": { "media": [] } } });
-        let top = top_ten(&answer, "series");
-        assert_eq!(top.iter().map(|l| l.anime.id).collect::<Vec<_>>(), [1, 3, 4, 6, 7, 8, 9, 10, 11, 12]);
-        assert_eq!((top[0].genres.as_slice(), top[0].description.as_str()), (&["Drama".to_string()][..], "About it."));
-        assert!(top_ten(&answer, "movies").is_empty());
-        // One that's trending and in the library says which show it is.
-        let pick = listed_pick(&top[1], false, &HashMap::from([(3, 42)]));
-        assert_eq!((pick.show, pick.unreleased, pick.title.as_str()), (Some(42), false, "Anime 3"));
+    fn a_chart_s_row_leaves_out_what_you_have_sequels_and_what_isn_t_out() {
+        let anime = |id: i64, status: &str, prequel: bool| {
+            let edges = if prequel { json!([{ "relationType": "PREQUEL" }]) } else { json!([{ "relationType": "SEQUEL" }]) };
+            json!({ "id": id, "format": "TV", "status": status, "title": { "romaji": format!("Anime {id}") }, "genres": ["Drama"], "description": "About it.", "bannerImage": format!("https://b/{id}.jpg"), "relations": { "edges": edges } })
+        };
+        let media: Vec<Value> = (1..=14).map(|id| anime(id, if id == 2 { "NOT_YET_RELEASED" } else { "FINISHED" }, id == 4)).collect();
+        let answer = json!({ "data": { "l0": { "media": media } } });
+        let likes = out_now(&answer, "l0");
+        assert_eq!(likes.len(), 13);
+        assert_eq!((likes[0].banner.as_str(), likes[2].sequel, likes[0].sequel), ("https://b/1.jpg", true, false));
+        let charts = Charts { fetched_at: 0, season: "Autumn 2026".into(), lists: vec![("series".into(), likes.clone()), ("genre:Drama".into(), likes)] };
+        let have = HashMap::from([(3, 42)]);
+        let rows = rows(&[], &charts, &[], &[], &Graph::default(), &have, &HashSet::from([5]));
+        // The top ten keeps what you have, marked; a genre's row leaves out what you have, the hidden, and the sequel.
+        assert_eq!(rows.iter().map(|r| r.key.as_str()).collect::<Vec<_>>(), ["series", "genre:Drama"]);
+        assert_eq!(ids(&rows[0].picks), [1, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+        assert_eq!((rows[0].picks[1].show, rows[0].picks[1].standing.as_str()), (Some(42), "No. 2 of the series trending on AniList this week"));
+        assert_eq!(ids(&rows[1].picks), [1, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+        assert_eq!((rows[1].title.as_str(), rows[1].note.as_str()), ("Drama", "Most popular on AniList"));
+    }
+
+    #[test]
+    fn seasons_and_dates_are_anilist_s() {
+        // 14 November 2026, 1 December 2026 and 10 February 2027, at noon UTC.
+        assert_eq!(date_of(1_794_657_600_000), (2026, 11, 14));
+        assert_eq!(season_at(1_794_657_600_000), ("FALL", 2026, "Autumn"));
+        assert_eq!(season_at(1_796_126_400_000), ("WINTER", 2027, "Winter"));
+        assert_eq!(season_at(1_802_260_800_000), ("WINTER", 2027, "Winter"));
+        let queries = chart_queries(1_794_657_600_000);
+        assert!(queries.iter().any(|(k, q)| k == "finished" && q.contains("endDate_greater: 20260816")));
+        assert!(queries.iter().any(|(k, q)| k == "genre:Slice of Life" && q.contains("genre: \"Slice of Life\"")));
     }
 
     #[test]

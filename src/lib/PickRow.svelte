@@ -55,12 +55,13 @@
       <button type="button" class="pager next" aria-label="Show next" title="Show next" disabled={edges.end} onclick={() => slide(1)}><Icon name="back" /></button>
     {/if}
   </div>
-  <div class="cards" bind:this={row} onscroll={measure}>
+  <div class="cards" class:ranked bind:this={row} onscroll={measure}>
     {#each picks as p, i (p.id)}
       {@const under = line(p)}
-      <button type="button" class="pick" onclick={(e) => onpick(p, e.currentTarget)} aria-label="{ranked ? `${i + 1}. ` : ""}{p.title}. {meta(p)}. {under}">
-        <span aria-hidden="true"><Cover cover={p.cover} color={p.color} native={p.native} title={p.title} /></span>
-        <span class="p-title" title={p.title}>{#if ranked}<b>{i + 1}</b>{/if}<span>{p.title}</span></span>
+      <button type="button" class="pick" class:ranked onclick={(e) => onpick(p, e.currentTarget)} aria-label="{ranked ? `${i + 1}. ` : ""}{p.title}. {meta(p)}. {under}">
+        {#if ranked}<span class="rank" aria-hidden="true">{i + 1}</span>{/if}
+        <span class="cv-box" aria-hidden="true"><Cover cover={p.cover} color={p.color} native={p.native} title={p.title} /></span>
+        <span class="p-title" title={p.title}><span>{p.title}</span></span>
         <span class="p-meta">{meta(p)}</span>
         <span class="p-why" class:have={p.show !== null}>{under}</span>
       </button>
@@ -80,12 +81,15 @@
   .pager.next :global(svg) { transform: scaleX(-1); }
   /* One row that scrolls sideways; the little padding keeps a card's focus ring and its lift whole. */
   .cards { display: grid; grid-auto-flow: column; grid-auto-columns: 168px; gap: 20px; margin: -6px -6px 0; padding: 6px; overflow-x: auto; scroll-snap-type: x proximity; scroll-padding-inline: 6px; scrollbar-width: none; }
-  .pick { all: unset; box-sizing: border-box; display: grid; gap: 3px; align-content: start; min-width: 0; cursor: pointer; scroll-snap-align: start; }
+  .pick { all: unset; position: relative; box-sizing: border-box; display: grid; gap: 3px; align-content: start; min-width: 0; cursor: pointer; scroll-snap-align: start; }
+  .cards.ranked { grid-auto-columns: 222px; }
+  .pick.ranked { padding-left: 54px; }
+  .cv-box { position: relative; z-index: 1; display: block; }
+  .rank { position: absolute; left: -6px; top: 236px; transform: translateY(-100%); font: 800 150px/.8 var(--font-display); font-variant-numeric: tabular-nums; letter-spacing: -.06em; color: var(--bg); -webkit-text-stroke: 2px var(--ink-3); pointer-events: none; }
   .pick :global(.cv) { transition: transform .15s; }
   .pick:hover :global(.cv) { transform: translateY(-2px); }
   .pick:focus-visible { outline: 2px solid var(--ink); outline-offset: 4px; border-radius: 4px; }
   .p-title { display: flex; align-items: baseline; gap: 8px; min-width: 0; margin-top: 9px; font: 600 13.5px/1.3 var(--font-ui); }
-  .p-title b { flex: none; font: 700 22px/1 var(--font-display); font-variant-numeric: tabular-nums; color: var(--ink-2); }
   .p-title span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .p-meta { font: 500 12.5px/1.3 var(--font-ui); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .p-why { min-height: 16px; font-size: 12px; line-height: 1.35; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

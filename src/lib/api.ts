@@ -680,6 +680,22 @@ export interface Pick extends Anime {
   show: number | null;
   /** It isn't out yet, so there's nothing of it to download. */
   unreleased: boolean;
+  /** AniList's wide picture of it, for the top of the page ("" when it has none). */
+  banner: string;
+  /** Where it stands in a ranked row: "No. 3 of the series trending on AniList this week". */
+  standing: string;
+}
+
+/** One row of the Recommended page. */
+export interface PickRowView {
+  /** What the row is: "suggested" (its Show all lists every pick), "more", "because", "series", "genre:Romance"… */
+  key: string;
+  title: string;
+  /** A few words beside the title. */
+  note: string;
+  /** Its anime are numbered, as a top ten. */
+  ranked: boolean;
+  picks: Pick[];
 }
 
 export interface Recommended {
@@ -687,9 +703,8 @@ export interface Recommended {
   shows: number;
   /** Every pick, best first. */
   picks: Pick[];
-  /** The ten series, and the ten movies, trending on AniList now that are out, the most trending first. */
-  series: Pick[];
-  movies: Pick[];
+  /** The page's rows, in the order they're shown: suggestions, AniList's charts, genres. */
+  rows: PickRowView[];
 }
 
 export interface Tools {

@@ -11,8 +11,6 @@
 
   /** How many picks Show all lists at first, and how many Show more adds. */
   const STEP = 24;
-  /** How many picks the Suggested for you row holds. */
-  const ROW = 20;
   const FORMATS: Record<string, string> = { TV: "TV", TV_SHORT: "TV short", MOVIE: "Movie", SPECIAL: "Special", OVA: "OVA", ONA: "ONA", MUSIC: "Music" };
 
   let rec = $state.raw<Recommended | null>(kept<Recommended>("recommendations"));
@@ -135,13 +133,21 @@
   /** Whether a pick is one of the suggestions, which can be hidden. */
   const suggested = (p: Pick) => rec?.picks.some((pick) => pick.id === p.id) ?? false;
 
-  /** Where a pick stands among what's trending: "No. 3 of the series trending on AniList this week". */
-  function standing(p: Pick): string {
-    for (const [list, what] of [[rec?.series ?? [], "series"], [rec?.movies ?? [], "movies"]] as const) {
-      const at = list.findIndex((pick) => pick.id === p.id);
-      if (at >= 0) return `No. ${at + 1} of the ${what} trending on AniList this week`;
+  /** The line under a pick in a row: why it's suggested, or (in AniList's charts) whether you have it. */
+  const lineFor = (key: string) => (key === "suggested" || key === "more" ? why : listedAs);
+
+  /** The pick at the top of the page: the first with a wide picture, suggestions first. */
+  const hero = $derived.by(() => {
+    for (const row of rec?.rows ?? []) {
+      const p = row.picks.find((pick) => pick.banner && pick.show === null && !pick.unreleased);
+      if (p) return p;
     }
-    return "";
+    return null;
+  });
+
+  /** Opens nyaa.si's search for a pick, for Telly to download it. */
+  function download(p: Pick) {
+    goto(`/downloads?from=recommended&anilist=${p.id}&q=${encodeURIComponent(p.romaji || p.english || p.title)}`);
   }
 
   /** AniList's synopsis as plain text: its line breaks kept, the rest of its markup dropped. */
@@ -213,18 +219,37 @@
       <button type="button" class="btn quiet more" onclick={() => (shown += STEP)}>Show more</button>
     {/if}
   {:else}
-    {#if rec.picks.length}
-      <PickRow title="Suggested for you" note={plural(rec.picks.length, "pick")} picks={rec.picks.slice(0, ROW)} {meta} line={why} onpick={show} onall={rec.picks.length > ROW ? () => (all = true) : undefined} />
-    {:else}
-      <div class="shelf"><h3>Suggested for you</h3></div>
-      <p class="note none">{rec.shows === 0 ? "No show in the library is matched on AniList yet." : "AniList has no recommendations for these shows."}</p>
+    {#if hero}
+      {@const h = hero}
+      <section class="hero" aria-label="Featured: {h.title}">
+        <img class="hero-img" src={h.banner} alt="" />
+        <div class="hero-text">
+          <span class="hero-why">{why(h) || h.standing || "Featured"}</span>
+          <h3 lang={h.native ? "ja" : undefined}>{h.native || h.title}</h3>
+          <p class="hero-en">{[h.native ? h.title : "", meta(h)].filter(Boolean).join(" · ")}</p>
+          <p class="hero-about">{plain(h.description)}</p>
+          <div class="hero-actions">
+            <button type="button" class="btn big" onclick={() => download(h)} title="Find it on nyaa.si, most shared first, and pick a release for Telly to download"><Icon name="download" /><span>Download…</span></button>
+            <button type="button" class="btn big quiet" onclick={(e) => show(h, e.currentTarget)}>More about it</button>
+          </div>
+        </div>
+      </section>
     {/if}
-    {#if rec.series.length}
-      <PickRow title="Top 10 series this week" note="Trending on AniList" picks={rec.series} ranked {meta} line={listedAs} onpick={show} />
+    {#if !rec.picks.length}
+      <p class="note none">{rec.shows === 0 ? "No show in the library is matched on AniList yet, so nothing is suggested for you." : "AniList has no recommendations for these shows."}</p>
     {/if}
-    {#if rec.movies.length}
-      <PickRow title="Top 10 movies this week" note="Trending on AniList" picks={rec.movies} ranked {meta} line={listedAs} onpick={show} />
-    {/if}
+    {#each rec.rows as row (row.title)}
+      <PickRow
+        title={row.title}
+        note={row.key === "suggested" ? plural(rec.picks.length, "pick") : row.note}
+        picks={row.picks}
+        ranked={row.ranked}
+        {meta}
+        line={lineFor(row.key)}
+        onpick={show}
+        onall={row.key === "suggested" && rec.picks.length > row.picks.length ? () => (all = true) : undefined}
+      />
+    {/each}
   {/if}
 </div>
 
@@ -246,7 +271,7 @@
           <h4>More of {p.moreOf}</h4>
           <p class="pk-more">A {p.format === "MOVIE" ? "movie" : "season"} of it you don’t have, placed by how much you liked {p.from[0]?.title ?? p.moreOf}.</p>
         {:else if !p.from.length}
-          {#if standing(p)}<h4>{standing(p)}</h4>{/if}
+          {#if p.standing}<h4>{p.standing}</h4>{/if}
           {#if listedAs(p)}<p class="pk-more">{p.unreleased ? "Not out yet, so there’s nothing of it to download." : "In your library."}</p>{/if}
         {:else}
           <h4>Recommended from</h4>
@@ -265,7 +290,7 @@
         {#if p.show !== null}
           <button type="button" class="btn" onclick={() => goto(`/show?id=${p.show}`)}>Open in library</button>
         {:else if !p.unreleased}
-          <button type="button" class="btn" onclick={() => goto(`/downloads?from=recommended&anilist=${p.id}&q=${encodeURIComponent(p.romaji || p.english || p.title)}`)} title="Find it on nyaa.si, most shared first, and pick a release for Telly to download"><Icon name="download" /><span>Download…</span></button>
+          <button type="button" class="btn" onclick={() => download(p)} title="Find it on nyaa.si, most shared first, and pick a release for Telly to download"><Icon name="download" /><span>Download…</span></button>
         {/if}
       </div>
     </div>
@@ -286,6 +311,16 @@
   .shelf h3 { font: 600 17px/1.2 var(--font-ui); }
   .shelf > span { font-size: 13px; color: var(--ink-3); }
   .note.none { margin-bottom: 30px; }
+  /* The pick at the top, over its wide picture, fading into the page as a streaming service's front page does. */
+  .hero { position: relative; display: flex; align-items: flex-end; height: clamp(330px, 40vw, 470px); margin: -8px -32px 34px; overflow: hidden; background: var(--sunk); }
+  .hero-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: center 30%; }
+  .hero::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, var(--bg) 6%, color-mix(in srgb, var(--bg) 72%, transparent) 36%, transparent 68%), linear-gradient(0deg, var(--bg) 0%, transparent 40%); }
+  .hero-text { position: relative; z-index: 1; display: grid; gap: 6px; width: min(560px, 100%); box-sizing: border-box; padding: 0 32px 30px; }
+  .hero-why { font: 600 13px/1.3 var(--font-ui); color: var(--ink-2); }
+  .hero-text h3 { font: 800 40px/1.15 var(--font-jp-title); letter-spacing: .01em; text-wrap: balance; }
+  .hero-en { font-size: 14px; color: var(--ink-2); }
+  .hero-about { margin-top: 6px; font-size: 14px; line-height: 1.5; color: var(--ink-2); display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .hero-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
   .note { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--ink-2); }
   .retry { margin: 12px 0 22px; }
   .picks { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 26px 20px; }

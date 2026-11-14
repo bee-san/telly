@@ -8,18 +8,29 @@ export interface AnimeCard {
   title: string;
   native: string;
   parts: ShowCard[];
-  /** The part to watch next: the one you're in, else the first you haven't finished. */
+  /** The part to watch next: the one you're in, else what carries on from the last you finished, else the first you haven't finished. */
   current: ShowCard;
+  /** You've finished a part and the one that carries on from it waits: between seasons. */
+  between: boolean;
 }
 
 export const inProgress = (s: ShowCard) => s.status === "watching" || (s.status === "getting" && (s.watched > 0 || !!s.next?.resume));
 
-/** The part of an anime to watch next, from its parts in order. */
-function currentOf(parts: ShowCard[]): ShowCard {
+/** The part of an anime to watch next, from its parts in order, and whether it's the one that carries on from a part you finished. */
+function currentOf(parts: ShowCard[]): { current: ShowCard; between: boolean } {
   const now = parts.filter(inProgress).sort((a, b) => (b.lastWatchedAt ?? 0) - (a.lastWatchedAt ?? 0))[0];
-  if (now) return now;
+  if (now) return { current: now, between: false };
+  // After a season, its sequel: the next season, not the OVA or recap movie that came out between.
+  const byId = new Map(parts.map((p) => [p.id, p]));
+  const sequel = (p: ShowCard) => (p.series.next === null ? undefined : byId.get(p.series.next));
+  for (const done of parts.filter((p) => p.status === "finished").reverse()) {
+    let next = sequel(done);
+    while (next?.status === "finished") next = sequel(next);
+    if (next) return { current: next, between: true };
+  }
   const lastFinished = parts.findLastIndex((p) => p.status === "finished");
-  return parts.slice(lastFinished + 1).find((p) => p.status !== "finished") ?? parts.find((p) => p.status !== "finished") ?? parts[parts.length - 1];
+  const current = parts.slice(lastFinished + 1).find((p) => p.status !== "finished") ?? parts.find((p) => p.status !== "finished") ?? parts[parts.length - 1];
+  return { current, between: false };
 }
 
 /** `shows` as the anime they belong to, in the order their first show comes in `shows`. */
@@ -33,7 +44,7 @@ export function animeOf(shows: ShowCard[]): AnimeCard[] {
   return [...by.entries()].map(([id, list]) => {
     const parts = [...list].sort((a, b) => a.series.order - b.series.order || a.id - b.id);
     const one = parts.length === 1;
-    return { id, title: one ? parts[0].title : parts[0].series.title, native: one ? parts[0].titleNative : parts[0].series.native, parts, current: currentOf(parts) };
+    return { id, title: one ? parts[0].title : parts[0].series.title, native: one ? parts[0].titleNative : parts[0].series.native, parts, ...currentOf(parts) };
   });
 }
 
@@ -64,12 +75,7 @@ export function partsText(parts: ShowCard[]): string {
 }
 
 /** Whether an anime is being watched: a part of it is, or you've finished a season and its next one waits. */
-export function watching(a: AnimeCard): boolean {
-  if (a.parts.some(inProgress)) return true;
-  const seasons = a.parts.filter((p) => !p.movie);
-  const finished = seasons.findLastIndex((p) => p.status === "finished");
-  return finished >= 0 && finished < seasons.length - 1;
-}
+export const watching = (a: AnimeCard) => a.between || a.parts.some(inProgress);
 
 export const lastWatched = (a: AnimeCard) => Math.max(0, ...a.parts.map((p) => p.lastWatchedAt ?? 0));
 
@@ -80,7 +86,9 @@ export function animeStatus(a: AnimeCard): { text: string; sub: string; ok?: boo
   if (a.parts.every((p) => p.status === "finished")) return { text: "Finished", sub: partsText(a.parts), ok: true };
   // "Movie" names the part's kind where a season has its next episode: the title says it better.
   const text = a.current.movie && !a.current.next?.resume ? "Next: Movie" : st.text;
-  return { text, sub: [a.current.title, a.current.next?.resume || !a.current.next?.ready ? st.sub : ""].filter(Boolean).join(" · ") };
+  // The part it's in, unless that's the one the anime is named after.
+  const part = a.current.title === a.title ? "" : a.current.title;
+  return { text, sub: [part, a.current.next?.resume || !a.current.next?.ready ? st.sub : ""].filter(Boolean).join(" · ") };
 }
 
 /** The uses of words across an anime's parts, and how many are of words you know. */

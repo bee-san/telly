@@ -191,8 +191,8 @@
   a.part-row:hover, a.part-row.next { background: var(--surface); }
   a.part-row:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
   .p-title { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
-  .p-title b { font-weight: 600; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .p-title span { font: 800 12.5px/1.3 var(--font-jp-title); color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .p-title b { flex: 0 1 auto; max-width: 75%; font-weight: 600; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .p-title span { flex: 1 1 0; min-width: 0; font: 800 12.5px/1.3 var(--font-jp-title); color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .p-num { font-variant-numeric: tabular-nums; }
   .right { text-align: right; }
   .p-state.ok { color: var(--ok); }

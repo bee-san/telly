@@ -343,7 +343,7 @@
             <Cover cover={s.cover} color={s.coverColor} native={a.native} title={a.title} caption={s.coverCaption} />
             <a class="l-title title" href={pageOf(a)} title={a.title}>{a.title}</a>
             <span class="l-status" class:ok={st.ok}>{st.text}</span>
-            <span class="l-sub">{st.sub}</span>
+            <span class="l-sub" title={st.sub}>{st.sub}</span>
             {#if a.parts.length > 1 && !st.ok}<span class="l-sub">{partsText(a.parts)}</span>{/if}
             {#if known !== null}<span class="l-known">{Math.round(known)}% known</span>{/if}
             {#if a.current.status === "getting" && a.current.next}
@@ -469,7 +469,7 @@
   .l-title { font: 600 13.5px/1.3 var(--font-ui); margin-top: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .l-status { font: 500 12.5px/1.3 var(--font-ui); }
   .l-status.ok { color: var(--ok); }
-  .l-sub { font-size: 12px; color: var(--ink-3); }
+  .l-sub { font-size: 12px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .l-known { font-size: 12px; color: var(--ink-2); }
   .lcard .bar { margin-top: 5px; }
   .empty { font-size: 14px; color: var(--ink-2); margin-bottom: 34px; }

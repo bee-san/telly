@@ -109,6 +109,8 @@ export interface ShowCard extends Show {
     order: number;
     /** How many shows in the library the anime has. */
     parts: number;
+    /** The show in the library that carries on from this one (its sequel on AniList), by its ID. */
+    next: number | null;
   };
 }
 

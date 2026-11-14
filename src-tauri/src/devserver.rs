@@ -5,7 +5,8 @@
 //!   npm run devserver -- <data dir> [port]
 //!
 //! With TELLY_IDLE set, the background work isn't started, but for line
-//! search's index, which is made from the folder's own files.
+//! search's index, which is made from the folder's own files, and asking
+//! AniList which anime each show belongs to, which the Library lists them by.
 //!
 //!   POST /call   {"cmd": "...", "args": {...}}  →  {"ok": value} or {"error": "..."}
 //!   GET  /media/ep/<id>, /media/cover/<id>      →  what media:// serves in the app
@@ -34,6 +35,7 @@ fn main() {
         backend.start();
     } else {
         telly_lib::search::start(backend.clone());
+        telly_lib::series::gather(&backend);
     }
     if std::env::var_os("TELLY_MINING").is_some() {
         backend.start_mining();

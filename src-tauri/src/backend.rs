@@ -798,7 +798,7 @@ impl Backend {
             movie: is_movie(&show.format, show.anilist_id.is_some(), &lengths),
             cover_caption: !cover.is_empty() && self.db.setting_bool(&frame_setting(show.id), false),
             // On its own, until the Library says which anime it's part of (`library`).
-            series: series::Place { id: -show.id, title: show.title.clone(), native: show.title_native.clone(), order: 0, parts: 1 },
+            series: series::Place { id: -show.id, title: show.title.clone(), native: show.title_native.clone(), order: 0, parts: 1, next: None },
             show,
             cover,
             episodes: episodes.len(),

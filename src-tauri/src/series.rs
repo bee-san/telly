@@ -198,6 +198,8 @@ pub struct Place {
     pub order: i64,
     /// How many shows in the library the anime has.
     pub parts: usize,
+    /// The show in the library that carries on from this one (its sequel), by its ID.
+    pub next: Option<i64>,
 }
 
 fn override_key(show: i64) -> String {
@@ -254,7 +256,7 @@ pub fn places(graph: &Graph, shows: &[Show], settings: &Map<String, Value>) -> H
                 }
             };
             let order = s.anilist_id.and_then(|id| graph.entry(id)).map(|e| e.start).filter(|&d| d > 0).or(s.year.map(|y| y * 10000)).unwrap_or(i64::MAX);
-            (s.id, Place { id: k, title, native, order, parts: count[&k] })
+            (s.id, Place { id: k, title, native, order, parts: count[&k], next: next_in(graph, shows, s).map(|next| next.id) })
         })
         .collect()
 }
@@ -263,11 +265,13 @@ pub fn places(graph: &Graph, shows: &[Show], settings: &Map<String, Value>) -> H
 /// AniList, past any films and specials between that you don't have. A
 /// season you don't have ends the search: the one after it isn't next.
 pub fn next_show(backend: &Backend, show: &Show) -> Option<Show> {
-    let graph = graph(backend);
-    let shows = backend.db.shows().ok()?;
+    next_in(&graph(backend), &backend.db.shows().ok()?, show).cloned()
+}
+
+fn next_in<'a>(graph: &Graph, shows: &'a [Show], show: &Show) -> Option<&'a Show> {
     for e in graph.sequels_from(show.anilist_id?).into_iter().skip(1) {
         if let Some(next) = shows.iter().find(|s| s.anilist_id == Some(e.anime.id) && s.id != show.id) {
-            return Some(next.clone());
+            return Some(next);
         }
         if e.is_series() {
             return None;
@@ -516,6 +520,11 @@ pub(crate) mod tests {
             assert_eq!((places[&id].id, places[&id].title.as_str(), places[&id].parts), (20832, "Overlord", 4), "show {id}");
         }
         assert!(places[&2].order < places[&3].order && places[&3].order < places[&1].order && places[&1].order < places[&4].order);
+        // The first season's sequel isn't here, so the third isn't what's next after it; nothing carries on from a recap movie you have alone.
+        assert_eq!((places[&2].next, places[&3].next, places[&1].next), (None, None, None));
+        let with_second = [show(2, "Overlord", Some(20832), "a"), show(7, "Overlord II", Some(98437), "b"), show(1, "Overlord III", Some(101474), "c"), show(8, "The Dark Hero", Some(98874), "d")];
+        let carried = super::places(&graph, &with_second, &Map::new());
+        assert_eq!((carried[&2].next, carried[&7].next, carried[&8].next, carried[&1].next), (Some(7), Some(1), Some(7), None));
         // A show AniList doesn't know, and one Telly hasn't asked about yet, are on their own.
         assert_eq!((places[&5].id, places[&5].title.as_str(), places[&5].parts), (-5, "Shin Godzilla", 1));
         assert_eq!((places[&6].id, places[&6].title.as_str(), places[&6].parts), (-6, "Bocchi the Rock!", 1));

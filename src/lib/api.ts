@@ -464,6 +464,8 @@ export interface Recap {
   last?: string;
   lastNumber?: number;
   moments?: Moment[];
+  /** The season before, when the recap is of that: before a season's first episode. */
+  season?: string | null;
 }
 
 export interface ClaudeStatus {

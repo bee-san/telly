@@ -1862,7 +1862,7 @@
     <div class="endov recapov">
       <div class="end-card recap-card">
         <span class="small">Previously on</span>
-        <h3>{view.show.title}</h3>
+        <h3>{recap.data?.season ?? view.show.title}</h3>
         {#if recap.state === "writing"}
           <p class="recap-text wait">{asked} is writing the recap…</p>
         {:else if recap.state === "error"}
@@ -1912,7 +1912,7 @@
         {/each}
       </div>
       <div class="montage-top">
-        <span class="montage-label">Previously on {view.show.title}{view.movie ? "" : ` · Episode ${moments[montage.i].number}`} · {montage.i + 1} of {moments.length}</span>
+        <span class="montage-label">Previously on {recap?.data?.season ?? view.show.title}{view.movie && !recap?.data?.season ? "" : ` · Episode ${moments[montage.i].number}`} · {montage.i + 1} of {moments.length}</span>
         {#if moments[montage.i].caption}<p class="montage-caption" lang={recapLang} aria-live="polite">{moments[montage.i].caption}</p>{/if}
       </div>
       <div class="subs montage-subs" style:--sub-size={subFont}>
@@ -1922,7 +1922,7 @@
       </div>
       <div class="montage-title" class:gone={!montage.intro} aria-hidden={!montage.intro}>
         <span class="kicker">Previously on</span>
-        <h2>{view.show.title}</h2>
+        <h2>{recap?.data?.season ?? view.show.title}</h2>
         <span class="rule"></span>
       </div>
       <div class="montage-actions">

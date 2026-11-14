@@ -147,6 +147,8 @@ Their answers are saved for the line too, so pressing one again is instant (unle
 
 When you come back to a show after 8 hours (Settings → Claude), the moments play first, opening on "Previously on" and the show's title, each one's sound crossfading into the next's as the next dissolves in, as a TV recap is cut, and the episode starts after them, through a card naming it (and where it picks up); Read recap shows the text instead. Back within 3 days, it's only Last time and that episode's moments, with the rest behind Show story so far. Picking up in the middle of an episode, the recap runs up to where you stopped; in its first 5 minutes, it's the recap of the episode before. Picking up a film part-way, it's the film so far, in its parts, with a scene for each thing its story isn't done with, up to six from all of it, and they all play however soon you're back.
 
+Before a season's first episode, Previously on tells the season before: the show AniList calls its prequel, when it's in your library, told from the episodes of it you watched in Telly (the last six, carrying on from that season's own recaps), with scenes from them. A season you don't have, or didn't watch here, gets none. Every other episode's recap is of its own season alone: the second episode's is made from the first's subtitles and doesn't carry the season before on.
+
 It's written when you leave the player, so it's ready next time (Haiku takes about 15 seconds for one episode); if it isn't, the episode starts and Telly says when the recap is ready. Each recap carries on from the one kept for the episode before, so only the episode you just left is read (up to six when there's no recap to carry on from).
 
 ## 🎨 Filters

@@ -8,7 +8,10 @@
 //!
 //! Each episode's recap carries on from the one kept for the episode before,
 //! so the story so far grows by one episode's subtitles at a time. A film's
-//! recap is of the film so far, for picking it up part-way.
+//! recap is of the film so far, for picking it up part-way. Before a season's
+//! first episode, the recap tells the season before (series.rs has which it
+//! is), from what you watched of it; the season's other recaps are of the
+//! season alone and never carry that one on.
 //!
 //! An answer is written while you watch: `start` returns an ask's id and the
 //! player asks `progress` for the text so far, the way it ticks.
@@ -464,6 +467,8 @@ pub enum RecapOf {
     EpisodeSoFar,
     /// A film up to where you stopped in it.
     FilmSoFar,
+    /// The story of the season before, ahead of a season's first episode.
+    SeasonBefore,
 }
 
 /// The most scenes a recap plays from the episode you left, by how long it
@@ -512,6 +517,11 @@ pub fn recap_prompt(show_title: &str, number: i64, window: &[(i64, &[Line])], ea
             "I’m coming back to Episode {number} of {show_title}, an anime in Japanese, part-way through it. Here are the Japanese \
              subtitles of {span}, each line numbered, with Episode {number} only as far as I watched:{names}"
         )
+    } else if of == RecapOf::SeasonBefore {
+        format!(
+            "I’ve watched {show_title}, an anime in Japanese, and I’m about to start the season that carries on from it. Here are the \
+             Japanese subtitles of {span}, the last of it I watched, each line numbered:{names}"
+        )
     } else {
         format!(
             "I’m about to watch Episode {number} of {show_title}, an anime in Japanese. Here are the Japanese subtitles of {span}, \
@@ -546,8 +556,9 @@ pub fn recap_prompt(show_title: &str, number: i64, window: &[(i64, &[Line])], ea
     } else {
         (
             format!(
-                "what happened in Episode {last}, the one I just left, in {answer_in}: three or four sentences, ending where its story \
-                 ends (not a preview of the next episode), so I can pick up from there"
+                "what happened in Episode {last}, {left}, in {answer_in}: three or four sentences, ending where its story \
+                 ends (not a preview of the next episode), so I can pick up from there",
+                left = if of == RecapOf::SeasonBefore { "the last of it I watched" } else { "the one I just left" },
             ),
             "before I watch",
             format!("From Episode {last}"),
@@ -684,6 +695,8 @@ struct Source {
     episodes: Vec<(Episode, Vec<Line>)>,
     /// The recap kept for the first of them: the story before.
     earlier: Option<Recap>,
+    /// The season before, when the recap is of that and not of the episode's own show.
+    of: Option<Show>,
 }
 
 /// Enough lines to tell a story from.
@@ -701,9 +714,17 @@ const RESUME_FROM_S: f64 = 300.0;
 /// before), six at most. With `at`, `episode` itself is the last of them, as
 /// far as `at` seconds in. Nothing when the last of them has too few lines, or
 /// `at` is in the first 5 minutes.
+///
+/// A show's first episode has none before it: its recap is of the season
+/// before (`season_before`), and no recap of this show carries that one on.
 fn source(backend: &Backend, episode: &Episode, at: Option<f64>) -> Result<Source> {
     let all = backend.db.episodes(episode.show_id)?;
     let Some(i) = all.iter().position(|e| e.id == episode.id) else { return Ok(Source::default()) };
+    if i == 0 && at.is_none() {
+        return season_before(backend, episode);
+    }
+    let first = all.first().map(|e| e.id);
+    let kept = |id: i64| if Some(id) == first { None } else { kept(backend, id) };
     let mut source = Source::default();
     if let Some(at) = at {
         if at < RESUME_FROM_S {
@@ -716,7 +737,7 @@ fn source(backend: &Backend, episode: &Episode, at: Option<f64>) -> Result<Sourc
             return Ok(source);
         }
         source.episodes.push((episode.clone(), lines));
-        source.earlier = kept(backend, episode.id);
+        source.earlier = kept(episode.id);
     }
     for e in all[..i].iter().rev() {
         if source.earlier.is_some() || source.episodes.len() >= RECAP_EPISODES {
@@ -725,12 +746,42 @@ fn source(backend: &Backend, episode: &Episode, at: Option<f64>) -> Result<Sourc
         let lines = jobs::read_lines(backend, e.id);
         if tells(&lines) {
             source.episodes.push((e.clone(), lines));
-            source.earlier = kept(backend, e.id);
+            source.earlier = kept(e.id);
         } else if source.episodes.is_empty() {
             return Ok(source);
         }
     }
     source.episodes.reverse();
+    Ok(source)
+}
+
+/// What the recap before a season's first episode is made from: the season
+/// it carries on from (AniList's prequel, when it's in the library), told
+/// from the episodes of it you watched, the last six at most, carrying on
+/// from that season's own recaps. Nothing when you watched none of it here:
+/// the story is only ever told from what you've seen.
+fn season_before(backend: &Backend, episode: &Episode) -> Result<Source> {
+    let mut source = Source::default();
+    let Some(show) = backend.db.show(episode.show_id)? else { return Ok(source) };
+    let Some(before) = crate::series::previous_show(backend, &show) else { return Ok(source) };
+    let all = backend.db.episodes(before.id)?;
+    let first = all.first().map(|e| e.id);
+    for e in all.iter().rev().skip_while(|e| e.watched_at.is_none()) {
+        if source.earlier.is_some() || source.episodes.len() >= RECAP_EPISODES {
+            break;
+        }
+        let lines = jobs::read_lines(backend, e.id);
+        if tells(&lines) {
+            source.episodes.push((e.clone(), lines));
+            source.earlier = if Some(e.id) == first { None } else { kept(backend, e.id) };
+        } else if source.episodes.is_empty() {
+            return Ok(source);
+        }
+    }
+    source.episodes.reverse();
+    if !source.episodes.is_empty() {
+        source.of = Some(before);
+    }
     Ok(source)
 }
 
@@ -900,6 +951,8 @@ fn recap_view(backend: &Backend, show_id: i64, source: &Source, recap: &Recap, a
         "last": recap.last,
         "lastNumber": last,
         "moments": clips,
+        // The season before, when that's whose story this is.
+        "season": source.of.as_ref().map(|s| s.title.as_str()),
     }))
 }
 
@@ -934,12 +987,15 @@ pub fn recap(backend: &Arc<Backend>, episode_id: i64, start: bool, at: Option<f6
     let of = match at {
         Some(_) if film => RecapOf::FilmSoFar,
         Some(_) => RecapOf::EpisodeSoFar,
+        None if source.of.is_some() => RecapOf::SeasonBefore,
         None => RecapOf::NextEpisode,
     };
+    // The show whose story is told: this one, or before its first episode, the season before.
+    let told = source.of.clone().unwrap_or_else(|| show.clone());
     if let Some(kept) = backend.db.answer(episode_id, kind(at), -1)? {
         if kept.about == about {
             if let Ok(recap) = serde_json::from_str::<Recap>(&kept.text) {
-                return recap_view(backend, show.id, &source, &recap, at, of == RecapOf::FilmSoFar);
+                return recap_view(backend, told.id, &source, &recap, at, of == RecapOf::FilmSoFar);
             }
         }
     }
@@ -952,7 +1008,8 @@ pub fn recap(backend: &Arc<Backend>, episode_id: i64, start: bool, at: Option<f6
     }
     let text: String = source.episodes.iter().flat_map(|(_, lines)| lines.iter().map(|l| l.text.as_str())).collect();
     let numbered: Vec<(i64, &[Line])> = source.episodes.iter().map(|(e, lines)| (e.number, lines.as_slice())).collect();
-    let prompt = recap_prompt(&show_title(&show), episode.number, &numbered, source.earlier.as_ref(), of, &names_line(backend, &show, &text), answer_in(backend));
+    let number = if of == RecapOf::SeasonBefore { numbered.last().map_or(1, |(n, _)| n + 1) } else { episode.number };
+    let prompt = recap_prompt(&show_title(&told), number, &numbered, source.earlier.as_ref(), of, &names_line(backend, &told, &text), answer_in(backend));
     let keeper = backend.clone();
     let kind = kind(at);
     let read: Vec<i64> = source.episodes.iter().map(|(e, _)| e.number).collect();
@@ -1000,7 +1057,12 @@ pub fn prepare_recaps(backend: &Arc<Backend>, episode_id: i64, finished: bool, r
             let episodes = backend.db.episodes(e.show_id).ok()?;
             episodes.into_iter().skip_while(|e| e.id != episode_id).nth(1)
         });
-        if let Some(next) = next {
+        // After a season's last episode, the next season's first is next: its recap tells this season.
+        let sequel = || {
+            let show = backend.db.show(backend.db.episode(episode_id).ok()??.show_id).ok()??;
+            backend.db.episodes(crate::series::next_show(backend, &show)?.id).ok()?.into_iter().next()
+        };
+        if let Some(next) = next.or_else(sequel) {
             let _ = recap(backend, next.id, true, None);
         }
     }
@@ -1232,6 +1294,53 @@ mod tests {
             jobs::write_lines(&backend, e.id, lines).unwrap();
         }
         (backend, episodes, dir)
+    }
+
+    #[test]
+    fn a_seasons_first_episode_is_recapped_from_the_season_before_and_no_other_episode_is() {
+        let lines: Vec<Line> = (0..30).map(|i| line(i as f64 * 3.0, i as f64 * 3.0 + 2.0, &format!("台詞{i}"))).collect();
+        let (backend, first, dir) = library("seasons", 3, &lines);
+        // A second season of two episodes, which AniList says carries on from the first.
+        let add = |title: &str, count: i64| {
+            let episodes = (1..=count).map(|n| crate::db::NewEpisode { number: n, path: format!("{title}/{n}.mkv"), size: 1, duration: 1400.0 }).collect();
+            backend.db.add_show(&crate::db::NewShow { folder: title.into(), title: title.into(), anilist_id: Some(2), episodes, ..Default::default() }).unwrap()
+        };
+        let second = backend.db.episodes(add("Show II", 2)).unwrap();
+        for e in &second {
+            jobs::write_lines(&backend, e.id, &lines).unwrap();
+        }
+        backend.db.set_show_anilist(first[0].show_id, &crate::db::NewShow { folder: "Show".into(), title: "Show".into(), anilist_id: Some(1), ..Default::default() }).unwrap();
+        let entries = vec![
+            crate::series::tests::entry(1, "Show", "TV", 3, 20200101, &[("SEQUEL", 2)]),
+            crate::series::tests::entry(2, "Show II", "TV", 2, 20210101, &[("PREQUEL", 1)]),
+        ];
+        std::fs::write(dir.join("series.json"), serde_json::to_vec(&entries).unwrap()).unwrap();
+
+        // None of the first season watched here: nothing to tell it from.
+        assert!(source(&backend, &second[0], None).unwrap().episodes.is_empty());
+        // Two of its three watched: the story as far as that, and no further.
+        backend.db.set_watched(first[0].id, true).unwrap();
+        backend.db.set_watched(first[1].id, true).unwrap();
+        let before = source(&backend, &second[0], None).unwrap();
+        assert_eq!(before.episodes.iter().map(|(e, _)| e.id).collect::<Vec<_>>(), [first[0].id, first[1].id]);
+        assert_eq!(before.of.as_ref().map(|s| s.title.as_str()), Some("Show"));
+        let p = recap_prompt("『Show』", 3, &[(1, &lines[..]), (2, &lines[..])], None, RecapOf::SeasonBefore, "", "English");
+        assert!(p.contains("I’ve watched 『Show』") && p.contains("about to start the season that carries on from it"));
+        assert!(p.contains("Episode 2, the last of it I watched") && p.contains("what you know of it from elsewhere could spoil what’s ahead"));
+
+        // Its recap is kept as the one before the second season's first episode, and plays the first season's scenes.
+        let summary = Recap { last: "The season ends.".into(), moments: vec![Pick { episode: 2, line: 5, caption: String::new() }], ..Recap::default() };
+        keep(&backend, &second[0], &summary);
+        let view = super::recap(&backend, second[0].id, false, None).unwrap();
+        assert_eq!((view["season"].as_str(), view["moments"][0]["episodeId"].as_i64()), (Some("Show"), Some(first[1].id)));
+        // The second episode's recap is of the second season alone: it doesn't carry the first season's on.
+        let own = source(&backend, &second[1], None).unwrap();
+        assert_eq!((own.episodes.iter().map(|(e, _)| e.id).collect::<Vec<_>>(), own.earlier.is_none(), own.of.is_none()), (vec![second[0].id], true, true));
+        // Nor does picking the first episode up part-way.
+        let part_way = source(&backend, &second[0], Some(600.0)).unwrap();
+        assert!(part_way.earlier.is_none() && part_way.of.is_none());
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// Keeps `recap` as the one before `episode`, as if Claude had just written it.

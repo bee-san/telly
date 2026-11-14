@@ -120,6 +120,7 @@
       status = await call<Status>("status").catch(() => status);
       anki = await askAnki(settings);
     }
+    if (k === "openrouter.key") claude = await callKept<ClaudeStatus>("claudeStatus").catch(() => claude);
   }
 
   /** Asks again about everything on this screen. */
@@ -372,7 +373,7 @@
             <button type="button" class="btn quiet" onclick={() => (showRouterKey = !showRouterKey)}>{showRouterKey ? "Hide" : "Show"}</button>
             <button type="button" class="btn quiet" onclick={() => openLink("https://openrouter.ai/settings/keys")}>Get a key</button>
           </span>
-          <small>This can wait. With a key, a model on OpenRouter makes subtitles for the episodes Jimaku has nothing for, for a few cents an episode, and each episode’s audio is sent to it. Without one, Whisper on this computer does.</small>
+          <small>This can wait. With a key, a model on OpenRouter makes subtitles for the episodes Jimaku has nothing for, for a few cents an episode, and each episode’s audio is sent to it. Without one, Whisper on this computer does. Without Claude Code on this computer, gpt-oss on OpenRouter also answers Explain and Previously on.</small>
         </label>
       {:else if step.id === "anki"}
         <p class="lede">Cards you mine with Hachidori go to Anki, through the AnkiConnect add-on, and Telly adds a moving picture of the line and its audio. Telly fills only fields that are empty.</p>
@@ -404,20 +405,24 @@
           {#if own?.folder}<small>Telly found {plural(own.total, "dictionary", "dictionaries")} in this folder.</small>{/if}
         </div>
       {:else if step.id === "claude"}
-        <p class="lede"><b>Explain</b> (E) explains the line on screen, and <b>Previously on</b> (P) recaps the story so far when you come back to a show. Both use the Claude Code on this computer, with its own sign-in, so they need no API key.</p>
+        <p class="lede"><b>Explain</b> (E) explains the line on screen, and <b>Previously on</b> (P) recaps the story so far when you come back to a show. Both use the Claude Code on this computer, with its own sign-in, so they need no API key. Without Claude Code, they use gpt-oss on OpenRouter, with the OpenRouter key from Subtitles.</p>
         {@render found("claude")}
         <div class="actions">
           <button type="button" class="btn quiet" onclick={askTest} disabled={!claude?.available || (test !== null && !test.done)}>Ask a test question</button>
         </div>
-        <small class="muted">It asks what はじめまして means, with the model chosen in Settings → Claude, to see that Claude Code is signed in and answers. It uses your Claude Code, so it costs a little.</small>
+        {#if claude?.openrouter}
+          <small class="muted">It asks gpt-oss on OpenRouter what はじめまして means, to see that your OpenRouter key works. It costs a fraction of a cent.</small>
+        {:else}
+          <small class="muted">It asks what はじめまして means, with the model chosen in Settings → Claude, to see that Claude Code is signed in and answers. It uses your Claude Code, so it costs a little.</small>
+        {/if}
         {#if test}
           <div class="status-list">
             {#if !test.done}
-              <p><i class="wait"></i><span>Asking Claude Code… It takes a few seconds to start.</span></p>
+              <p><i class="wait"></i><span>{claude?.openrouter ? "Asking gpt-oss on OpenRouter…" : "Asking Claude Code… It takes a few seconds to start."}</span></p>
             {:else if test.error}
               <p><i class="bad"></i><span>{test.error}</span></p>
             {:else}
-              <p><i class="ok"></i><span>Claude Code is signed in, and answered:</span></p>
+              <p><i class="ok"></i><span>{claude?.openrouter ? "gpt-oss on OpenRouter answered:" : "Claude Code is signed in, and answered:"}</span></p>
             {/if}
           </div>
           {#if test.text && !test.error}<p class="answer">{test.text}</p>{/if}

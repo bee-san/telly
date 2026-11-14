@@ -122,6 +122,7 @@
       // What's not working is checked again for what changed.
       if (k === "jimaku.key") askJimaku(settings).then((j) => (jimakuWorks = j));
       if (k.startsWith("anki.")) askAnki(settings).then((a) => (ankiHas = a));
+      if (k === "openrouter.key") callKept<ClaudeStatus>("claudeStatus").then((c) => (claude = c)).catch(() => {});
     } catch (e) {
       toast({ key: "set", state: "failed", title: "Not saved", text: errorText(e) });
     }
@@ -579,17 +580,19 @@
   <section>
     <h2>Claude</h2>
     <p class="lede">
-      {#if claude?.available}
+      {#if claude?.openrouter}
+        <b>Explain</b> (E) explains the line on screen, and <b>Previously on</b> (P) recaps the story so far, with its key moments to watch again. Claude Code isn’t on this computer, so both use gpt-oss on OpenRouter, with the OpenRouter key under Machine-made subtitles, and the subtitles they’re about are sent to it. Answers are saved, so asking again is instant.
+      {:else if claude?.available}
         <b>Explain</b> (E) explains the line on screen, and <b>Previously on</b> (P) recaps the story so far, with its key moments to watch again. Both use the Claude Code on this computer, with its own sign-in ({claude.version}). Answers are saved, so asking again is instant.
       {:else if claude}
-        <b>Explain</b> and <b>Previously on</b> use Claude Code, and Telly can’t find it: {claude.detail} Install Claude Code, sign in, and come back here.
+        <b>Explain</b> and <b>Previously on</b> use Claude Code, and Telly can’t find it: {claude.detail} Install Claude Code, sign in, and come back here, or add an OpenRouter API key under Machine-made subtitles and gpt-oss on OpenRouter answers instead.
       {:else}
         Looking for Claude Code…
       {/if}
     </p>
     <div class="rows two">
       <label class="field"><span>Model</span>
-        <select class="input" value={str("claude.model", "")} onchange={(e) => set("claude.model", e.currentTarget.value)}>
+        <select class="input" value={str("claude.model", "")} onchange={(e) => set("claude.model", e.currentTarget.value)} disabled={claude?.openrouter}>
           <option value="">Haiku 5.5 (fastest, cheapest)</option>
           <option value="claude-sonnet-5-5">Sonnet 5.5</option>
           <option value="claude-opus-5-5">Opus 5.5</option>
@@ -655,7 +658,7 @@
         <button type="button" class="btn quiet" onclick={() => (showRouterKey = !showRouterKey)}>{showRouterKey ? "Hide" : "Show"}</button>
         <button type="button" class="btn quiet" onclick={() => openLink("https://openrouter.ai/settings/keys")}>Get a key</button>
       </span>
-      <small>With a key, a model on OpenRouter makes the subtitles, and each episode’s audio is sent to it. Without one, Whisper on this computer does.</small>
+      <small>With a key, a model on OpenRouter makes the subtitles, and each episode’s audio is sent to it. Without one, Whisper on this computer does. Without Claude Code on this computer, gpt-oss on OpenRouter also answers Explain and Previously on.</small>
     </label>
     {#if str("openrouter.key")}
       <label class="field narrow"><span>Model</span>

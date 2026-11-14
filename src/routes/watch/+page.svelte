@@ -3,7 +3,7 @@
   import { page } from "$app/state";
   import { onDestroy, onMount, tick as nextTick } from "svelte";
   import Icon from "$lib/Icon.svelte";
-  import { call, errorText, mediaUrl, setFullscreen, setWindowTitle, type AskProgress, type CardEvent, type CastName, type ClaudeStatus, type Line, type Moment, type PlayerView, type Recap, type SeekSheet } from "$lib/api";
+  import { call, callKept, errorText, kept, mediaUrl, setFullscreen, setWindowTitle, type AskProgress, type CardEvent, type CastName, type ClaudeStatus, type Line, type Moment, type PlayerView, type Recap, type SeekSheet } from "$lib/api";
   import { arrange, createRenderer, drawTiles, filters, toggle } from "$lib/filters";
   import { dragWindow, enterCompact, leaveCompact, setCompactShape } from "$lib/compact";
   import { clock, ownFile } from "$lib/format";
@@ -65,6 +65,10 @@
   let filterShown = $state(false);
   const tiles: Record<string, HTMLCanvasElement> = {};
   let repaint: (() => void) | null = null;
+
+  /** Who answers Explain and Previously on: Claude, or gpt-oss on OpenRouter when Claude Code isn’t installed. */
+  let answerer = $state<ClaudeStatus | null>(kept<ClaudeStatus>("claudeStatus"));
+  const asked = $derived(answerer?.openrouter ? "gpt-oss" : "Claude");
 
   // Explain this line (E): Claude’s answer, shown as it’s written.
   let explaining = $state<{ index: number; text: string; done: boolean; error: string; ask: number } | null>(null);
@@ -1537,6 +1541,7 @@
     window.addEventListener("blur", dropTranslation);
     window.addEventListener("hachidori-popup-shown", popupShown);
     window.addEventListener("hachidori-popup-hidden", popupHidden);
+    callKept<ClaudeStatus>("claudeStatus").then((c) => (answerer = c)).catch(() => {});
     const unload = () => {
       if (!view) return;
       const id = view.episode.id;
@@ -1701,7 +1706,7 @@
       <button type="button" class="pbtn" class:on={subsOn} aria-label="Subtitles" title="Subtitles (S)" onclick={toggleSubs}><Icon name="subs" /></button>
       <button type="button" class="pbtn wide" class:on={blur} aria-label="Blur until hovered" title="Blur until hovered (B)" onclick={toggleBlur}><Icon name="blur" /></button>
       <button type="button" class="pbtn wide" class:on={transcript} aria-label="Transcript" title="Transcript (T)" onclick={() => (transcript = !transcript)}><Icon name="transcript" /></button>
-      <button type="button" class="pbtn txt wide" class:on={!!explaining} title="Explain the line with Claude (E)" onclick={() => explainLine()}>Explain</button>
+      <button type="button" class="pbtn txt wide" class:on={!!explaining} title="Explain the line with {asked} (E)" onclick={() => explainLine()}>Explain</button>
       {#if canRecap}
         <button type="button" class="pbtn txt wide" title="Previously on (P)" onclick={() => openRecap()}>Recap</button>
       {/if}
@@ -1795,7 +1800,7 @@
         {#if explaining.error}
           <p class="ex-err">{explaining.error}</p>
         {:else if !explaining.text}
-          <p class="ex-wait">Asking Claude…</p>
+          <p class="ex-wait">Asking {asked}…</p>
         {:else}
           <p class="ex-tr" lang={recapLang}>{explainRows.translation}</p>
           {#if explainRows.notes.length}
@@ -1812,7 +1817,7 @@
             {#if item.error}
               <p class="ex-err">{item.error}</p>
             {:else}
-              <p class="ex-a" lang={recapLang} onpointerenter={hoverText}>{item.a || "Asking Claude…"}</p>
+              <p class="ex-a" lang={recapLang} onpointerenter={hoverText}>{item.a || `Asking ${asked}…`}</p>
             {/if}
           {/each}
         {/if}
@@ -1828,7 +1833,7 @@
           <button type="submit" disabled={!question.trim() || thread.some((item) => !item.done)}>Ask</button>
         </form>
       {/if}
-      <div class="ex-foot">Answered by Claude, through Claude Code{explaining.done && !explaining.error ? " · saved for next time" : ""}</div>
+      <div class="ex-foot">{answerer?.openrouter ? "Answered by gpt-oss, through OpenRouter" : "Answered by Claude, through Claude Code"}{explaining.done && !explaining.error ? " · saved for next time" : ""}</div>
     </aside>
   {/if}
 
@@ -1853,7 +1858,7 @@
         <span class="small">Previously on</span>
         <h3>{view.show.title}</h3>
         {#if recap.state === "writing"}
-          <p class="recap-text wait">Claude is writing the recap…</p>
+          <p class="recap-text wait">{asked} is writing the recap…</p>
         {:else if recap.state === "error"}
           <p class="recap-text wait">{recap.error}</p>
         {:else if recap.data}

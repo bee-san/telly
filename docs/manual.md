@@ -28,7 +28,7 @@
 - 🔍 **Hover to look up:** it shows them as lines you can look up with [Hachidori](https://github.com/bee-san/hachidori), pausing while you read and carrying on when you move back to the picture.
 - 💬 **English when you need it:** it shows the rip's own English subtitles for the line while you hold **Tab**, when the rip has them as text (**?** lists every key).
 - 🃏 **Cards that move:** it finishes the cards you mine with an animated AVIF of the line and its audio as Opus.
-- 🧠 **[Explain and Previously on](#-explain-and-previously-on):** it explains the line on screen when you press **E**, and when you come back to a show, opens on **Previously on**: the story so far in its arcs, the episode you left, and key moments to watch again, each with a caption (both by Claude, through the Claude Code on your computer).
+- 🧠 **[Explain and Previously on](#-explain-and-previously-on):** it explains the line on screen when you press **E**, and when you come back to a show, opens on **Previously on**: the story so far in its arcs, the episode you left, and key moments to watch again, each with a caption (both by Claude, through the Claude Code on your computer, or by gpt-oss on OpenRouter when it isn't installed).
 - 📝 **[Premining](#-premining):** before you watch, it lists the words in the next episodes that you don't know yet and makes them into cards in your Hachidori card format.
 - 📛 **[Character names](#-character-names):** it makes a dictionary of the characters in what you're watching, the way [characterdictionary.tokyo](https://characterdictionary.tokyo) does, adds it to Hachidori and colours their names in the subtitles.
 - 🗣️ **[Every line a word is said in](#-searching-shows-and-lines):** it finds a word in every line it's said in across your library, the lines you can read first, and plays the scene around each.
@@ -71,7 +71,7 @@ A few screens set Telly up, finding out what they can before asking:
 | 🔑 **Jimaku** | your Jimaku API key |
 | 🃏 **Anki** | the deck, the note type and its card fields, and Anki Beacon's address, so cards are finished the moment you add them |
 | 📖 **Dictionaries** | the folder of your Yomitan dictionaries |
-| 🧠 **Claude Code** | checked with a test question |
+| 🧠 **Claude Code** | checked with a test question; without it, gpt-oss on OpenRouter answers, with your OpenRouter key |
 | 📈 **AniList** | optional: signed in, each episode you watch goes on your AniList list |
 
 Each screen says whether its part works and can be skipped. Settings lists what isn't working, found by the same checks, and **Run setup again** opens the setup again. A library set up before there was a setup (one with shows or a Jimaku key) doesn't go through it.
@@ -116,6 +116,8 @@ In the player (**?** lists them too):
 ![Previously on: the moments from the episode you left, each with a caption, then the episode starts](previously-on.gif)
 
 Both use [Claude Code](https://claude.com/claude-code), installed and signed in on this computer: Telly runs `claude -p` with no tools, the way Gromit Reader does, so it uses your own sign-in and needs no API key. It asks Haiku 5.5 unless Settings → Claude picks another model, and answers in English or simple Japanese.
+
+When Claude Code isn't installed and Settings has an OpenRouter API key (the one for machine-made subtitles), OpenAI's gpt-oss (`openai/gpt-oss-120b`) on [OpenRouter](https://openrouter.ai) answers instead, with the same instructions, thinking little, and the subtitles each question is about are sent to OpenRouter. Its answers show as they're written, are saved the same way, and the player and Settings say gpt-oss wrote them. Settings → Claude's model is then Claude Code's alone.
 
 <details>
 <summary>⚡ <b>How Explain answers within seconds</b></summary>

@@ -1669,7 +1669,7 @@ impl Backend {
                 Ok(json!({}))
             }
             "recentCards" => to_value(self.db.recent_mine_jobs(30)?),
-            "claudeStatus" => to_value(crate::claude::status()),
+            "claudeStatus" => Ok(ask::status(self)),
             "explain" => ask::explain(self, arg(&args, "id")?, arg(&args, "index")?),
             "ask" => Ok(self.asks.progress(arg(&args, "ask")?)),
             "stopAsk" => {

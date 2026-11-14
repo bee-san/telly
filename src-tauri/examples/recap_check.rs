@@ -8,10 +8,12 @@
 //! is for coming back part-way through the last of them (give its number as
 //! the episode number), as far as that, and with FILM=1 it's a film. It
 //! prints how many scenes Claude picked from each episode, and how long each plays.
+//! OPENROUTER_KEY=<key> asks gpt-oss on OpenRouter instead, as Telly does
+//! when Claude Code isn't installed.
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use telly_lib::{ask, claude, subs::Line};
+use telly_lib::{ask, claude, openrouter, subs::Line};
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -38,10 +40,18 @@ fn main() -> anyhow::Result<()> {
     let prompt = ask::recap_prompt("『FAIRY TAIL』 (Fairy Tail)", number, &refs, earlier.as_ref(), of, "", "English");
     eprintln!("prompt: {} characters", prompt.chars().count());
     let started = std::time::Instant::now();
-    let model = std::env::var("MODEL").unwrap_or_else(|_| claude::DEFAULT_MODEL.into());
-    let question = claude::Ask { prompt: &prompt, model: Some(&model), effort: Some(ask::EFFORT), warm: false };
+    let router_key = std::env::var("OPENROUTER_KEY").ok().filter(|k| !k.is_empty());
+    let model = match &router_key {
+        Some(_) => openrouter::CHAT_MODEL.to_string(),
+        None => std::env::var("MODEL").unwrap_or_else(|_| claude::DEFAULT_MODEL.into()),
+    };
     let mut first: Option<f64> = None;
-    let answer = claude::ask(&question, |_| { first.get_or_insert(started.elapsed().as_secs_f64()); }, &Arc::new(AtomicBool::new(false)))?;
+    let on_text = |_: &str| { first.get_or_insert(started.elapsed().as_secs_f64()); };
+    let stop = Arc::new(AtomicBool::new(false));
+    let answer = match &router_key {
+        Some(key) => openrouter::chat(&openrouter::api_address(), key, claude::SYSTEM, &prompt, Some(ask::EFFORT), on_text, &stop)?,
+        None => claude::ask(&claude::Ask { prompt: &prompt, model: Some(&model), effort: Some(ask::EFFORT), warm: false }, on_text, &stop)?,
+    };
     eprintln!("{model}: first text after {:.1}s, done in {:.1}s", first.unwrap_or(0.0), started.elapsed().as_secs_f64());
     match ask::parse_recap(&answer) {
         Some(recap) => {

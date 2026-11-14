@@ -2,7 +2,9 @@
 //! Gist, Break it down, Nuance and follow-up questions about it, and
 //! "Previously on", a recap of the story so far, with the moments of it to
 //! play back. Answers are kept (db answers), so asking twice is instant. The
-//! setup also asks a test question, to see that Claude Code answers.
+//! setup also asks a test question, to see that Claude Code answers. When
+//! Claude Code isn't on this computer and Settings has an OpenRouter key,
+//! gpt-oss on OpenRouter (openrouter.rs) answers instead.
 //!
 //! Each episode's recap carries on from the one kept for the episode before,
 //! so the story so far grows by one episode's subtitles at a time. A film's
@@ -16,6 +18,7 @@ use crate::claude;
 use crate::db::{Episode, Show};
 use crate::jobs;
 use crate::names;
+use crate::openrouter;
 use crate::subs::Line;
 use crate::util::now_ms;
 use anyhow::{anyhow, Result};
@@ -59,8 +62,8 @@ impl Asks {
     }
 
     /// Answers `prompt` in the background; `keep` hears the whole answer.
-    /// `model` is None for Claude Code's own default. `warm` asks in the warm session (short questions).
-    fn start(&self, prompt: String, model: Option<String>, effort: &'static str, warm: bool, keep: impl FnOnce(&str) + Send + 'static) -> u64 {
+    /// `warm` asks in Claude Code's warm session (short questions).
+    fn start(&self, prompt: String, who: Who, effort: &'static str, warm: bool, keep: impl FnOnce(&str) + Send + 'static) -> u64 {
         let id = self.next.fetch_add(1, Ordering::SeqCst) + 1;
         let asking = Arc::new(Asking {
             text: Mutex::new(String::new()),
@@ -75,16 +78,18 @@ impl Asks {
             running.insert(id, asking.clone());
         }
         std::thread::spawn(move || {
-            let question = claude::Ask { prompt: &prompt, model: model.as_deref(), effort: Some(effort), warm };
-            let result = claude::ask(
-                &question,
-                |piece| {
-                    if let Ok(mut t) = asking.text.lock() {
-                        t.push_str(piece);
-                    }
-                },
-                &asking.stop,
-            );
+            let on_text = |piece: &str| {
+                if let Ok(mut t) = asking.text.lock() {
+                    t.push_str(piece);
+                }
+            };
+            let result = match &who {
+                Who::Claude(model) => {
+                    let question = claude::Ask { prompt: &prompt, model: model.as_deref(), effort: Some(effort), warm };
+                    claude::ask(&question, on_text, &asking.stop)
+                }
+                Who::OpenRouter(key) => openrouter::chat(&openrouter::api_address(), key, claude::SYSTEM, &prompt, Some(effort), on_text, &asking.stop),
+            };
             match result {
                 Ok(answer) => {
                     keep(&answer);
@@ -127,6 +132,39 @@ pub fn model(backend: &Backend) -> Option<String> {
         "" => Some(claude::DEFAULT_MODEL.to_string()),
         "default" => None,
         other => Some(other.to_string()),
+    }
+}
+
+/// Who answers: the Claude Code on this computer, with the model Settings
+/// picked (None for Claude Code's own default), or gpt-oss on OpenRouter, with
+/// the key from Settings.
+pub enum Who {
+    Claude(Option<String>),
+    OpenRouter(String),
+}
+
+/// Claude Code, unless it isn't installed and Settings has an OpenRouter key.
+pub fn who(backend: &Backend) -> Who {
+    let key = backend.db.setting_str("openrouter.key");
+    if claude::find().is_none() && !key.trim().is_empty() {
+        Who::OpenRouter(key.trim().to_string())
+    } else {
+        Who::Claude(model(backend))
+    }
+}
+
+/// Whether Explain and Previously on can be answered, and by whom, for
+/// Settings, the setup and the player: Claude Code's status, or gpt-oss on
+/// OpenRouter's (with `openrouter` true) when Claude Code isn't installed.
+pub fn status(backend: &Backend) -> Value {
+    match who(backend) {
+        Who::OpenRouter(_) => json!({
+            "available": true,
+            "version": openrouter::CHAT_MODEL,
+            "detail": "Claude Code isn’t installed on this computer, so gpt-oss on OpenRouter answers, with your OpenRouter key.",
+            "openrouter": true,
+        }),
+        Who::Claude(_) => json!(claude::status()),
     }
 }
 
@@ -226,7 +264,7 @@ pub fn follow_up(backend: &Arc<Backend>, episode_id: i64, index: usize, explanat
     let near: String = lines[index.saturating_sub(12)..=index].iter().map(|l| l.text.as_str()).collect();
     let context = line_in_context(&show_title(&show), episode.number, &lines, index, &names_line(backend, &show, &near));
     let prompt = follow_up_prompt(&context, explanation, thread, question, answer_in(backend));
-    let id = backend.asks.start(prompt, model(backend), EFFORT, true, |_| {});
+    let id = backend.asks.start(prompt, who(backend), EFFORT, true, |_| {});
     Ok(json!({ "ask": id }))
 }
 
@@ -285,7 +323,7 @@ pub fn explain_more(backend: &Arc<Backend>, episode_id: i64, index: usize, expla
     let prompt = explain_more_prompt(&context, explanation, kind, language).ok_or_else(|| anyhow!("Telly doesn’t know that question"))?;
     let keeper = backend.clone();
     let kept_as = format!("line.{kind}");
-    let id = backend.asks.start(prompt, model(backend), EFFORT, true, move |answer| {
+    let id = backend.asks.start(prompt, who(backend), EFFORT, true, move |answer| {
         let _ = keeper.db.save_answer(episode_id, &kept_as, index as i64, &about, answer, language);
     });
     Ok(json!({ "ask": id }))
@@ -296,7 +334,7 @@ pub fn explain_more(backend: &Arc<Backend>, episode_id: i64, index: usize, expla
 /// ask to follow; not kept.
 pub fn test(backend: &Arc<Backend>) -> Value {
     let prompt = format!("In {}, in a few words: what does 「はじめまして」 mean?", answer_in(backend));
-    let id = backend.asks.start(prompt, model(backend), EFFORT, false, |_| {});
+    let id = backend.asks.start(prompt, who(backend), EFFORT, false, |_| {});
     json!({ "ask": id })
 }
 
@@ -316,7 +354,7 @@ pub fn explain(backend: &Arc<Backend>, episode_id: i64, index: usize) -> Result<
     let prompt = explain_prompt(&show_title(&show), episode.number, &lines, index, &names_line(backend, &show, &context), answer_in(backend));
     let keeper = backend.clone();
     let kept_about = about.clone();
-    let id = backend.asks.start(prompt, model(backend), EFFORT, true, move |answer| {
+    let id = backend.asks.start(prompt, who(backend), EFFORT, true, move |answer| {
         let _ = keeper.db.save_answer(episode_id, "line", index as i64, &kept_about, answer, LINE_ANSWER_VERSION);
     });
     Ok(json!({ "ask": id, "line": about }))
@@ -919,7 +957,7 @@ pub fn recap(backend: &Arc<Backend>, episode_id: i64, start: bool, at: Option<f6
     let kind = kind(at);
     let read: Vec<i64> = source.episodes.iter().map(|(e, _)| e.number).collect();
     let earlier = source.earlier.clone();
-    let id = backend.asks.start(prompt, model(backend), EFFORT, false, move |answer| {
+    let id = backend.asks.start(prompt, who(backend), EFFORT, false, move |answer| {
         if let Some(mut recap) = parse_recap(answer) {
             recap.moments = seen_picks(recap.moments, &read, earlier.as_ref());
             let _ = keeper.db.save_answer(episode_id, kind, -1, &about, &serde_json::to_string(&recap).unwrap_or_default(), "");
@@ -954,7 +992,7 @@ pub fn recaps_on(backend: &Backend) -> bool {
 /// before the next one; part-way through (`resume_at`), the recap up to there,
 /// or in its first 5 minutes the recap before it.
 pub fn prepare_recaps(backend: &Arc<Backend>, episode_id: i64, finished: bool, resume_at: Option<f64>) {
-    if !recaps_on(backend) || claude::find().is_none() {
+    if !recaps_on(backend) || matches!(who(backend), Who::Claude(_)) && claude::find().is_none() {
         return;
     }
     if finished {

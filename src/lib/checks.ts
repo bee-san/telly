@@ -163,8 +163,9 @@ export function checks(f: Facts): Check[] {
 
   // Explain and Previously on
   if (!f.claude) add("claude", "claude", "wait", "Looking for Claude Code…");
+  else if (f.claude.openrouter) add("claude", "claude", "ok", f.claude.detail);
   else if (f.claude.available) add("claude", "claude", "ok", `Claude Code ${f.claude.version.replace(/\s*\(Claude Code\)$/, "")} is installed.`);
-  else add("claude", "claude", "bad", `Telly can’t find Claude Code: ${f.claude.detail} Install Claude Code, sign in, and check again.`);
+  else add("claude", "claude", "bad", `Telly can’t find Claude Code: ${f.claude.detail} Install Claude Code, sign in, and check again, or add an OpenRouter API key (Subtitles) and gpt-oss on OpenRouter answers instead.`);
 
   // AniList
   const user = String(settings["anilist.user"] ?? "");

@@ -441,6 +441,8 @@ export interface ClaudeStatus {
   available: boolean;
   version: string;
   detail: string;
+  /** Claude Code isn’t installed, so gpt-oss on OpenRouter answers, with the OpenRouter key from Settings. */
+  openrouter?: boolean;
 }
 
 /** A character's name as the show writes it, from the names dictionary. */

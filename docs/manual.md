@@ -236,9 +236,15 @@ AniList keeps each season, movie and OVA of an anime as an entry of its own, and
 
 ## 🔎 Searching shows and lines
 
-Hover over a show title to read the whole name. Search in the Library by Japanese title, English title or romaji. Telly uses AniList's titles and can also work out a reading from the Japanese title.
+The search is in the middle of the title bar, on every page; <kbd>Ctrl</kbd>+<kbd>K</kbd> goes to it. As you type, a list under it shows three kinds of result:
 
-Search for Japanese words in the same box, in Japanese or romaji. Type `gakko` for 学校 or `ramen` for ラーメン. Lines are listed under their shows, each with its picture and episode. Press one to play its scene over the Library (the line with the one before and after it), or **Watch from here** to open the player there.
+- **In your library:** the shows it names, by Japanese title, English title or romaji. Telly uses AniList's titles and can also work out a reading from the Japanese title.
+- **Lines:** the lines that say it, the best of a few shows, and how many there are in all.
+- **Download:** the anime AniList finds that aren't in your library. **Download…** opens nyaa.si's search for one.
+
+<kbd>↑</kbd> and <kbd>↓</kbd> choose a result and <kbd>Enter</kbd> opens it; <kbd>Tab</kbd> goes to the next kind. <kbd>Enter</kbd> with none chosen, or **Show all results**, opens a page with every result, and **Library**, **Lines** and **AniList** at its top show one kind. <kbd>Esc</kbd> empties the search.
+
+Search for Japanese words in Japanese or romaji. Type `gakko` for 学校 or `ramen` for ラーメン. Lines are listed under their shows, each with its picture and episode. Press one to play its scene (the line with the one before and after it), or **Watch from here** to open the player there.
 
 - **A word** finds every form of itself. `taberu`, 食べる, たべる and 食べた all find 食べた, 食べて and 食べられる, and the whole form is marked. Kana find it in either script, so だめ finds ダメ. It goes by the words premining saves for each episode. A name finds itself with an honorific after it too (フリーレン finds フリーレン様), which Telly's character dictionary makes one word.
 - **Anything else** (a phrase, a name no episode has as a word) is looked for in the lines' text. So is a word premining leaves out (俺, 二人, ありがとう), where it's written outside the words it saved, and so are the lines of episodes whose words aren't saved yet, listed after the rest. A single kana isn't: it's in nearly every line.
@@ -273,7 +279,7 @@ On 850,000 lines in 2,700 episodes (made up, a tenth of them without their words
   - **Popular this season**, **Just finished** (every episode out), **Hidden gems** (well rated, little known), **Short series** (13 episodes or fewer) and **Best rated of all time**.
   - A row for each genre, the most popular of it on AniList: the three you watch most (by the episodes you've watched of each show's genres) come among the rows above, and the rest at the end.
   - Every row but the top tens leaves out what you have, what's on your AniList list or hidden, and sequels, which aren't somewhere to start. Nothing that isn't out yet is listed. Telly asks AniList for these rows once a day, when it starts or the page opens.
-- **Search AniList**, at the top, finds any other anime, to download one that's neither a pick nor trending. One still to come says **Not out yet** and has nothing to download.
+- **Search AniList**, at the top, finds any other anime (so does the search in the title bar), to download one that's neither a pick nor trending. One still to come says **Not out yet** and has nothing to download.
 - **A pick** opens with its synopsis, the shows it's recommended from with their votes (or where it stands among what's trending), **Open on AniList** and **Download…**, which finds it on nyaa.si ([Downloading](#%EF%B8%8F-downloading)). **Hide** leaves a suggestion out from now on, for one you've seen elsewhere.
 
 AniList's answers are kept for a week. A show is asked about again after that, and a show you add is asked about the next time the page opens.
@@ -282,8 +288,8 @@ AniList's answers are kept for a week. A show is asked about again after that, a
 
 Telly downloads anime with its own torrent client ([librqbit](https://github.com/ikatson/rqbit)), so nothing else needs installing. A torrent comes in small pieces from everyone sharing it, each piece checked as it arrives, so a connection that keeps dropping loses nothing: Telly carries on where it was when the connection comes back, and when Telly opens again.
 
-- **Finding a release:** **Download…** on a pick in Recommended (a suggestion, one that's trending, or one its search found) and **Download episodes…** on a show's page open nyaa.si's search, already searching for that show. The releases most people are sharing come first (they download fastest and steadiest); **Newest first**, **English-translated**, **Raw** and **Trusted uploaders only** narrow it down, and a title opens its page on nyaa. If your internet provider blocks nyaa.si, Settings → Downloads takes another address for it.
-- **Which show it is:** from a pick in Recommended or a show's page, Telly knows. A release found another way (**Download…** in Processing, or another search on the page) asks first: the anime its name finds on AniList, **Choose another show** when that's not it, and the folder it will go in.
+- **Finding a release:** **Download…** on a pick in Recommended (a suggestion, one that's trending, or one its search found) or on an anime the title bar's search found and **Download episodes…** on a show's page open nyaa.si's search, already searching for that show. The releases most people are sharing come first (they download fastest and steadiest); **Newest first**, **English-translated**, **Raw** and **Trusted uploaders only** narrow it down, and a title opens its page on nyaa. If your internet provider blocks nyaa.si, Settings → Downloads takes another address for it.
+- **Which show it is:** from a pick in Recommended, the title bar's search or a show's page, Telly knows. A release found another way (**Download…** in Processing, or another search on the page) asks first: the anime its name finds on AniList, **Choose another show** when that's not it, and the folder it will go in.
 - **Where it goes:** more of a show in the library goes in the folder its rips are in. A new show goes to its place in your library folders, the two chosen in Settings → Library:
   - **A season** goes in `anime\Season 01` in the series folder. The anime's folder is the one its other seasons are in, whatever it's called (a release's own name, say); a new anime's is named as its card in the Library. The season's number is its place along AniList's sequels from the first season, as Telly reads season folders when [a whole anime is added](#%EF%B8%8F-seasons-and-movies): Overlord IV goes in `Season 04`.
   - **A spin-off or an OVA** goes in a folder of its own name in the anime's folder. So does a season whose folder is there already with another show's rips in it.

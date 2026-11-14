@@ -1,9 +1,11 @@
-// What every page shares: the background work in the title bar, and whether
-// the player (dark chrome) is up, full screen or the small player.
+// What every page shares: the background work in the title bar, what's typed
+// in its search, and whether the player (dark chrome) is up, full screen or
+// the small player.
 import { call, type Activity } from "./api";
 
-export const app = $state<{ activity: Activity | null; dark: boolean; fullscreen: boolean; compact: boolean }>({
+export const app = $state<{ activity: Activity | null; search: string; dark: boolean; fullscreen: boolean; compact: boolean }>({
   activity: null,
+  search: "",
   dark: false,
   fullscreen: false,
   compact: false,

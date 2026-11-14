@@ -3,6 +3,7 @@
   import { tick } from "svelte";
   import { call, inTauri, type Queue, type Queued } from "./api";
   import Icon from "./Icon.svelte";
+  import SearchBox from "./SearchBox.svelte";
   import { app } from "./state.svelte";
 
   const act = $derived(app.activity);
@@ -141,6 +142,7 @@
 </script>
 
 <header class="wt" class:dark={app.dark} data-tauri-drag-region>
+  <span class="wt-left" data-tauri-drag-region>
   <svg class="wt-logo" viewBox="0 0 64 64" aria-hidden="true">
     <path d="M21 4.5 L32 14 L43 4.5" style="fill:none;stroke:var(--logo-bg)" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round" />
     <rect x="3" y="14" width="58" height="46" rx="12" style="fill:var(--logo-bg)" />
@@ -206,7 +208,9 @@
       {/if}
     </span>
   {/if}
-  <span class="grow" data-tauri-drag-region></span>
+  </span>
+  <SearchBox dark={app.dark} />
+  <span class="wt-right" data-tauri-drag-region>
   {#if inTauri}
     <span class="wt-caps">
       <button type="button" aria-label="Minimise" title="Minimise" onclick={() => win("minimize")}><Icon name="min" /></button>
@@ -214,10 +218,14 @@
       <button type="button" class="close" aria-label="Close" title="Close" onclick={() => win("close")}><Icon name="close" /></button>
     </span>
   {/if}
+  </span>
 </header>
 
 <style>
-  .wt { position: relative; z-index: 70; height: 36px; flex: none; display: flex; align-items: center; gap: 9px; padding-left: 12px; background: var(--bg-2); border-bottom: 1px solid var(--rule); user-select: none; -webkit-user-select: none; }
+  /* The search sits in the middle, whatever is beside it. */
+  .wt { position: relative; z-index: 70; height: 36px; flex: none; display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 520px) minmax(0, 1fr); align-items: center; gap: 16px; padding-left: 12px; background: var(--bg-2); border-bottom: 1px solid var(--rule); user-select: none; -webkit-user-select: none; }
+  .wt-left { display: flex; align-items: center; gap: 9px; min-width: 0; }
+  .wt-right { display: flex; justify-content: flex-end; height: 100%; }
   .wt-logo { width: 16px; height: 16px; flex: none; }
   .wt-name { font: 400 12px/1 var(--font-ui); color: var(--ink-2); }
   .wt-wrap { position: relative; display: inline-flex; min-width: 0; margin-left: 12px; }

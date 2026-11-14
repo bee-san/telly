@@ -6,12 +6,12 @@
   import PickRow from "$lib/PickRow.svelte";
   import { call, callKept, errorText, inTauri, kept, setWindowTitle, type Pick, type Recommended } from "$lib/api";
   import { plural } from "$lib/format";
+  import { downloadLink, pickMeta } from "$lib/search";
   import { app } from "$lib/state.svelte";
   import { toast } from "$lib/toast-store.svelte";
 
   /** How many picks Show all lists at first, and how many Show more adds. */
   const STEP = 24;
-  const FORMATS: Record<string, string> = { TV: "TV", TV_SHORT: "TV short", MOVIE: "Movie", SPECIAL: "Special", OVA: "OVA", ONA: "ONA", MUSIC: "Music" };
 
   let rec = $state.raw<Recommended | null>(kept<Recommended>("recommendations"));
   let shown = $state(STEP);
@@ -111,11 +111,7 @@
     }
   }
 
-  /** "Film · 2016", "TV · 2011 · 148 episodes". */
-  function meta(p: Pick): string {
-    const episodes = p.format !== "MOVIE" && p.episodes ? plural(p.episodes, "episode") : "";
-    return [FORMATS[p.format] ?? p.format, p.year ? String(p.year) : "", episodes].filter(Boolean).join(" · ");
-  }
+  const meta = pickMeta;
 
   /** "Like Your Name. and 10 more"; nothing for one that's trending or was searched for. */
   function why(p: Pick): string {
@@ -147,7 +143,7 @@
 
   /** Opens nyaa.si's search for a pick, for Telly to download it. */
   function download(p: Pick) {
-    goto(`/downloads?from=recommended&anilist=${p.id}&q=${encodeURIComponent(p.romaji || p.english || p.title)}`);
+    goto(`${downloadLink(p)}&from=recommended`);
   }
 
   /** AniList's synopsis as plain text: its line breaks kept, the rest of its markup dropped. */

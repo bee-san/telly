@@ -174,7 +174,7 @@ Their answers are saved for the line too, so pressing one again is instant (unle
 
 ### Previously on
 
-**Previously on** (P, or Recap) tells the story so far: the story cut into its arcs, each with what happens in it and the episodes it spans, then **Last time** for the episode you left, then up to three scenes from the episode you left and up to six across the whole story, each with a caption. The clips give each exchange time to finish before fading into the next scene.
+**Previously on** (P, or Recap) tells the story so far: the story cut into its arcs, each with what happens in it and the episodes it spans, then **Last time** for the episode you left, then scenes to watch again, each with a caption: one for each thing in the episode you left that the story isn't done with (one for a quiet episode, up to four, fewer for a short episode or part-way through one), and one for each arc still going, up to three. They play for about a minute at most, the older ones giving way first, and the last scene always plays. The clips give each exchange time to finish before fading into the next scene.
 
 When you come back to a show after 8 hours (Settings → Claude), the moments play first, opening on "Previously on" and the show's title, each one's sound crossfading into the next's as the next dissolves in, as a TV recap is cut, and the episode starts after them, through a card naming it (and where it picks up); Read recap shows the text instead. Back within 3 days, it's only Last time and that episode's moments, with the rest behind Show story so far. Picking up in the middle of an episode, the recap runs up to where you stopped.
 

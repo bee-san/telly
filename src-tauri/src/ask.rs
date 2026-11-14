@@ -416,12 +416,38 @@ impl Recap {
 /// comes from the recap kept for the first of them.
 const RECAP_EPISODES: usize = 6;
 
+/// What a recap is of.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RecapOf {
+    /// The story before the next episode.
+    NextEpisode,
+    /// The story up to where you stopped, part-way through an episode.
+    EpisodeSoFar,
+}
+
+/// The most scenes a recap plays from the episode you left, by how long it
+/// ran as far as you watched it: one for every 6 minutes, from 1 to 4.
+pub fn latest_most(lines: &[Line]) -> usize {
+    let minutes = spoken(lines).next_back().map_or(0.0, |(_, l)| l.end) / 60.0;
+    ((minutes / 6.0).round() as usize).clamp(1, 4)
+}
+
+/// The most scenes a recap plays from the story before the episode you left.
+const EARLIER_MOMENTS: usize = 3;
+/// How long the scenes from the episode you left play for at most, in
+/// seconds: past that, those in the middle go.
+const LATEST_S: f64 = 45.0;
+/// How long a recap's scenes play for at most, in seconds: past that, those
+/// from the story before go.
+const MONTAGE_S: f64 = 75.0;
+
 /// The prompt for "Previously on" before Episode `number`: the subtitles of
 /// the episodes it reads (`window`, oldest first, each line numbered), and the
 /// recap kept for the first of them (`earlier`), which it carries on from.
-/// `resuming` is for coming back part-way through Episode `number`: it's the
-/// last of the window, as far as it was watched.
-pub fn recap_prompt(show_title: &str, number: i64, window: &[(i64, &[Line])], earlier: Option<&Recap>, resuming: bool, names: &str, answer_in: &str) -> String {
+/// Coming back part-way through Episode `number` (`of`), it's the last of the
+/// window, as far as it was watched.
+pub fn recap_prompt(show_title: &str, number: i64, window: &[(i64, &[Line])], earlier: Option<&Recap>, of: RecapOf, names: &str, answer_in: &str) -> String {
+    let resuming = of == RecapOf::EpisodeSoFar;
     let episodes: Vec<String> = window
         .iter()
         .map(|(n, lines)| {
@@ -443,7 +469,7 @@ pub fn recap_prompt(show_title: &str, number: i64, window: &[(i64, &[Line])], ea
              from before it, each line numbered:{names}"
         )
     };
-    let (before, carry_arcs, carry_moments) = match earlier {
+    let (before, carry_arcs, take_from) = match earlier {
         Some(recap) => (
             format!(
                 "\n\nThe story before Episode {first}, as you told it to me then, with the moments you chose:\n<earlier>\n{}\n</earlier>",
@@ -452,20 +478,42 @@ pub fn recap_prompt(show_title: &str, number: i64, window: &[(i64, &[Line])], ea
             " Carry on from the earlier story: keep its arcs, run the latest one on or add a new one, and fold the oldest together \
              when there would be more than five."
                 .to_string(),
-            format!(" For the story before Episode {first}, keep the best of the earlier moments, with the episode and line they had."),
+            "from the earlier moments, with the episode, line and caption they had, or from the subtitles above: never a line of an \
+             episode whose subtitles aren’t here",
         ),
-        None => (String::new(), String::new(), String::new()),
+        None => (String::new(), String::new(), "from the subtitles above"),
     };
-    let (last_is, last_end) = if resuming {
+    // Claude counts the scenes from what it wrote in "last", which comes before them.
+    let most = window.last().map_or(1, |(_, lines)| latest_most(lines));
+    let (last_is, play_before, from_last, done_at, near, only) = if resuming {
         (
             format!("what has happened so far in Episode {last}, in {answer_in}: two to four sentences, ending where I stopped, so I can pick up from there"),
+            "before I pick up again",
+            format!("From Episode {last} as far as I watched"),
             "where I stopped",
+            "near where I stopped",
+            "just the one near where I stopped if nothing else is open",
         )
     } else {
         (
-            format!("what happened in Episode {last}, the one I just left, in {answer_in}: three or four sentences, ending where it ended, so I can pick up from there"),
-            "its end",
+            format!(
+                "what happened in Episode {last}, the one I just left, in {answer_in}: three or four sentences, ending where its story \
+                 ends (not a preview of the next episode), so I can pick up from there"
+            ),
+            "before I watch",
+            format!("From Episode {last}"),
+            "when the episode ends",
+            "near its end",
+            "just the one near its end if nothing else is left open",
         )
+    };
+    let story_before = if earlier.is_some() || window.len() > 1 {
+        format!(
+            " For the story before Episode {last}: a scene for each of its arcs that the story isn’t done with {done_at}, none for an \
+             arc that’s over, at most {EARLIER_MOMENTS}. Take them {take_from}."
+        )
+    } else {
+        String::new()
     };
     format!(
         "{opening}\n\n{body}{before}\n\n\
@@ -476,13 +524,14 @@ pub fn recap_prompt(show_title: &str, number: i64, window: &[(i64, &[Line])], ea
          saying what happens in it, taken from the subtitles (never a name from elsewhere that could hint at what’s ahead), the first \
          and last episode it covers (\"from\" and \"to\"), and two or three sentences in {answer_in}. An arc can run on into Episode {last}.\n\
          \"last\": {last_is}.\n\
-         \"moments\": two or three distinct scenes from Episode {last}, the last near {last_end}. If there's an earlier story, \
-         include up to three of its key scenes too, six in all at most.{carry_moments} For each, pick the first complete spoken line \
-         of an exchange that tells the story when played as a clip. Return the picks in episode and line order. Each has a \"caption\" in \
+         \"moments\": the scenes to play {play_before}, each the first complete spoken line of an exchange that shows it when played \
+         as a clip. {from_last}: a scene for each thing you told in \"last\" that the story isn’t done with {done_at} (a turn, a reveal, \
+         a promise, a threat, a choice), never two for the same thing, the last of them {near}. How many follows what happened, not the \
+         most allowed: {only}, and at most {most}.{story_before} Return the picks in episode and line order. Each has a \"caption\" in \
          {answer_in}: one sentence of under 15 words saying what’s happening at that moment, for someone who has forgotten it.\n\
-         Write the characters’ names as AniList does. Keep it under 350 words in all. Use only the subtitles and the earlier story \
-         above, and don’t guess at what comes next. If you recognise the show, still tell me only what they say: what you know of \
-         it from elsewhere could spoil what’s ahead.",
+         Write the characters’ names as AniList does. Keep it under 400 words in all. Use only the subtitles and the earlier story \
+         above, and don’t guess at what comes next. If you recognise the show, still tell me only what they say, and choose the scenes \
+         only by what’s in the subtitles: what you know of it from elsewhere could spoil what’s ahead.",
         body = episodes.join("\n\n"),
     )
 }
@@ -524,10 +573,8 @@ fn recap_from(value: &Value) -> Option<Recap> {
     (!recap.last.is_empty() || !recap.arcs.is_empty()).then_some(recap)
 }
 
-/// The most moments a recap plays across the story so far.
-const MAX_MOMENTS: usize = 6;
-/// The most scenes to play from the episode you just left.
-const LAST_EPISODE_MOMENTS: usize = 3;
+/// The most moments kept from Claude's answer: more than a recap ever plays, so only junk is cut.
+const MAX_MOMENTS: usize = 10;
 
 /// `n` of the moments, spread from the first to the last (the end matters most).
 fn at_most<T: Clone>(moments: Vec<T>, n: usize) -> Vec<T> {
@@ -535,10 +582,18 @@ fn at_most<T: Clone>(moments: Vec<T>, n: usize) -> Vec<T> {
         return moments;
     }
     if n < 2 {
-        return moments.into_iter().take(n).collect();
+        return moments.into_iter().rev().take(n).collect();
     }
     let last = moments.len() - 1;
     (0..n).map(|k| moments[(k * last + (n - 1) / 2) / (n - 1)].clone()).collect()
+}
+
+/// The picks Claude could have seen: those from the episodes whose subtitles
+/// it read (`window`, by number), and the earlier recap's own, as they were.
+/// A line of any other episode would be made up, and play under the wrong caption.
+fn seen_picks(moments: Vec<Pick>, window: &[i64], earlier: Option<&Recap>) -> Vec<Pick> {
+    let carried = |p: &Pick| earlier.is_some_and(|r| r.moments.iter().any(|m| (m.episode, m.line) == (p.episode, p.line)));
+    moments.into_iter().filter(|p| window.contains(&p.episode) || carried(p)).collect()
 }
 
 /// What a recap is made from.
@@ -621,10 +676,53 @@ fn kind(at: Option<f64>) -> &'static str {
     if at.is_some() { "resume" } else { "recap" }
 }
 
+/// A clip of a recap's moments: its episode's id, where it starts and ends, and what the player is sent.
+#[derive(Clone)]
+struct Clip {
+    episode: i64,
+    start: f64,
+    end: f64,
+    view: Value,
+}
+
+/// Where each clip starts playing: where the one before it in the same
+/// episode ended, if that's later, so its lines aren't played twice.
+fn play_from(clips: &[Clip]) -> Vec<f64> {
+    let mut previous: Option<&Clip> = None;
+    clips
+        .iter()
+        .map(|c| {
+            let from = match previous {
+                Some(p) if p.episode == c.episode => c.start.max(p.end),
+                _ => c.start,
+            };
+            previous = Some(c);
+            from
+        })
+        .collect()
+}
+
+/// How long the clips play for, one after another.
+fn length(clips: &[Clip]) -> f64 {
+    clips.iter().zip(play_from(clips)).map(|(c, from)| (c.end - from).max(0.0)).sum()
+}
+
+/// `most` of the clips, spread from the first to the last, and fewer while
+/// they play for longer than `seconds`: those in the middle go, oldest first,
+/// then the first, leaving at least `least`. The last goes only when `least` is 0.
+fn keep_within(clips: Vec<Clip>, most: usize, seconds: f64, least: usize) -> Vec<Clip> {
+    let mut clips = at_most(clips, most);
+    while clips.len() > least && length(&clips) > seconds {
+        clips.remove(if clips.len() > 2 { 1 } else { 0 });
+    }
+    clips
+}
+
 fn recap_view(backend: &Backend, show_id: i64, source: &Source, recap: &Recap, at: Option<f64>) -> Result<Value> {
     let all = backend.db.episodes(show_id)?;
     let last = source.episodes.last().map(|(e, _)| e.number);
-    let mut clips = Vec::new();
+    // The clips of the story before the episode you left, and of that episode.
+    let mut earlier = Vec::new();
     let mut latest = Vec::new();
     // The clip before: its episode, start and end.
     let mut before: Option<(i64, f64, f64)> = None;
@@ -653,7 +751,7 @@ fn recap_view(backend: &Backend, show_id: i64, source: &Source, recap: &Recap, a
                 continue;
             }
             // Two lines picked close together: the second's clip carries on from where the first's
-            // ended, rather than playing its lines again, and goes if the first played all of it.
+            // ended, rather than playing its lines again (`play_from`), and goes if the first played all of it.
             let mut after_previous = start;
             if let Some((episode, from, to)) = before {
                 if episode == e.id && start < to && end > from {
@@ -664,8 +762,8 @@ fn recap_view(backend: &Backend, show_id: i64, source: &Source, recap: &Recap, a
                 }
             }
             before = Some((e.id, after_previous, end));
-            let clip = json!({
-                "start": after_previous,
+            let view = json!({
+                "start": start,
                 "end": end,
                 "lines": m.lines,
                 "caption": pick.caption,
@@ -675,22 +773,32 @@ fn recap_view(backend: &Backend, show_id: i64, source: &Source, recap: &Recap, a
                 "listedAudio": jobs::stored_probe(backend, e.id).map(|p| jobs::listed_track(e, &p)).unwrap_or(0),
                 "playable": e.media_state == "ready",
                 "nudgeMs": e.subs_nudge_ms,
+                "latest": is_last,
             });
+            let clip = Clip { episode: e.id, start, end, view };
             if is_last {
-                latest.push((start, end, clip));
+                latest.push(clip);
             } else {
-                clips.push(clip);
+                earlier.push(clip);
             }
         }
     }
-    // Keep the first and last scenes when an older recap picked more for one episode.
+    // As many scenes as the episode you left ran to, and the story before them,
+    // within their time: an older recap may have picked more. The last always plays.
+    let most = source.episodes.last().map_or(1, |(_, lines)| latest_most(lines));
+    let latest = keep_within(latest, most, LATEST_S, 1);
+    let earlier = keep_within(earlier, EARLIER_MOMENTS, MONTAGE_S - length(&latest), 0);
+    let kept: Vec<Clip> = earlier.into_iter().chain(latest).collect();
     // If a clip was dropped, the one after it can play from its own start again.
-    let mut previous_end: f64 = 0.0;
-    for (start, end, mut clip) in at_most(latest, LAST_EPISODE_MOMENTS) {
-        clip["start"] = json!(start.max(previous_end));
-        previous_end = end;
-        clips.push(clip);
-    }
+    let clips: Vec<Value> = kept
+        .iter()
+        .zip(play_from(&kept))
+        .map(|(clip, from)| {
+            let mut view = clip.view.clone();
+            view["start"] = json!(from);
+            view
+        })
+        .collect();
     Ok(json!({
         "done": true,
         "recap": recap.text(),
@@ -743,11 +851,15 @@ pub fn recap(backend: &Arc<Backend>, episode_id: i64, start: bool, at: Option<f6
     }
     let text: String = source.episodes.iter().flat_map(|(_, lines)| lines.iter().map(|l| l.text.as_str())).collect();
     let numbered: Vec<(i64, &[Line])> = source.episodes.iter().map(|(e, lines)| (e.number, lines.as_slice())).collect();
-    let prompt = recap_prompt(&show_title(&show), episode.number, &numbered, source.earlier.as_ref(), at.is_some(), &names_line(backend, &show, &text), answer_in(backend));
+    let of = if at.is_some() { RecapOf::EpisodeSoFar } else { RecapOf::NextEpisode };
+    let prompt = recap_prompt(&show_title(&show), episode.number, &numbered, source.earlier.as_ref(), of, &names_line(backend, &show, &text), answer_in(backend));
     let keeper = backend.clone();
     let kind = kind(at);
+    let read: Vec<i64> = source.episodes.iter().map(|(e, _)| e.number).collect();
+    let earlier = source.earlier.clone();
     let id = backend.asks.start(prompt, model(backend), EFFORT, false, move |answer| {
-        if let Some(recap) = parse_recap(answer) {
+        if let Some(mut recap) = parse_recap(answer) {
+            recap.moments = seen_picks(recap.moments, &read, earlier.as_ref());
             let _ = keeper.db.save_answer(episode_id, kind, -1, &about, &serde_json::to_string(&recap).unwrap_or_default(), "");
         }
     });
@@ -878,10 +990,19 @@ mod tests {
     fn recaps_cover_the_episodes_before_in_arcs() {
         let lines: Vec<Line> = (0..30).map(|i| line(i as f64 * 3.0, i as f64 * 3.0 + 2.0, &format!("台詞{i}"))).collect();
         let window: Vec<(i64, &[Line])> = vec![(3, &lines[..]), (4, &lines[..])];
-        let p = recap_prompt("『FAIRY TAIL』", 5, &window, None, false, "", "English");
+        let p = recap_prompt("『FAIRY TAIL』", 5, &window, None, RecapOf::NextEpisode, "", "English");
         assert!(p.contains("<episode number=\"3\">\n[0] 台詞0") && p.contains("<episode number=\"4\">"));
         assert!(p.contains("Episodes 3 to 4") && !p.contains("<earlier>"));
-        assert!(p.contains("\"arcs\"") && p.contains("Episode 4, the one I just left"));
+        assert!(p.contains("\"arcs\"") && p.contains("Episode 4, the one I just left") && p.contains("(not a preview of the next episode)"));
+        // Claude counts the scenes from what it told of Episode 4, up to as many as its 1½ minutes allow.
+        assert!(p.contains("a scene for each thing you told in \"last\" that the story isn’t done with when the episode ends"));
+        assert!(p.contains("How many follows what happened, not the most allowed: just the one near its end if nothing else is left open, and at most 1."));
+        // And from the story before, from the subtitles it has.
+        assert!(p.contains("For the story before Episode 4: a scene for each of its arcs that the story isn’t done with when the episode ends"));
+        assert!(p.contains("at most 3. Take them from the subtitles above.") && p.contains("under 400 words"));
+        // With only the episode just left and no story before it, there's none to pick from.
+        let p = recap_prompt("『FAIRY TAIL』", 2, &window[1..], None, RecapOf::NextEpisode, "", "English");
+        assert!(!p.contains("For the story before"));
         let answer = "Sure:\n{\"arcs\": [{\"title\": \"The Lullaby flute\", \"from\": 3, \"to\": 4, \"summary\": \"Erigor steals Lullaby.\"}], \"last\": \"Natsu wins.\", \"moments\": [{\"episode\": 3, \"line\": 2, \"caption\": \"Erigor takes the flute.\"}, {\"episode\": 4, \"line\": 20}]}";
         let recap = parse_recap(answer).unwrap();
         assert_eq!(recap.arcs[0].title, "The Lullaby flute");
@@ -891,10 +1012,51 @@ mod tests {
         assert_eq!(recap.moments, vec![pick(3, 2, "Erigor takes the flute."), pick(4, 20, "")]);
         assert!(recap.text().contains("The Lullaby flute: Erigor steals Lullaby.") && recap.text().contains("Last time: Natsu wins."));
         assert_eq!(parse_recap("no json here"), None);
-        // Seven moments become six, keeping the first and the last.
-        let seven = "{\"last\": \"r\", \"moments\": [{\"episode\": 1, \"line\": 3}, {\"episode\": 1, \"line\": 40}, {\"episode\": 2, \"line\": 90}, {\"episode\": 2, \"line\": 150}, {\"episode\": 3, \"line\": 200}, {\"episode\": 3, \"line\": 260}, {\"episode\": 4, \"line\": 330}]}";
-        let kept: Vec<(i64, usize)> = parse_recap(seven).unwrap().moments.iter().map(|m| (m.episode, m.line)).collect();
-        assert_eq!(kept, vec![(1, 3), (1, 40), (2, 90), (3, 200), (3, 260), (4, 330)]);
+        // Eleven moments are junk, and become ten, keeping the first and the last.
+        let picks: Vec<String> = (0..11).map(|i| format!("{{\"episode\": {}, \"line\": {}}}", 1 + i / 3, i * 30)).collect();
+        let eleven = format!("{{\"last\": \"r\", \"moments\": [{}]}}", picks.join(", "));
+        let kept: Vec<(i64, usize)> = parse_recap(&eleven).unwrap().moments.iter().map(|m| (m.episode, m.line)).collect();
+        assert_eq!(kept, vec![(1, 0), (1, 30), (1, 60), (2, 90), (2, 120), (3, 180), (3, 210), (3, 240), (4, 270), (4, 300)]);
+    }
+
+    #[test]
+    fn one_kept_of_several_is_the_last() {
+        assert_eq!(at_most(vec![1, 2, 3], 1), vec![3]);
+        assert_eq!(at_most(vec![1, 2, 3], 0), Vec::<i32>::new());
+        assert_eq!(at_most(vec![1, 2, 3, 4, 5], 3), vec![1, 3, 5]);
+    }
+
+    #[test]
+    fn the_scenes_from_the_episode_you_left_follow_how_long_it_ran() {
+        // Lines every 20 seconds, up to `minutes` in.
+        let ran = |minutes: f64| -> Vec<Line> { (0..(minutes * 3.0) as usize).map(|i| line(i as f64 * 20.0 + 18.0, i as f64 * 20.0 + 20.0, "台詞")).collect() };
+        for (minutes, most) in [(2.0, 1), (6.7, 1), (8.0, 1), (12.0, 2), (24.0, 4), (45.0, 4)] {
+            assert_eq!(latest_most(&ran(minutes)), most, "{minutes} minutes");
+        }
+        assert_eq!(latest_most(&[]), 1);
+    }
+
+    #[test]
+    fn every_recap_keeps_to_the_subtitles_so_nothing_ahead_is_spoiled() {
+        let lines: Vec<Line> = (0..30).map(|i| line(i as f64 * 3.0, i as f64 * 3.0 + 2.0, &format!("台詞{i}"))).collect();
+        let window: Vec<(i64, &[Line])> = vec![(4, &lines[..])];
+        for of in [RecapOf::NextEpisode, RecapOf::EpisodeSoFar] {
+            let p = recap_prompt("『FAIRY TAIL』", 4, &window, None, of, "", "English");
+            assert!(p.contains("choose the scenes only by what’s in the subtitles: what you know of it from elsewhere could spoil what’s ahead"), "{of:?}");
+            assert!(p.contains("Use only the subtitles") && p.contains("don’t guess at what comes next"), "{of:?}");
+        }
+    }
+
+    #[test]
+    fn a_pick_from_an_episode_claude_didn_t_read_goes() {
+        let pick = |episode, line| Pick { episode, line, caption: String::new() };
+        let earlier = Recap { moments: vec![pick(2, 7)], ..Recap::default() };
+        let picks = vec![pick(1, 40), pick(2, 7), pick(2, 8), pick(5, 3), pick(6, 12), pick(7, 1)];
+        // Episodes 5 and 6 were read; Episode 2's line 7 was carried from the earlier recap.
+        let kept: Vec<(i64, usize)> = seen_picks(picks.clone(), &[5, 6], Some(&earlier)).iter().map(|p| (p.episode, p.line)).collect();
+        assert_eq!(kept, vec![(2, 7), (5, 3), (6, 12)]);
+        let kept: Vec<(i64, usize)> = seen_picks(picks, &[5, 6], None).iter().map(|p| (p.episode, p.line)).collect();
+        assert_eq!(kept, vec![(5, 3), (6, 12)]);
     }
 
     #[test]
@@ -918,13 +1080,23 @@ mod tests {
         let earlier = parse_recap("{\"arcs\": [{\"title\": \"Lucy joins\", \"from\": 1, \"to\": 4, \"summary\": \"Lucy joined Fairy Tail.\"}], \"last\": \"Natsu wins.\", \"moments\": [{\"episode\": 2, \"line\": 7, \"caption\": \"Lucy gets her mark.\"}]}").unwrap();
         // One episode since the kept recap: only its subtitles go, with the story before.
         let window: Vec<(i64, &[Line])> = vec![(5, &lines[..])];
-        let p = recap_prompt("『FAIRY TAIL』", 6, &window, Some(&earlier), false, "", "English");
+        let p = recap_prompt("『FAIRY TAIL』", 6, &window, Some(&earlier), RecapOf::NextEpisode, "", "English");
         assert!(p.contains("subtitles of Episode 5,") && !p.contains("<episode number=\"4\">"));
         assert!(p.contains("<earlier>\n{\"arcs\":[{\"title\":\"Lucy joins\",\"from\":1,\"to\":4"));
-        assert!(p.contains("Lucy gets her mark.") && p.contains("Carry on from the earlier story") && p.contains("keep the best of the earlier moments"));
+        assert!(p.contains("Lucy gets her mark.") && p.contains("Carry on from the earlier story"));
+        // The story before's scenes come from the earlier moments as they were, or from Episode 5: never made up.
+        assert!(p.contains("For the story before Episode 5: a scene for each of its arcs that the story isn’t done with when the episode ends"));
+        assert!(p.contains(
+            "Take them from the earlier moments, with the episode, line and caption they had, or from the subtitles above: never a line of an episode whose subtitles aren’t here."
+        ));
         // Part-way through Episode 5: the story so far in it, up to where it was left.
-        let p = recap_prompt("『FAIRY TAIL』", 5, &window, Some(&earlier), true, "", "English");
-        assert!(p.contains("coming back to Episode 5") && p.contains("what has happened so far in Episode 5") && p.contains("the last near where I stopped"));
+        let p = recap_prompt("『FAIRY TAIL』", 5, &window, Some(&earlier), RecapOf::EpisodeSoFar, "", "English");
+        assert!(p.contains("coming back to Episode 5") && p.contains("what has happened so far in Episode 5"));
+        assert!(p.contains("the scenes to play before I pick up again") && p.contains("From Episode 5 as far as I watched: a scene for each thing"));
+        assert!(p.contains("isn’t done with where I stopped") && p.contains("the last of them near where I stopped"));
+        assert!(p.contains("just the one near where I stopped if nothing else is open, and at most 1."));
+        assert!(p.contains("For the story before Episode 5: a scene for each of its arcs that the story isn’t done with where I stopped"));
+        assert!(!p.contains("when the episode ends") && !p.contains("before I watch"));
     }
 
     /// A show of `count` episodes in a scratch data folder, each with `lines` as its subtitles.
@@ -968,7 +1140,9 @@ mod tests {
 
     #[test]
     fn a_moment_that_runs_into_the_one_before_carries_on_from_it_instead_of_playing_its_lines_again() {
-        let lines: Vec<Line> = (0..30).map(|i| line(100.0 + i as f64 * 3.0, 102.0 + i as f64 * 3.0, &format!("台詞{i}"))).collect();
+        let mut lines: Vec<Line> = (0..30).map(|i| line(100.0 + i as f64 * 3.0, 102.0 + i as f64 * 3.0, &format!("台詞{i}"))).collect();
+        // The episode runs to 22 minutes, so it plays up to 4 scenes.
+        lines.push(line(1300.0, 1302.0, "またね"));
         let (backend, episodes, dir) = library("overlap", 2, &lines);
         // Lines 10 and 11 are a question and its answer, 3 s apart: line 10's moment already plays line 11.
         let pick = |line, caption: &str| Pick { episode: 1, line, caption: caption.into() };
@@ -999,8 +1173,13 @@ mod tests {
         assert_eq!((tenths(m[1].start), tenths(m[1].end), m[1].lines.len()), (292, 340, 2));
     }
 
+    /// Where each clip's first line starts, and whether it's from the episode you left.
+    fn played(view: &Value) -> Vec<(f64, bool)> {
+        view["moments"].as_array().unwrap().iter().map(|c| (c["lines"][0]["start"].as_f64().unwrap(), c["latest"].as_bool().unwrap())).collect()
+    }
+
     #[test]
-    fn saved_recaps_play_at_most_three_scenes_from_the_last_episode_in_order() {
+    fn saved_recaps_play_a_scene_for_every_six_minutes_of_the_last_episode_in_order() {
         let lines: Vec<Line> = (0..30).map(|i| line(100.0 + i as f64 * 12.0, 101.0 + i as f64 * 12.0, &format!("台詞{i}"))).collect();
         let (backend, episodes, dir) = library("pacing", 3, &lines);
         let pick = |episode, line| Pick { episode, line, caption: String::new() };
@@ -1009,14 +1188,52 @@ mod tests {
             moments: vec![pick(2, 25), pick(2, 5), pick(1, 10), pick(2, 20), pick(2, 15), pick(2, 10), pick(2, 26), pick(3, 12)],
             ..Recap::default()
         };
+        // Stopped 6.7 minutes into Episode 2: one scene from it, the last, after Episode 1's.
         let at = 402.0;
         let source = source(&backend, &episodes[1], Some(at)).unwrap();
         let view = recap_view(&backend, episodes[1].show_id, &source, &recap, Some(at)).unwrap();
-        let clips = view["moments"].as_array().unwrap();
-        let starts: Vec<_> = clips.iter().map(|c| c["lines"][0]["start"].as_f64().unwrap()).collect();
-        assert_eq!(starts, vec![220.0, 160.0, 280.0, 400.0]);
-        assert_eq!(clips[3]["end"], at);
+        assert_eq!(played(&view), vec![(220.0, false), (400.0, true)]);
+        assert_eq!(view["moments"][1]["end"], at);
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
+
+        // A 23-minute episode before: four of the six scenes picked from it, the first and last among them.
+        let lines: Vec<Line> = (0..30).map(|i| line(60.0 + i as f64 * 45.0, 61.0 + i as f64 * 45.0, &format!("台詞{i}"))).collect();
+        let (backend, episodes, dir) = library("pacing-long", 2, &lines);
+        let recap = Recap { last: "Last time.".into(), moments: [2, 8, 14, 20, 26, 29].map(|l| pick(1, l)).to_vec(), ..Recap::default() };
+        keep(&backend, &episodes[1], &recap);
+        let view = super::recap(&backend, episodes[1].id, false, None).unwrap();
+        assert_eq!(played(&view), [2, 14, 20, 29].map(|l| (60.0 + l as f64 * 45.0, true)).to_vec());
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn past_a_minute_and_a_quarter_the_story_before_gives_way_and_the_last_scene_always_plays() {
+        // Long lines, so each scene plays for 12.7 seconds, in a 23-minute episode.
+        let lines: Vec<Line> = (0..30).map(|i| line(60.0 + i as f64 * 45.0, 71.0 + i as f64 * 45.0, &format!("台詞{i}"))).collect();
+        let (backend, episodes, dir) = library("within", 4, &lines);
+        let pick = |episode, line| Pick { episode, line, caption: String::new() };
+        let at = |l: usize| 60.0 + l as f64 * 45.0;
+        // Three scenes from Episode 3, the one left (38 s), and three from before it (38 s more).
+        let recap = Recap { last: "Last time.".into(), moments: vec![pick(1, 5), pick(2, 10), pick(2, 20), pick(3, 3), pick(3, 20), pick(3, 28)], ..Recap::default() };
+        keep(&backend, &episodes[3], &recap);
+        let view = super::recap(&backend, episodes[3].id, false, None).unwrap();
+        assert_eq!(played(&view), vec![(at(5), false), (at(20), false), (at(3), true), (at(20), true), (at(28), true)]);
+        // Four from Episode 3 run past 45 seconds: the oldest in the middle goes.
+        let recap = Recap { moments: vec![pick(3, 3), pick(3, 10), pick(3, 20), pick(3, 28)], ..recap };
+        keep(&backend, &episodes[3], &recap);
+        let view = super::recap(&backend, episodes[3].id, false, None).unwrap();
+        assert_eq!(played(&view), vec![(at(3), true), (at(20), true), (at(28), true)]);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+        // However long the scenes, the last stays; the story before can go altogether.
+        let clip = |episode, start: f64| Clip { episode, start, end: start + 30.0, view: json!(start) };
+        let starts = |clips: Vec<Clip>| clips.iter().map(|c| c.start).collect::<Vec<_>>();
+        assert_eq!(starts(keep_within(vec![clip(3, 0.0), clip(3, 100.0), clip(3, 200.0)], 4, 45.0, 1)), vec![200.0]);
+        assert_eq!(starts(keep_within(vec![clip(1, 0.0), clip(2, 0.0)], 3, 20.0, 0)), Vec::<f64>::new());
+        // Clips that run into each other count once.
+        assert_eq!(length(&[clip(3, 0.0), clip(3, 20.0)]), 50.0);
+        assert_eq!(length(&[clip(2, 0.0), clip(3, 20.0)]), 60.0);
     }
 }

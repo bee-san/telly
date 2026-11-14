@@ -4,7 +4,10 @@
 //!
 //! Each `<id>:<number>` is an episode before it (Telly's id, for its subtitles
 //! file <id>.json, and its number), oldest first. EARLIER=<file> is the recap
-//! this printed for the episodes before them, to carry on from.
+//! this printed for the episodes before them, to carry on from. AT=<seconds>
+//! is for coming back part-way through the last of them (give its number as
+//! the episode number), as far as that. It prints how many scenes Claude
+//! picked from each episode, and how long each plays.
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -20,9 +23,14 @@ fn main() -> anyhow::Result<()> {
         let lines: Vec<Line> = serde_json::from_slice(&std::fs::read(dir.join(format!("{id}.json")))?)?;
         window.push((n.parse()?, lines));
     }
+    let at: Option<f64> = std::env::var("AT").ok().map(|s| s.parse()).transpose()?;
+    if let (Some(at), Some((_, lines))) = (at, window.last_mut()) {
+        lines.retain(|l| l.start < at);
+    }
+    let of = if at.is_some() { ask::RecapOf::EpisodeSoFar } else { ask::RecapOf::NextEpisode };
     let refs: Vec<(i64, &[Line])> = window.iter().map(|(n, l)| (*n, l.as_slice())).collect();
     let earlier: Option<ask::Recap> = std::env::var("EARLIER").ok().map(|file| anyhow::Ok(serde_json::from_slice(&std::fs::read(file)?)?)).transpose()?;
-    let prompt = ask::recap_prompt("『FAIRY TAIL』 (Fairy Tail)", number, &refs, earlier.as_ref(), false, "", "English");
+    let prompt = ask::recap_prompt("『FAIRY TAIL』 (Fairy Tail)", number, &refs, earlier.as_ref(), of, "", "English");
     eprintln!("prompt: {} characters", prompt.chars().count());
     let started = std::time::Instant::now();
     let model = std::env::var("MODEL").unwrap_or_else(|_| claude::DEFAULT_MODEL.into());
@@ -31,7 +39,19 @@ fn main() -> anyhow::Result<()> {
     let answer = claude::ask(&question, |_| { first.get_or_insert(started.elapsed().as_secs_f64()); }, &Arc::new(AtomicBool::new(false)))?;
     eprintln!("{model}: first text after {:.1}s, done in {:.1}s", first.unwrap_or(0.0), started.elapsed().as_secs_f64());
     match ask::parse_recap(&answer) {
-        Some(recap) => println!("{}", serde_json::to_string_pretty(&recap)?),
+        Some(recap) => {
+            println!("{}", serde_json::to_string_pretty(&recap)?);
+            if let Some((last, lines)) = window.last() {
+                eprintln!("Episode {last} plays at most {} scenes", ask::latest_most(lines));
+            }
+            for (n, lines) in &window {
+                let picked: Vec<usize> = recap.moments.iter().filter(|p| p.episode == *n).map(|p| p.line).collect();
+                let lengths: Vec<String> = ask::moments(lines, &picked).iter().map(|m| format!("{:.1}s", m.end - m.start)).collect();
+                eprintln!("Episode {n}: {} scenes, playing {}", picked.len(), lengths.join(", "));
+            }
+            let before = recap.moments.iter().filter(|p| !window.iter().any(|(n, _)| *n == p.episode)).count();
+            eprintln!("From the story before: {before} scenes");
+        }
         None => println!("couldn't read:\n{answer}"),
     }
     Ok(())

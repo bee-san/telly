@@ -8,7 +8,8 @@
 //!   folders that carry on from each other (discs, or a long run kept in
 //!   season folders) are one part, as before.
 //! - A folder of movies is a part for each file. A folder or loose file
-//!   named OVA, OAD or Specials (or Season 00) is a part.
+//!   named OVA, OAD or Specials (or Season 00) is a part. A loose file as
+//!   long as a film, beside season folders, is a movie whatever it's called.
 //! - A season folder named for a series off the line of sequels (a spin-off)
 //!   is that series.
 //! - Seasons are matched along AniList's sequels from the first: a folder
@@ -32,6 +33,9 @@ use serde::Serialize;
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::sync::OnceLock;
+
+/// How long a film runs at least: the hour from which one file AniList doesn't know is listed as a movie (backend.rs).
+const FILM_SECONDS: f64 = 3600.0;
 
 /// What a part holds, from its name.
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -192,6 +196,8 @@ pub fn split(scan: &Scan) -> Vec<Part> {
     let mut plain: Vec<ScannedFile> = Vec::new();
     for f in loose {
         let kind = match kind_of(&stem(&f.path)) {
+            // Beside season folders, a file as long as a film is one, whatever it's called ("Jujutsu Kaisen 0").
+            Kind::Season if root_kind == Kind::Season && !seasons.is_empty() && f.duration >= FILM_SECONDS => Kind::Movie,
             Kind::Season => root_kind,
             kind => kind,
         };
@@ -670,6 +676,36 @@ mod tests {
         let got: Vec<(i64, &str)> = parts.iter().map(|p| (p.anime.as_ref().map_or(0, |a| a.id), p.title.as_str())).collect();
         assert_eq!(got, [(1, ""), (2, ""), (3, ""), (4, ""), (0, "Something Else Entirely"), (0, "Another Film")]);
         assert_eq!(parts.iter().map(episodes).collect::<Vec<_>>(), [10, 10, 1, 12, 1, 1]);
+    }
+
+    #[test]
+    fn a_film_lying_loose_beside_the_season_folders_is_a_movie_not_a_season() {
+        // Jujutsu Kaisen: the film is the first season's prequel, and its file is named for it alone.
+        let graph = Graph::new(vec![
+            entry(1, "Jujutsu Kaisen", "TV", 24, 20201003, &[("PREQUEL", 4), ("SEQUEL", 2)]),
+            entry(2, "Jujutsu Kaisen 2nd Season", "TV", 23, 20230706, &[("PREQUEL", 1), ("SEQUEL", 3)]),
+            entry(3, "Jujutsu Kaisen: Shimetsu Kaiyuu", "TV", 12, 20260108, &[("PREQUEL", 2)]),
+            entry(4, "Jujutsu Kaisen 0", "MOVIE", 1, 20211224, &[("SEQUEL", 1)]),
+        ]);
+        let mut files = season("Season 1", "S01", 24);
+        files.extend(season("Season 2", "S02", 23));
+        files.extend(season("Season 3", "S03", 12));
+        files.push(file("Jujutsu Kaisen 0.mkv", 105.0));
+        let base = graph.entry(1).unwrap().anime.clone();
+        let parts = assign(split(&scanned(files)), &graph, &base);
+        assert_eq!(
+            summary(&parts),
+            [
+                ("Season 1".to_string(), 1, (1..=24).collect::<Vec<i64>>()),
+                // Listed where it came out, between the first two seasons.
+                ("Jujutsu Kaisen 0.mkv".to_string(), 4, vec![1]),
+                ("Season 2".to_string(), 2, (1..=23).collect()),
+                ("Season 3".to_string(), 3, (1..=12).collect()),
+            ]
+        );
+        assert_eq!(parts[1].kind, Kind::Movie);
+        // Without season folders, long files lying together are one show's episodes, as before.
+        assert_eq!(split(&scanned(vec![file("Part 1.mkv", 100.0), file("Part 2.mkv", 100.0)])).len(), 1);
     }
 
     #[test]

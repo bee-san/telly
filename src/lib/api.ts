@@ -648,6 +648,8 @@ export interface Pick extends Anime {
   description: string;
   /** The shows it's recommended from, the one that counts most first. */
   from: { title: string; votes: number }[];
+  /** The anime it's another season or movie of, one you have ("" for a pick people recommend). */
+  moreOf: string;
 }
 
 export interface Recommended {

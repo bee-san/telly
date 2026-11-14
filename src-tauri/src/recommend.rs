@@ -4,10 +4,12 @@
 //! each show by its AniList ID, weighs each show's votes by how much you liked
 //! it (your score and status on your list, or else how much of it you've
 //! watched) and adds them up, and leaves out what you have or have started.
+//! The seasons and movies you don't have of an anime you do are picks too,
+//! by how much you liked the parts you have (series.rs has which they are).
 
 use crate::anilist::{self, Anime, Listed};
 use crate::backend::Backend;
-use crate::series::SAME_SERIES;
+use crate::series::{Graph, SAME_SERIES};
 use crate::util::now_ms;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -56,6 +58,8 @@ pub struct Owned {
     pub watched: usize,
     /// When an episode of it was last watched (unix ms).
     pub last_watched: Option<i64>,
+    /// How many episodes AniList's entry has, when it says.
+    pub entry_episodes: Option<i64>,
 }
 
 /// A show in the library or on your list that a pick is recommended from.
@@ -76,6 +80,8 @@ pub struct Pick {
     pub description: String,
     /// The shows it's recommended from, the one that counts most first.
     pub from: Vec<From>,
+    /// The anime it's another season or movie of, one you have ("" for a pick people recommend).
+    pub more_of: String,
     #[serde(skip)]
     score: f64,
 }
@@ -222,9 +228,17 @@ fn list_liking(entry: &Listed, average_score: f64) -> Option<f64> {
 /// famous show's, and a pick liked from many shows still beats one show's
 /// favourite. A show you dropped or scored low says against its picks, and a
 /// pick it says more against than the rest say for is left out. Also left
-/// out: what's in the library or on your list, the rest of their series, and
-/// what's hidden.
-pub fn rank(owned: &[Owned], listed: &[Listed], sources: &[Source], hidden: &HashSet<i64>, now: i64) -> Vec<Pick> {
+/// out: what's in the library or on your list, and what's hidden.
+///
+/// The rest of an anime you have is picked too (`graph` has which entries
+/// those are): its seasons and movies you don't have, each as that anime's
+/// own favourite, with the whole say of the part you liked most. Of several,
+/// the earliest out has that say, the next half of it, the third a third, so
+/// what comes next leads and thirty films of one anime don't fill the page.
+/// Recap films, specials, OVAs and shorts aren't picked. Nor is any of an
+/// anime with a show that holds more episodes than its entry has: seasons
+/// added as one show, so what looks missing may be in it.
+pub fn rank(owned: &[Owned], listed: &[Listed], sources: &[Source], hidden: &HashSet<i64>, now: i64, graph: &Graph) -> Vec<Pick> {
     // Each show's episodes, those watched, when it was last watched and its title, across the library's copies of it.
     let mut watching: HashMap<i64, (usize, usize, Option<i64>, &str)> = HashMap::new();
     for o in owned {
@@ -249,6 +263,12 @@ pub fn rank(owned: &[Owned], listed: &[Listed], sources: &[Source], hidden: &Has
             let (a, b) = (series_of(&mut series, s.id), series_of(&mut series, r));
             series.insert(b, a);
         }
+    }
+    // Entries tied through others you don't have are one series too: ten films, each of a TV series that isn't here.
+    let yours: HashSet<i64> = shows.keys().filter_map(|&id| graph.root(id)).collect();
+    for (id, root) in graph.roots().filter(|(_, root)| yours.contains(root)) {
+        let (a, b) = (series_of(&mut series, root), series_of(&mut series, id));
+        series.insert(b, a);
     }
     // For each pick, each series' say, and the votes and title of the entry that gives it.
     let mut says: HashMap<i64, (&Like, HashMap<i64, (f64, i64, &str)>)> = HashMap::new();
@@ -283,10 +303,38 @@ pub fn rank(owned: &[Owned], listed: &[Listed], sources: &[Source], hidden: &Has
                 score: from.iter().map(|f| f.0).sum(),
                 // Only the shows that say for it: it isn't recommended from one you dropped.
                 from: from.into_iter().filter(|f| f.0 > 0.0).map(|f| f.1).collect(),
+                more_of: String::new(),
             }
         })
         .filter(|p| p.score > 0.0)
         .collect();
+    // The seasons and movies you don't have of each anime you do.
+    let holds_more: HashSet<i64> = owned.iter().filter(|o| o.entry_episodes.is_some_and(|e| o.episodes as i64 > e)).filter_map(|o| graph.root(o.anilist_id)).collect();
+    for &root in yours.iter().filter(|root| !holds_more.contains(root)) {
+        let parts = graph.parts(root);
+        // The part of it you liked most says how much the rest is worth to you.
+        let Some((liking, title)) = parts.iter().filter_map(|e| shows.get(&e.anime.id)).max_by(|a, b| a.0.total_cmp(&b.0)).copied() else { continue };
+        if liking <= 0.0 {
+            continue;
+        }
+        let retold = graph.retellings(root);
+        let missing = parts.iter().filter(|e| {
+            let whole = matches!(e.anime.format.as_str(), "TV" | "ONA" | "MOVIE") && e.minutes.is_none_or(|m| m >= 15);
+            whole && e.status != "NOT_YET_RELEASED" && !shows.contains_key(&e.anime.id) && !hidden.contains(&e.anime.id) && !retold.contains(&e.anime.id)
+        });
+        let name = graph.entry(root).map_or_else(|| title.to_string(), |e| e.anime.short_title());
+        for (nth, e) in missing.enumerate() {
+            picks.push(Pick {
+                title: e.anime.short_title(),
+                anime: e.anime.clone(),
+                genres: e.genres.clone(),
+                description: e.description.clone(),
+                from: vec![From { title: title.to_string(), votes: 0 }],
+                more_of: name.clone(),
+                score: liking / (nth + 1) as f64,
+            });
+        }
+    }
     picks.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.anime.id.cmp(&b.anime.id)));
     picks
 }
@@ -324,6 +372,7 @@ pub fn view(backend: &Backend) -> Result<Value> {
                 episodes: episodes.len(),
                 watched: episodes.iter().filter(|e| e.watched_at.is_some()).count(),
                 last_watched: episodes.iter().filter_map(|e| e.watched_at).max(),
+                entry_episodes: show.anilist_episodes,
             });
         }
     }
@@ -335,7 +384,7 @@ pub fn view(backend: &Backend) -> Result<Value> {
     let sources = if ids.is_empty() { Vec::new() } else { sources_for(backend, &ids)? };
     let mut left_out = hidden(backend);
     left_out.extend(listed.iter().map(|l| l.id));
-    Ok(json!({ "shows": ids.len(), "picks": rank(&owned, &listed, &sources, &left_out, now_ms()) }))
+    Ok(json!({ "shows": ids.len(), "picks": rank(&owned, &listed, &sources, &left_out, now_ms(), &crate::series::graph(backend)) }))
 }
 
 #[cfg(test)]
@@ -347,7 +396,7 @@ mod tests {
 
     /// A show in the library, its last episode watched today when any is.
     fn owned(anilist_id: i64, title: &str, episodes: usize, watched: usize) -> Owned {
-        Owned { anilist_id, title: title.into(), episodes, watched, last_watched: (watched > 0).then_some(NOW) }
+        Owned { anilist_id, title: title.into(), episodes, watched, last_watched: (watched > 0).then_some(NOW), entry_episodes: None }
     }
 
     fn source(id: i64, related: &[i64], likes: &[(i64, i64)]) -> Source {
@@ -364,10 +413,31 @@ mod tests {
     }
 
     #[test]
+    fn the_seasons_and_movies_you_don_t_have_of_an_anime_you_do_are_picks() {
+        let graph = Graph::new(crate::series::tests::overlord());
+        // Overlord's three seasons, the first two watched; another show recommends something as strongly as a show can.
+        let library = [owned(20832, "Overlord", 13, 13), owned(98437, "Overlord II", 13, 13), owned(101474, "Overlord III", 13, 0), owned(1, "Clannad", 23, 23)];
+        let answers = [source(20832, &[98437], &[(133844, 500), (300, 5)]), source(1, &[], &[(200, 900)])];
+        let picks = rank(&library, &[], &answers, &HashSet::new(), NOW, &graph);
+        // The next season leads, then the film after it at half its say; the recap films, the OVA and the specials aren't picked,
+        // and AniList's users recommending the fourth season from the first doesn't make it a pick twice.
+        assert_eq!(ids(&picks), [133844, 200, 133845, 300]);
+        assert_eq!((picks[0].more_of.as_str(), picks[0].from[0].title.as_str(), picks[1].more_of.as_str()), ("Overlord", "Overlord II", ""));
+        assert!((picks[0].score - 2.0).abs() < 1e-9 && (picks[2].score - 1.0).abs() < 1e-9);
+        // Hidden, it's left out, and the film takes its place; an anime you dropped offers nothing more.
+        assert_eq!(ids(&rank(&library, &[], &answers, &HashSet::from([133844]), NOW, &graph))[..2], [133845, 200]);
+        // Two seasons added as one show: the second may be in it, so nothing more of the anime is offered.
+        let one_show = [Owned { entry_episodes: Some(13), ..owned(20832, "Overlord", 26, 26) }];
+        assert_eq!(ids(&rank(&one_show, &[], &[], &HashSet::new(), NOW, &graph)), [0i64; 0]);
+        let dropped = [Listed { id: 20832, title: "Overlord".into(), status: "DROPPED".into(), score: 0.0, progress: 3, episodes: Some(13) }];
+        assert_eq!(ids(&rank(&[], &dropped, &[], &HashSet::new(), NOW, &graph)), [0i64; 0]);
+    }
+
+    #[test]
     fn many_shows_beat_one_well_known_show() {
         let library = [owned(1, "Your Name.", 1, 0), owned(2, "Clannad", 23, 0), owned(3, "Angel Beats!", 13, 0), owned(4, "K-ON!", 13, 0)];
         let answers = [source(1, &[], &[(100, 6000), (101, 150)]), source(2, &[], &[(101, 120)]), source(3, &[], &[(101, 90)]), source(4, &[], &[(101, 60)])];
-        let picks = rank(&library, &[], &answers, &HashSet::new(), NOW);
+        let picks = rank(&library, &[], &answers, &HashSet::new(), NOW, &Graph::default());
         assert_eq!(ids(&picks), [101, 100]);
         // 150 is a sliver of Your Name.'s votes, and each other show's only pick.
         let from: Vec<(&str, i64)> = picks[0].from.iter().map(|f| (f.title.as_str(), f.votes)).collect();
@@ -379,7 +449,7 @@ mod tests {
         let library = [owned(1, "Famous", 12, 0), owned(2, "Little known", 12, 0)];
         let answers = [source(1, &[], &[(100, 6000), (102, 5000), (101, 4000)]), source(2, &[], &[(200, 40), (201, 20)])];
         // 40 of 60 votes is about as big a share as 6,000 of 15,000, and a bigger one than 5,000 of them.
-        assert_eq!(ids(&rank(&library, &[], &answers, &HashSet::new(), NOW)), [100, 200, 102, 101, 201]);
+        assert_eq!(ids(&rank(&library, &[], &answers, &HashSet::new(), NOW, &Graph::default())), [100, 200, 102, 101, 201]);
     }
 
     #[test]
@@ -393,7 +463,7 @@ mod tests {
             source(4, &[3], &[(100, 200)]),
             source(9, &[], &[(200, 500), (201, 400), (1, 40)]),
         ];
-        let picks = rank(&library, &[], &answers, &HashSet::new(), NOW);
+        let picks = rank(&library, &[], &answers, &HashSet::new(), NOW, &Graph::default());
         assert_eq!(ids(&picks), [100, 200, 201, 5]);
         // Its say is Season 2's alone: 300 of its 300 votes, as Season 3's 80 aren't a recommendation.
         assert_eq!(picks[0].from, [From { title: "Titan Season 2".into(), votes: 300 }]);
@@ -409,9 +479,9 @@ mod tests {
         let left = Owned { last_watched: Some(NOW - 31 * DAY), ..owned(3, "Left", 12, 3) };
         let library = [owned(1, "Seen", 12, 12), owned(2, "Not started", 12, 0), left];
         let answers = [source(1, &[], &[(100, 50)]), source(2, &[], &[(200, 300)]), source(3, &[], &[(300, 300)])];
-        assert_eq!(ids(&rank(&library, &[], &answers, &HashSet::new(), NOW)), [100, 200, 300]);
+        assert_eq!(ids(&rank(&library, &[], &answers, &HashSet::new(), NOW, &Graph::default())), [100, 200, 300]);
         let unwatched = [owned(1, "Seen", 12, 0), owned(2, "Not started", 12, 0)];
-        assert_eq!(ids(&rank(&unwatched, &[], &answers, &HashSet::new(), NOW)), [200, 100]);
+        assert_eq!(ids(&rank(&unwatched, &[], &answers, &HashSet::new(), NOW, &Graph::default())), [200, 100]);
     }
 
     fn listed(id: i64, title: &str, status: &str, score: f64) -> Listed {
@@ -436,7 +506,7 @@ mod tests {
         // Nothing in the library: the picks come from the list alone.
         let list = [listed(1, "Loved", "COMPLETED", 90.0), listed(2, "Fine", "COMPLETED", 60.0), listed(3, "Dropped", "DROPPED", 0.0)];
         let answers = [source(1, &[], &[(100, 50)]), source(2, &[], &[(200, 100), (300, 100)]), source(3, &[], &[(300, 300), (400, 300), (2, 50)])];
-        let picks = rank(&[], &list, &answers, &HashSet::new(), NOW);
+        let picks = rank(&[], &list, &answers, &HashSet::new(), NOW, &Graph::default());
         // Your average is 75: Loved counts 3.5, Fine 0.5 and Dropped -1. 300 has
         // Fine's say for it but more of Dropped's against, and 400 only
         // Dropped's: both are left out.
@@ -445,7 +515,7 @@ mod tests {
         // A show in the library and on your list counts as the list says (2, at
         // your average score), by the library's name for it.
         let library = [owned(1, "Loved (in the library)", 12, 0)];
-        let picks = rank(&library, &list[..1], &answers, &HashSet::new(), NOW);
+        let picks = rank(&library, &list[..1], &answers, &HashSet::new(), NOW, &Graph::default());
         assert_eq!(picks[0].from, [From { title: "Loved (in the library)".into(), votes: 50 }]);
         assert!((picks[0].score - 2.0 * (50.0 / (50.0 + FEW_VOTES)).sqrt()).abs() < 1e-9);
     }
@@ -454,7 +524,7 @@ mod tests {
     fn leaves_out_hidden_and_voted_down_picks_and_shows_since_removed() {
         let library = [owned(1, "Death Note", 37, 0)];
         let answers = [source(1, &[], &[(100, 90), (101, 80), (102, -3), (103, 0)]), source(7, &[], &[(104, 999)])];
-        assert_eq!(ids(&rank(&library, &[], &answers, &HashSet::from([100]), NOW)), [101]);
+        assert_eq!(ids(&rank(&library, &[], &answers, &HashSet::from([100]), NOW, &Graph::default())), [101]);
     }
 
     #[test]

@@ -41,6 +41,9 @@ pub struct Entry {
     /// FINISHED, RELEASING, NOT_YET_RELEASED…
     #[serde(default)]
     pub status: String,
+    /// How long an episode runs, in minutes.
+    #[serde(default)]
+    pub minutes: Option<i64>,
     #[serde(default)]
     pub genres: Vec<String>,
     #[serde(default)]
@@ -134,6 +137,11 @@ impl Graph {
         let mut parts: Vec<&Entry> = self.entries.values().filter(|e| self.roots.get(&e.anime.id) == Some(&root)).collect();
         parts.sort_by_key(|e| (if e.start > 0 { e.start } else { i64::MAX }, e.anime.id));
         parts
+    }
+
+    /// The entries of the anime called after `root` that retell others of it: recap films and compilations.
+    pub fn retellings(&self, root: i64) -> HashSet<i64> {
+        self.parts(root).iter().flat_map(|e| e.links.iter()).filter(|(relation, _)| matches!(relation.as_str(), "SUMMARY" | "COMPILATION")).map(|(_, to)| *to).collect()
     }
 
     /// The entry that carries on from `id`: a show can go on in more than one
@@ -286,7 +294,7 @@ pub fn shows_of(backend: &Backend, key: i64) -> Result<Vec<Show>> {
 fn query() -> String {
     format!(
         "query ($ids: [Int], $page: Int) {{ Page(page: $page, perPage: 50) {{ pageInfo {{ hasNextPage }}
-  media(id_in: $ids, type: ANIME) {{ {} startDate {{ year month day }} genres description(asHtml: false)
+  media(id_in: $ids, type: ANIME) {{ {} duration startDate {{ year month day }} genres description(asHtml: false)
     relations {{ edges {{ relationType(version: 2) node {{ id type }} }} }} }} }} }}",
         anilist::FIELDS
     )
@@ -306,6 +314,7 @@ fn entry_from(media: &Value, now: i64) -> Option<Entry> {
         anime: Anime::from_api(media)?,
         start: if date("year") > 0 { date("year") * 10000 + date("month") * 100 + date("day") } else { 0 },
         status: media.get("status").and_then(Value::as_str).unwrap_or("").to_string(),
+        minutes: media.get("duration").and_then(Value::as_i64),
         genres: media.get("genres").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect(),
         description: media.get("description").and_then(Value::as_str).unwrap_or("").to_string(),
         links,

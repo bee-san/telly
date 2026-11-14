@@ -92,6 +92,7 @@
 
   /** "Like Your Name. and 10 more". */
   function why(p: Pick): string {
+    if (p.moreOf) return `More of ${p.moreOf}`;
     const [first, second] = p.from;
     if (!second) return `Like ${first.title}`;
     if (p.from.length === 2) return `Like ${first.title} and ${second.title}`;
@@ -155,12 +156,17 @@
         </div>
       </div>
       <div class="pk-from">
-        <h4>Recommended from</h4>
-        <ul>
-          {#each p.from as f, i (i)}
-            <li><span title={f.title}>{f.title}</span><span>{f.votes.toLocaleString("en-GB")} {f.votes === 1 ? "vote" : "votes"}</span></li>
-          {/each}
-        </ul>
+        {#if p.moreOf}
+          <h4>More of {p.moreOf}</h4>
+          <p class="pk-more">A {p.format === "MOVIE" ? "movie" : "season"} of it you don’t have, placed by how much you liked {p.from[0]?.title ?? p.moreOf}.</p>
+        {:else}
+          <h4>Recommended from</h4>
+          <ul>
+            {#each p.from as f, i (i)}
+              <li><span title={f.title}>{f.title}</span><span>{f.votes.toLocaleString("en-GB")} {f.votes === 1 ? "vote" : "votes"}</span></li>
+            {/each}
+          </ul>
+        {/if}
       </div>
       <div class="sheet-foot">
         <button type="button" class="btn quiet" onclick={() => hide(p)}>Hide</button>
@@ -200,6 +206,7 @@
   .pk-from { display: grid; gap: 6px; }
   .pk-from h4 { font: 600 12.5px/1.2 var(--font-ui); color: var(--ink-2); }
   .pk-from ul { list-style: none; padding: 0; font-size: 13.5px; line-height: 1.4; }
+  .pk-more { font-size: 13.5px; color: var(--ink-2); }
   .pk-from li { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; padding: 7px 0; border-top: 1px solid var(--rule); }
   .pk-from li span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pk-from li span:last-child { flex: none; color: var(--ink-2); font-variant-numeric: tabular-nums; }

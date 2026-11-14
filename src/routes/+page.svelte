@@ -290,6 +290,8 @@
         {#each watching as a (a.id)}
           {@const st = animeStatus(a)}
           {@const s = a.parts[0]}
+          {@const n = a.current.next}
+          {@const part = n?.resume && n.duration > 0 ? Math.min(1, n.position / n.duration) : 0}
           <div class="wcard card" role="presentation" onpointerenter={() => ahead(a)} oncontextmenu={(e) => context(e, a)}>
             <button type="button" class="hit" onclick={() => open(a)} aria-label="{a.title}. {st.text}. {st.sub}" title={a.title}></button>
             <span class="wcv">
@@ -301,7 +303,7 @@
               <span class="w-en">{a.native ? a.title : ""}</span>
               <span class="w-next">{st.text}</span>
               <span class="w-sub">{st.sub}</span>
-              <span class="bar"><i style:width="{Math.round((100 * a.current.watched) / Math.max(1, a.current.episodes))}%"></i></span>
+              <span class="bar"><i style:width="{Math.round((100 * (a.current.watched + part)) / Math.max(1, a.current.episodes))}%"></i></span>
             </span>
           </div>
         {/each}

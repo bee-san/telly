@@ -1,13 +1,14 @@
 # AGENTS.md
 
-These instructions apply to the whole repository. The README says what Telly does; this file says how to work on it.
+These instructions apply to the whole repository. The manual (`docs/manual.md`) says what Telly does; this file says how to work on it.
 
 ## Working agreement
 
 - Commit to `main` and push. Telly has no pull requests or review gate: every change is a commit on `main`, one coherent change each.
 - Other Claude Code sessions work on this checkout at the same time and keep their worktrees in `.claude/worktrees/`. Make your change in a git worktree of your own off `origin/main`, not in the main checkout, and fetch before you push: if `main` has moved, rebase onto it and check again.
 - Make the smallest change that does what was asked and fits the code around it. Leave refactors, renames and reformatting out of it.
-- When visible behaviour changes, change the README's description of it in the same commit. The README describes what Telly does for the viewer, so keep it to that.
+- When visible behaviour changes, change the manual's description of it (`docs/manual.md`) in the same commit. The manual describes what Telly does for the viewer, so keep it to that.
+- The README is Telly's front page: a pitch, pictures and a line or two for each feature, with the details in the manual. Change it only when a feature it shows changes or a new one is worth showing there, and keep it short.
 - Release only when asked (see Releases).
 
 ## Commit messages
@@ -18,7 +19,7 @@ These instructions apply to the whole repository. The README says what Telly doe
 
 ## Writing
 
-Telly's README, comments and UI text are plain English, written to the person using it ("your rips", "the episode you left"). Keep to that:
+Telly's README, manual, comments and UI text are plain English, written to the person using it ("your rips", "the episode you left"). Keep to that:
 
 - A doc comment says in a sentence what a thing is or does (`/** Whether moment i + 1 carries straight on from moment i, in the same episode. */`), not how it's built.
 - Each backend module opens with a `//!` paragraph saying what it's for. Keep it true when the module changes.
@@ -33,7 +34,7 @@ Telly's README, comments and UI text are plain English, written to the person us
 
 ## What Telly must keep
 
-- Your rips are never moved or changed. What Telly makes goes in its own folders (the README's "Where things go").
+- Your rips are never moved or changed. What Telly makes goes in its own folders (the manual's "Where things go").
 - Tidepool's log counts what you watched and never keeps the text.
 - Previously on tells the story only from the subtitles of what's been watched, never from what Claude knows of the show elsewhere, so nothing ahead is spoiled. Keep that instruction in its prompt (`recap_prompt` in `ask.rs`).
 

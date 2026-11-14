@@ -2,12 +2,17 @@
 //! release on nyaa.si (nyaa.rs), and Telly downloads it, carrying on from
 //! where it was whenever the connection drops, and when Telly opens again.
 //!
-//! Each download's files go straight into a show's folder: the folder of a
-//! show in the library, or, for a show that isn't, a folder named for it in
-//! the downloads folder. A file that isn't finished counts as unreadable when
-//! Telly looks in a folder, so no episode is added half there. When a file
-//! finishes in a show's folder, Telly looks in the folder at once; a new
-//! show's folder is offered in the Library to add.
+//! Each download's files go straight into a show's folder. For a show in the
+//! library, that's the folder its rips are in. For one that isn't, you say
+//! which show it is before it starts (`plan`: the anime its name finds on
+//! AniList, or another you choose), and it goes to its place in your library
+//! folders (library.rs), or, with none chosen for its kind, a folder named
+//! for it in the downloads folder. A file that isn't finished counts as
+//! unreadable when Telly looks in a folder, so no episode is added half
+//! there. When a file finishes in a show's folder, Telly looks in the folder
+//! at once. A new show is added to the library when its first file finishes,
+//! as the show you said it was; a release you didn't say, or one of several
+//! parts (a folder for each season), is offered in the Library to add.
 //!
 //! Telly fetches the release's .torrent file from nyaa, asking again when the
 //! connection drops, and falls back to the magnet link (whose list of files
@@ -19,13 +24,17 @@
 //! A finished download is shared while Telly is open, until it's removed in
 //! Processing; removing one leaves its files.
 //!
-//! Settings: downloads.folder (where new shows go; Downloads\Telly in your
-//! home folder unless set), downloads.used (Telly has downloaded something,
-//! so it starts the client when it opens) and downloads.unfinished (the info
-//! hashes of the downloads that weren't finished at the last look).
+//! Settings: downloads.folder (where new shows go when no library folder
+//! takes them; Downloads\Telly in your home folder unless set),
+//! downloads.used (Telly has downloaded something, so it starts the client
+//! when it opens), downloads.unfinished (the info hashes of the downloads
+//! that weren't finished at the last look) and downloads.entries (the AniList
+//! entry of each new show's download, by its folder, until it's added).
 
+use crate::anilist::{self, Anime};
 use crate::backend::Backend;
 use crate::util::safe_file_name;
+use crate::{library, scan, series};
 use anyhow::{anyhow, Context, Result};
 use librqbit::dht::DhtPersistenceConfig;
 use librqbit::{
@@ -49,6 +58,10 @@ pub struct Downloads {
     /// Releases added by magnet link, whose files are still being asked for.
     finding: Mutex<Vec<Finding>>,
     seen: Mutex<Seen>,
+    /// The .torrent file last fetched and its address: a release's sheet reads it, then its download starts from it.
+    fetched: Mutex<Option<(String, Vec<u8>)>>,
+    /// The folders of new shows being added to the library now.
+    adding: Mutex<HashSet<String>>,
     /// Wakes the watcher to look again at once.
     wake: (Mutex<bool>, Condvar),
 }
@@ -109,6 +122,19 @@ pub struct Offer {
     pub name: String,
     /// Whether some of it is still downloading.
     pub downloading: bool,
+}
+
+/// Where a release's files would go.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Destination {
+    pub folder: String,
+    /// The show in the library it's more of.
+    pub show: Option<i64>,
+    /// Whether that's its place in a library folder.
+    pub sorted: bool,
+    /// Whether it joins the library by itself as it finishes: a show's episodes, or the one new show you said it is.
+    pub joins: bool,
 }
 
 /// How the downloads are going, all together, for the title bar.
@@ -267,22 +293,146 @@ fn session(backend: &Backend) -> Result<Arc<Session>> {
     Ok(session)
 }
 
-/// Hands a release to the client: into `show`'s folder, or a new show's
-/// folder named from `title`. `torrent` is its .torrent file's address.
+/// A release's .torrent file, kept from when its sheet asked where it would go.
+fn torrent_bytes(backend: &Backend, url: &str) -> Result<Vec<u8>> {
+    let kept = backend.downloads.fetched.lock().ok().and_then(|f| f.as_ref().filter(|(from, _)| from == url).map(|(_, bytes)| bytes.clone()));
+    if let Some(bytes) = kept {
+        return Ok(bytes);
+    }
+    let bytes = crate::nyaa::torrent_file(url)?;
+    if let Ok(mut fetched) = backend.downloads.fetched.lock() {
+        *fetched = Some((url.to_string(), bytes.clone()));
+    }
+    Ok(bytes)
+}
+
+/// The files a .torrent holds, each as its path below the release's folder ("Season 1/01.mkv").
+fn files_in(torrent: &[u8]) -> Result<Vec<String>> {
+    let meta = librqbit::torrent_from_bytes(torrent).map_err(|e| anyhow!("That .torrent file can’t be read ({e:?})"))?;
+    let info = meta.info.data.validate().map_err(|e| anyhow!("That .torrent file can’t be read ({e:?})"))?;
+    Ok(info.iter_file_details().filter(|f| !f.attrs().padding).map(|f| f.filename.to_vec().join("/")).collect())
+}
+
+/// A release's videos that aren't extras.
+fn episodes_in(files: &[String]) -> impl Iterator<Item = &String> {
+    files.iter().filter(|f| scan::is_video(Path::new(f)) && scan::extra_reason(f).is_none())
+}
+
+/// Whether a release is more than one show: its videos, extras apart, are in
+/// more than one folder (a folder for each season, one of movies).
+fn several_parts(files: &[String]) -> bool {
+    let folders: HashSet<String> = episodes_in(files).map(|f| f.rsplit_once('/').map_or("", |(folder, _)| folder).to_lowercase()).collect();
+    folders.len() > 1
+}
+
+/// The AniList entry each new show's download is, by its folder, until the show is added.
+fn entries(backend: &Backend) -> Vec<(String, i64)> {
+    let kept: HashMap<String, i64> = backend.db.setting("downloads.entries").ok().flatten().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+    kept.into_iter().collect()
+}
+
+/// Says which AniList entry the download in `folder` is, or (None) that it's been added or isn't one show.
+fn set_entry(backend: &Backend, folder: &str, anilist: Option<i64>) -> Result<()> {
+    let mut kept: HashMap<String, i64> = entries(backend).into_iter().filter(|(f, _)| key(f) != key(folder)).collect();
+    if let Some(id) = anilist {
+        kept.insert(folder.to_string(), id);
+    }
+    backend.db.set_setting("downloads.entries", &json!(kept))
+}
+
+/// Whether `folder` is there with something in it.
+fn in_use(folder: &str) -> bool {
+    std::fs::read_dir(folder).is_ok_and(|mut entries| entries.next().is_some())
+}
+
+/// Where a release goes: the folder `show`'s rips are in (or those of the
+/// show in the library that is `anilist`), else `anilist`'s place in your
+/// library folders, else a folder named from `title` in the downloads
+/// folder. `files` are the release's, when its .torrent file could be read.
+fn destination(backend: &Backend, title: &str, files: Option<&[String]>, show: Option<i64>, anilist: Option<i64>) -> Result<Destination> {
+    let shows = backend.db.shows()?;
+    let whole = files.is_some_and(several_parts);
+    let show = match show {
+        Some(id) => Some(shows.iter().find(|s| s.id == id).ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?),
+        // A release of several parts isn't more of the one you have.
+        None if whole => None,
+        None => anilist.and_then(|id| shows.iter().find(|s| s.anilist_id == Some(id))),
+    };
+    if let Some(show) = show {
+        let rips: Vec<String> = backend.db.episodes(show.id)?.into_iter().map(|e| e.path).collect();
+        return Ok(Destination { folder: library::rips_folder(&show.folder, &rips), show: Some(show.id), sorted: false, joins: true });
+    }
+    let unsorted = downloads_folder(backend).join(folder_name(title)).to_string_lossy().into_owned();
+    let Some(id) = anilist else { return Ok(Destination { folder: unsorted, show: None, sorted: false, joins: false }) };
+    let graph = series::around(backend, id)?;
+    let (series, movies) = (backend.db.setting_str("library.series"), backend.db.setting_str("library.movies"));
+    // A season's folder with something in it is another show's, unless it's this entry's own download so far.
+    let waiting = entries(backend);
+    let taken = |folder: &str| in_use(folder) && !waiting.iter().any(|(f, entry)| key(f) == key(folder) && *entry == id);
+    let placed = library::place(series.trim(), movies.trim(), &graph, &shows, id, whole, taken);
+    Ok(Destination { sorted: placed.is_some(), folder: placed.unwrap_or(unsorted), show: None, joins: !whole })
+}
+
+/// The anime a release's name finds on AniList, the likeliest first. `count`
+/// is how many episodes the release holds, when that's known.
+fn find(title: &str, count: usize) -> Result<Vec<Anime>> {
+    let name = folder_name(title);
+    // "(Season 02)" and "S02E06" are cut from the name, but say which season is meant.
+    let season = anilist::season(title).or_else(|| scan::episode_number(title).and_then(|(season, _)| season)).filter(|s| *s > 1);
+    let asked = match season {
+        Some(s) if anilist::season(&name).is_none() => format!("{name} Season {s}"),
+        _ => name.clone(),
+    };
+    let mut found = anilist::search_loosely(&name)?;
+    anilist::rank(&mut found, &asked, count);
+    anilist::follow_sequels(&mut found, &asked)?;
+    Ok(found)
+}
+
+/// What a release's sheet shows before it downloads: the anime its name
+/// finds on AniList (`matches`, none when `anilist` says which it is or it's
+/// for `show`), the one it's taken to be, and where that one's download goes.
+pub fn plan(backend: &Backend, title: &str, torrent: &str, show: Option<i64>, anilist: Option<i64>) -> Result<Value> {
+    let files = torrent_bytes(backend, torrent).ok().and_then(|bytes| files_in(&bytes).ok());
+    let (matches, error) = match (show, anilist) {
+        (None, None) => match find(title, files.as_deref().map_or(0, |f| episodes_in(f).count())) {
+            Ok(found) => (found, None),
+            Err(e) => (Vec::new(), Some(format!("{e:#}"))),
+        },
+        _ => (Vec::new(), None),
+    };
+    let anime = match anilist {
+        Some(id) => Some(anilist::by_id(id)?),
+        None => matches.first().cloned(),
+    };
+    let to = destination(backend, title, files.as_deref(), show, anime.as_ref().map(|a| a.id))?;
+    Ok(json!({ "matches": matches, "anime": anime, "to": to, "error": error }))
+}
+
+/// Hands a release to the client: into `show`'s folder, the place in your
+/// library of the AniList entry `anilist`, or a new show's folder named from
+/// `title` (`destination`). `torrent` is its .torrent file's address.
 /// Returns the folder.
-pub fn add(backend: &Arc<Backend>, magnet: &str, torrent: &str, title: &str, show: Option<i64>) -> Result<String> {
+pub fn add(backend: &Arc<Backend>, magnet: &str, torrent: &str, title: &str, show: Option<i64>, anilist: Option<i64>) -> Result<String> {
     if !magnet.starts_with("magnet:") {
         return Err(anyhow!("That isn’t a magnet link"));
     }
-    let folder = match show {
-        Some(id) => backend.db.show(id)?.ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?.folder,
-        None => downloads_folder(backend).join(folder_name(title)).to_string_lossy().into_owned(),
-    };
+    // Without its .torrent file, the release's list of files comes later, from the people sharing it.
+    let fetched = torrent_bytes(backend, torrent);
+    let files = fetched.as_ref().ok().and_then(|bytes| files_in(bytes).ok());
+    let to = destination(backend, title, files.as_deref(), show, anilist)?;
+    let folder = to.folder.clone();
     std::fs::create_dir_all(&folder).with_context(|| format!("Telly couldn’t make the folder {folder}"))?;
+    if to.sorted {
+        library::make_room(backend, &folder)?;
+    }
+    if let (None, true, Some(id)) = (to.show, to.joins, anilist) {
+        set_entry(backend, &folder, Some(id))?;
+    }
     let session = session(backend)?;
     let options = AddTorrentOptions { output_folder: Some(folder.clone()), overwrite: true, ..Default::default() };
     backend.db.set_setting("downloads.used", &Value::Bool(true))?;
-    match crate::nyaa::torrent_file(torrent) {
+    match fetched {
         Ok(bytes) => {
             let added = run(async move { session.add_torrent(AddTorrent::from_bytes(bytes), Some(options)).await.map(|r| matches!(r, AddTorrentResponse::Added(..))) })?
                 .context("Telly couldn’t start the download")?;
@@ -328,7 +478,12 @@ pub fn pause(backend: &Backend, id: usize, paused: bool) -> Result<()> {
 /// Takes a download off the list, leaving whatever it downloaded where it is.
 pub fn remove(backend: &Backend, id: usize) -> Result<()> {
     let session = session(backend)?;
+    let folder = session.get(id.into()).map(|handle| handle.output_folder().to_string_lossy().into_owned());
     run(async move { session.delete(id.into(), false).await })??;
+    // A new show's download that's gone has no show to become.
+    if let Some(folder) = folder {
+        set_entry(backend, &folder, None)?;
+    }
     backend.downloads.poke();
     Ok(())
 }
@@ -430,12 +585,20 @@ pub fn look(backend: &Arc<Backend>) -> Result<()> {
     for t in &mut torrents {
         t.show = shows.iter().filter(|s| inside(&t.folder, &s.folder)).max_by_key(|s| s.folder.len()).map(|s| s.id);
     }
-    // Shows with a file that's finished since the last look.
+    let waiting = entries(backend);
+    // Shows with a file that's finished since the last look, and new shows with their first.
     let mut look_in: Vec<i64> = Vec::new();
+    let mut new_shows: Vec<(String, i64, bool)> = Vec::new();
     {
         let mut seen = backend.downloads.seen.lock().map_err(|_| anyhow!("the downloads are being looked at already"))?;
         for t in &torrents {
             let before = seen.done.get(&t.hash).copied().unwrap_or(0);
+            // A new show that wasn't added when Telly closed is tried again as it opens.
+            if t.files_done > before || (!seen.looked && t.files_done > 0) {
+                if let Some((folder, entry)) = waiting.iter().find(|(f, _)| key(f) == key(&t.folder)) {
+                    new_shows.push((folder.clone(), *entry, t.state == "done"));
+                }
+            }
             if seen.looked && t.files_done > before {
                 if let Some(show) = t.show.filter(|s| !look_in.contains(s)) {
                     look_in.push(show);
@@ -457,6 +620,24 @@ pub fn look(backend: &Arc<Backend>) -> Result<()> {
         std::thread::spawn(move || {
             for show in look_in {
                 let _ = backend.rescan(show);
+            }
+        });
+    }
+    for (folder, entry, finished) in new_shows {
+        // One go at a folder at a time.
+        if !backend.downloads.adding.lock().is_ok_and(|mut adding| adding.insert(key(&folder))) {
+            continue;
+        }
+        let is_show = shows.iter().any(|s| key(&s.folder) == key(&folder));
+        let backend = backend.clone();
+        std::thread::spawn(move || {
+            let added = is_show || backend.add_download(&folder, entry).unwrap_or(false);
+            // A finished download that isn't one show is offered in the Library instead.
+            if added || finished {
+                let _ = set_entry(&backend, &folder, None);
+            }
+            if let Ok(mut adding) = backend.downloads.adding.lock() {
+                adding.remove(&key(&folder));
             }
         });
     }
@@ -488,8 +669,11 @@ pub fn offers(backend: &Backend) -> Vec<Offer> {
         return Vec::new();
     }
     let shows = backend.db.shows().unwrap_or_default();
+    // A download you said the show of adds itself.
+    let waiting = entries(backend);
+    let adds_itself = |t: &Torrent| waiting.iter().any(|(f, _)| key(f) == key(&t.folder));
     let mut offers: Vec<Offer> = Vec::new();
-    for t in seen.torrents.iter().filter(|t| t.files_done > 0 && !shows.iter().any(|s| inside(&t.folder, &s.folder))) {
+    for t in seen.torrents.iter().filter(|t| t.files_done > 0 && !adds_itself(t) && !shows.iter().any(|s| inside(&t.folder, &s.folder))) {
         let downloading = t.state != "done";
         match offers.iter_mut().find(|o| key(&o.folder) == key(&t.folder)) {
             Some(o) => o.downloading |= downloading,
@@ -539,6 +723,17 @@ mod tests {
         assert!(!inside("/anime/Frieren 2", "/anime/Frieren"));
         assert!(inside(r"D:\Anime\Frieren\ep 01.mkv", "D:/Anime/Frieren"));
         assert!(!inside("/anime", ""));
+    }
+
+    #[test]
+    fn a_release_with_a_folder_for_each_season_is_several_parts() {
+        let files = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        assert!(several_parts(&files(&["S1/Overlord - S01E01.mkv", "S2/Overlord - S02E01.mkv"])));
+        assert!(several_parts(&files(&["Season 1/01.mkv", "Movies/The Undead King.mkv"])));
+        // Extras, and what isn't a video, aren't a part.
+        assert!(!several_parts(&files(&["Film.mkv", "Film - NCOP.mkv", "Extras/Interview.mkv", "Scans/cover.jpg"])));
+        assert!(!several_parts(&files(&["Show - 01.mkv", "Show - 02.mkv"])));
+        assert!(!several_parts(&files(&["season 1/01.mkv", "Season 1/02.mkv"])));
     }
 
     #[test]

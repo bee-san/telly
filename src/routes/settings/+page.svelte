@@ -399,6 +399,11 @@
   let showRouterKey = $state(false);
   /** Where new shows are downloaded when no folder is chosen. */
   let downloadsFolder = $state("");
+  /** Chooses the library folder downloads of a kind are sorted into. */
+  async function chooseLibraryFolder(kind: "series" | "movies") {
+    const folder = await pickFolder(kind === "series" ? "Choose the folder for series" : "Choose the folder for movies");
+    if (folder) await set(`library.${kind}`, folder);
+  }
   async function chooseDownloadsFolder() {
     const folder = await pickFolder("Choose where new shows are downloaded");
     if (folder) await set("downloads.folder", folder);
@@ -722,6 +727,25 @@
     <p class="muted mono path">{status?.dataDir}</p>
   </section>
 
+  <section id="library">
+    <h2>Library</h2>
+    <p class="lede">Where a download goes once you’ve said which show it is. Telly makes the folders and the release keeps its file names; nothing already there is moved.</p>
+    <div class="rows">
+      <div class="field">
+        <span>Series folder</span>
+        <span class="inline"><input class="input grow mono" value={str("library.series")} readonly placeholder="D:\Anime\Series" aria-label="Series folder" /><button type="button" class="btn quiet" onclick={() => chooseLibraryFolder("series")}>Choose folder…</button></span>
+        <small>A season goes in <span class="mono">Anime\Season 01</span> in here, beside the anime’s other seasons when it has any.</small>
+        {#if str("library.series")}<span><button type="button" class="link-btn" onclick={() => set("library.series", null)}>Use the downloads folder</button></span>{/if}
+      </div>
+      <div class="field">
+        <span>Movies folder</span>
+        <span class="inline"><input class="input grow mono" value={str("library.movies")} readonly placeholder="D:\Anime\Movies" aria-label="Movies folder" /><button type="button" class="btn quiet" onclick={() => chooseLibraryFolder("movies")}>Choose folder…</button></span>
+        <small>A film goes in <span class="mono">Title (year)</span> in here.</small>
+        {#if str("library.movies")}<span><button type="button" class="link-btn" onclick={() => set("library.movies", null)}>Use the downloads folder</button></span>{/if}
+      </div>
+    </div>
+  </section>
+
   <section id="downloads">
     <h2>Downloads</h2>
     <p class="lede">Find a show on nyaa.si with <b>Download…</b> in the Library, on a show’s page or in Recommended, and Telly downloads it itself, picking up where it was whenever the connection drops and when Telly opens again. Each episode joins the library as it finishes. Processing shows how they’re going.</p>
@@ -729,7 +753,7 @@
       <div class="field">
         <span>Folder for new shows</span>
         <span class="inline"><input class="input grow mono" value={str("downloads.folder") || downloadsFolder} readonly aria-label="Folder for new shows" /><button type="button" class="btn quiet" onclick={chooseDownloadsFolder}>Choose folder…</button></span>
-        <small>Each new show gets a folder of its own in here. More episodes of a show in the library go in its folder.</small>
+        <small>A new show gets a folder of its own in here when no library folder takes it. More episodes of a show in the library go in its folder.</small>
         {#if str("downloads.folder")}<span><button type="button" class="link-btn" onclick={() => set("downloads.folder", null)}>Use Downloads\Telly in your home folder</button></span>{/if}
       </div>
       <label class="field narrow">

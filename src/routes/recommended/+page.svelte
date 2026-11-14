@@ -265,7 +265,7 @@
         {#if p.show !== null}
           <button type="button" class="btn" onclick={() => goto(`/show?id=${p.show}`)}>Open in library</button>
         {:else if !p.unreleased}
-          <button type="button" class="btn" onclick={() => goto(`/downloads?from=recommended&q=${encodeURIComponent(p.romaji || p.english || p.title)}`)} title="Find it on nyaa.si, most shared first, and pick a release for Telly to download"><Icon name="download" /><span>Download…</span></button>
+          <button type="button" class="btn" onclick={() => goto(`/downloads?from=recommended&anilist=${p.id}&q=${encodeURIComponent(p.romaji || p.english || p.title)}`)} title="Find it on nyaa.si, most shared first, and pick a release for Telly to download"><Icon name="download" /><span>Download…</span></button>
         {/if}
       </div>
     </div>

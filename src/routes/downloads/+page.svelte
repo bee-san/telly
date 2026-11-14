@@ -2,18 +2,25 @@
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { onMount } from "svelte";
+  import DownloadSheet from "$lib/DownloadSheet.svelte";
   import Icon from "$lib/Icon.svelte";
-  import { call, callKept, errorText, inTauri, kept, setWindowTitle, type DownloadsView, type NyaaFound, type Release, type ShowView } from "$lib/api";
+  import { call, callKept, errorText, inTauri, kept, setWindowTitle, type DownloadPlan, type DownloadsView, type NyaaFound, type Release, type ShowView } from "$lib/api";
   import { plural } from "$lib/format";
   import { app } from "$lib/state.svelte";
   import { toast } from "$lib/toast-store.svelte";
 
-  /** /downloads?show=<id> downloads into that show's folder; ?q=<title> searches for it
-   *  at once, and ?from=recommended goes back to Recommended. */
+  /** /downloads?show=<id> downloads into that show's folder; ?anilist=<id> downloads as
+   *  that AniList entry, into its place in the library; ?q=<title> searches for it at
+   *  once, and ?from=recommended goes back to Recommended. */
   const showId = Number(page.url.searchParams.get("show")) || null;
+  const anilistId = Number(page.url.searchParams.get("anilist")) || null;
   const asked = page.url.searchParams.get("q") ?? "";
   const fromRecommended = page.url.searchParams.get("from") === "recommended";
   let show = $state<{ id: number; title: string; folder: string } | null>(null);
+  /** Where the AniList entry's download goes. */
+  let into = $state("");
+  /** The release whose show is being asked. */
+  let asking = $state.raw<Release | null>(null);
 
   let q = $state("");
   let category = $state("all");
@@ -25,6 +32,8 @@
   let searching = $state(false);
   /** The search the results are for. */
   let searched = $state("");
+  /** The AniList entry the releases listed are: the one asked for, until something else is searched for. */
+  const entry = $derived(anilistId && searched === asked.trim() ? anilistId : null);
   let searchError = $state("");
   /** Releases started downloading from this page. */
   let sent = $state<Record<number, "sending" | "sent">>({});
@@ -64,6 +73,11 @@
       q = asked;
       search();
     }
+    if (anilistId) {
+      call<DownloadPlan>("placeDownload", { title: asked, anilistId })
+        .then((plan) => (into = plan.to.folder))
+        .catch(() => {});
+    }
     return () => {
       stopped = true;
       clearTimeout(timer);
@@ -89,13 +103,23 @@
     }
   }
 
+  /** A release is on its way into `folder`. */
+  function started(r: Release, folder: string) {
+    sent[r.id] = "sent";
+    toast({ key: `download-${r.id}`, state: "done", title: "Downloading", text: `Into ${folder}. The title bar shows how it’s going.` });
+    loadDownloads();
+  }
+
   async function download(r: Release) {
+    // A release for no show yet: its sheet asks which it is.
+    if (!show && !entry) {
+      asking = r;
+      return;
+    }
     sent[r.id] = "sending";
     try {
-      const { folder } = await call<{ folder: string }>("download", { magnet: r.magnet, torrent: r.torrent, title: r.title, show: show?.id ?? null });
-      sent[r.id] = "sent";
-      toast({ key: `download-${r.id}`, state: "done", title: "Downloading", text: `Into ${folder}. The title bar shows how it’s going.` });
-      loadDownloads();
+      const { folder } = await call<{ folder: string }>("download", { magnet: r.magnet, torrent: r.torrent, title: r.title, show: show?.id ?? null, anilistId: entry });
+      started(r, folder);
     } catch (e) {
       delete sent[r.id];
       toast({ key: "download", state: "failed", title: "Couldn’t start the download", text: errorText(e) });
@@ -120,7 +144,7 @@
   </div>
   <div class="dl-head">
     <h2>Download</h2>
-    <span>{show ? `Into ${show.title}’s folder` : "New shows go in a folder of their own in the downloads folder"}</span>
+    <span>{show ? `Into ${show.title}’s folder` : entry && into ? `Into ${into}` : "Telly asks which show a release is, and puts it in its place"}</span>
   </div>
 
   {#if view?.error}
@@ -167,8 +191,8 @@
                 {#if r.remake}· Re-upload{/if}
               </span>
             </div>
-            <button type="button" class="btn small" disabled={!!sent[r.id]} onclick={() => download(r)} title={show ? `Telly downloads it into ${show.folder}` : `Telly downloads it into a folder of its own in ${view?.folder ?? "the downloads folder"}`}>
-              {#if sent[r.id] === "sent"}<Icon name="check" /><span>Downloading</span>{:else if sent[r.id]}<span>Sending…</span>{:else}<Icon name="download" /><span>Download</span>{/if}
+            <button type="button" class="btn small" disabled={!!sent[r.id]} onclick={() => download(r)} title={show ? `Telly downloads it into ${show.folder}` : entry ? "Telly downloads it into its place in your library" : "Telly asks which show it is, then downloads it"}>
+              {#if sent[r.id] === "sent"}<Icon name="check" /><span>Downloading</span>{:else if sent[r.id]}<span>Sending…</span>{:else}<Icon name="download" /><span>{show || entry ? "Download" : "Download…"}</span>{/if}
             </button>
           </li>
         {/each}
@@ -179,6 +203,11 @@
     {/if}
   </section>
 </div>
+
+{#if asking}
+  {@const release = asking}
+  <DownloadSheet {release} onclose={() => (asking = null)} onstarted={(folder) => { asking = null; started(release, folder); }} />
+{/if}
 
 <style>
   .dls { position: absolute; inset: 0; overflow: auto; padding: 22px 32px 40px; }

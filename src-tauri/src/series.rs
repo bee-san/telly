@@ -459,7 +459,7 @@ pub(crate) mod tests {
         ]
     }
 
-    fn show(id: i64, title: &str, anilist: Option<i64>, folder: &str) -> Show {
+    pub(crate) fn show(id: i64, title: &str, anilist: Option<i64>, folder: &str) -> Show {
         Show {
             id,
             folder: folder.into(),

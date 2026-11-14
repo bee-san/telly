@@ -322,7 +322,7 @@ pub(crate) fn is_movie(format: &str, matched: bool, lengths: &[f64]) -> bool {
 }
 
 /// The setting that says a show's folder holds other shows' rips too, so Look for new episodes adds none to it.
-fn shared_setting(show_id: i64) -> String {
+pub(crate) fn shared_setting(show_id: i64) -> String {
     format!("folder.shared.{show_id}")
 }
 
@@ -1171,6 +1171,43 @@ impl Backend {
         Ok(json!({ "id": id }))
     }
 
+    /// A new show's download as the show to add: `anime`, with the episodes
+    /// Add media would give its folder. None for a folder with no episode
+    /// finished yet, and for one that's several shows (parts.rs), which Add
+    /// media's sheet is for.
+    fn show_in_download(&self, folder: &str, anime: &Anime) -> Result<Option<NewShow>> {
+        let tools = self.tools();
+        let scan = scan::scan(Path::new(folder), |paths| {
+            self.downloads.unless_downloading(paths, |paths| scan::probe_durations(tools.ffprobe.as_deref(), paths))
+        })?;
+        let episodes: Vec<crate::db::NewEpisode> = scan
+            .files
+            .iter()
+            .filter_map(|f| f.number.map(|number| crate::db::NewEpisode { number, path: f.path.clone(), size: f.size, duration: f.duration }))
+            .collect();
+        if episodes.is_empty() || parts::split(&scan).len() > 1 {
+            return Ok(None);
+        }
+        Ok(Some(Self::new_show_from(Some(anime), NewShow { folder: folder.to_string(), episodes, ..Default::default() })))
+    }
+
+    /// Adds a new show's download as the AniList entry you said it was when
+    /// it started (torrents.rs). Returns whether it was added.
+    pub fn add_download(self: &Arc<Self>, folder: &str, anilist_id: i64) -> Result<bool> {
+        // Kept from when the download's place was worked out.
+        let anime = match series::graph(self).entry(anilist_id) {
+            Some(entry) => entry.anime.clone(),
+            None => anilist::by_id(anilist_id)?,
+        };
+        let Some(new) = self.show_in_download(folder, &anime)? else { return Ok(false) };
+        let id = self.db.add_show(&new)?;
+        self.fetch_cover(id, new.cover_url.clone());
+        series::gather(self);
+        recommend::gather(self);
+        self.jobs.poke();
+        Ok(true)
+    }
+
     /// Adds a folder's parts, each as a show of its own: an anime's seasons,
     /// movies and OVAs, from one sheet. Nothing is added unless AniList
     /// answers for every entry. A part with no entry is listed under `anime`
@@ -1897,9 +1934,13 @@ impl Backend {
                 &arg::<Option<String>>(&args, "sort")?.unwrap_or_default(),
                 arg::<Option<u32>>(&args, "page")?.unwrap_or(1),
             )?),
+            "placeDownload" => {
+                let torrent = arg::<Option<String>>(&args, "torrent")?.unwrap_or_default();
+                torrents::plan(self, &arg::<String>(&args, "title")?, &torrent, arg(&args, "show")?, arg(&args, "anilistId")?)
+            }
             "download" => {
                 let torrent = arg::<Option<String>>(&args, "torrent")?.unwrap_or_default();
-                let folder = torrents::add(self, &arg::<String>(&args, "magnet")?, &torrent, &arg::<String>(&args, "title")?, arg(&args, "show")?)?;
+                let folder = torrents::add(self, &arg::<String>(&args, "magnet")?, &torrent, &arg::<String>(&args, "title")?, arg(&args, "show")?, arg(&args, "anilistId")?)?;
                 Ok(json!({ "folder": folder }))
             }
             "downloads" => Ok(torrents::view(self)),
@@ -2154,6 +2195,42 @@ mod tests {
         // A second copy of an episode whose rip is still there is left alone.
         rip("[BD] Show - 01 [1080p].mkv");
         assert_eq!(backend.rescan(show).unwrap(), 0);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_new_show_s_download_is_the_show_you_said_once_something_of_it_is_down() {
+        let dir = std::env::temp_dir().join(format!("telly-download-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let Some(ffmpeg) = backend.tools().ffmpeg else { return }; // making rips to scan needs ffmpeg
+        let rip = |path: &Path| {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let made = std::process::Command::new(&ffmpeg)
+                .args(["-v", "quiet", "-f", "lavfi", "-i", "color=c=black:s=64x36:r=1", "-t", "400", "-c:v", "mpeg4", "-y"])
+                .arg(path)
+                .status()
+                .unwrap();
+            assert!(made.success());
+        };
+        let film = Anime { id: 99, romaji: "Film".into(), english: "Film".into(), format: "MOVIE".into(), episodes: Some(1), year: Some(2018), ..Default::default() };
+
+        // A film and its creditless opening: one show, the extra left out.
+        let folder = dir.join("Movies").join("Film (2018)");
+        rip(&folder.join("[Sub] Film.mkv"));
+        rip(&folder.join("[Sub] Film - NCOP.mkv"));
+        let new = backend.show_in_download(&folder.to_string_lossy(), &film).unwrap().expect("one show");
+        assert_eq!((new.anilist_id, new.format.as_str(), new.title.as_str()), (Some(99), "MOVIE", "Film"));
+        assert_eq!(new.episodes.iter().map(|e| (e.number, e.path.clone())).collect::<Vec<_>>(), [(1, folder.join("[Sub] Film.mkv").to_string_lossy().into_owned())]);
+
+        // A folder for each season is several shows: Add media's sheet is for those.
+        let seasons = dir.join("Series").join("Show");
+        rip(&seasons.join("S1").join("Show - S01E01.mkv"));
+        rip(&seasons.join("S1").join("Show - S01E02.mkv"));
+        rip(&seasons.join("S2").join("Show - S02E01.mkv"));
+        rip(&seasons.join("S2").join("Show - S02E02.mkv"));
+        assert!(backend.show_in_download(&seasons.to_string_lossy(), &film).unwrap().is_none());
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

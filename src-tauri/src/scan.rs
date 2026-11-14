@@ -112,7 +112,7 @@ pub fn makemkv_title(stem: &str) -> Option<i64> {
 /// season's episode (S01E05, as Sonarr names them) is one whatever its title
 /// says ("S01E03 - The Bonus Round"), though its folders can still say it's an
 /// extra; season 0's (S00E01) are specials, which often are extras.
-fn extra_reason(rel: &str) -> Option<&'static str> {
+pub(crate) fn extra_reason(rel: &str) -> Option<&'static str> {
     static R: OnceLock<Regex> = OnceLock::new();
     let r = re(
         &R,
@@ -144,7 +144,7 @@ pub fn clean_title(name: &str) -> String {
     cleaned.trim_matches(|c: char| c == '-' || c.is_whitespace()).to_string()
 }
 
-fn is_video(path: &Path) -> bool {
+pub(crate) fn is_video(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| VIDEO_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))

@@ -621,6 +621,28 @@ export interface DownloadOffer {
   downloading: boolean;
 }
 
+/** Where a release's files would go. */
+export interface DownloadDestination {
+  folder: string;
+  /** The show in the library it's more of. */
+  show: number | null;
+  /** Whether that's its place in a library folder. */
+  sorted: boolean;
+  /** Whether it joins the library by itself as it finishes. */
+  joins: boolean;
+}
+
+/** What a release's sheet shows before it downloads. */
+export interface DownloadPlan {
+  /** The anime the release's name finds on AniList, the likeliest first. */
+  matches: Anime[];
+  /** The one it's taken to be. */
+  anime: Anime | null;
+  to: DownloadDestination;
+  /** Why AniList couldn't be asked. */
+  error: string | null;
+}
+
 export interface DownloadsView {
   torrents: Torrent[];
   offers: DownloadOffer[];

@@ -300,7 +300,7 @@
       // A show kept with one filter, from before they could be chained, starts with that one.
       const kept = settings[`player.filters.${v.show.id}`];
       chain = arrange(Array.isArray(kept) ? kept : [settings[`player.filter.${v.show.id}`]]);
-      await setWindowTitle(`${v.show.title} · Episode ${v.episode.number} — Telly`);
+      await setWindowTitle(v.movie ? `${v.show.title} — Telly` : `${v.show.title} · Episode ${v.episode.number} — Telly`);
       if (v.episode.mediaState !== "ready") {
         error = v.episode.mediaState === "failed" ? `This episode couldn’t be converted: ${v.episode.mediaError}` : "This episode isn’t ready to play yet.";
       } else if (holdPlay) {
@@ -1003,7 +1003,7 @@
     if (play && wasOpen && video && !ended) video.play().catch(() => {});
   }
 
-  /** The moments to play: those whose episode can play here, of the episode just left unless it’s the whole story. */
+  /** The moments to play: those whose episode can play here, of the episode just left (in a film, all of it so far) unless it’s the whole story. */
   const moments = $derived((recap?.data?.moments ?? []).filter((m) => m.playable && (recap?.full || m.latest)));
   const canRecap = $derived(!!(view?.recap?.possible || view?.resume?.possible));
   const canMontage = $derived(recap?.state === "ready" && moments.length > 0);
@@ -1140,7 +1140,7 @@
     });
   }
 
-  const startLabel = $derived(ended ? "Close" : `${recapAt === null ? "Start" : "Resume"} Episode ${view?.episode.number ?? ""}`);
+  const startLabel = $derived(ended ? "Close" : `${recapAt === null ? "Start" : "Resume"}${view?.movie ? "" : ` Episode ${view?.episode.number ?? ""}`}`);
   /** The language Claude writes the recap and Explain in (Settings → Claude), so Japanese is drawn with Japanese, not Chinese, kanji. */
   const recapLang = $derived(settings["claude.language"] === "ja" ? "ja" : "en");
 
@@ -1195,7 +1195,13 @@
     if (bridge || !view) return;
     const run = ++montageRun;
     const resuming = recapAt !== null;
-    bridge = { kicker: view.show.title, title: `Episode ${view.episode.number}`, sub: resuming ? `From ${clock(recapAt ?? 0)}` : "", out: false };
+    // A film's card names the film.
+    bridge = {
+      kicker: view.movie ? "" : view.show.title,
+      title: view.movie ? view.show.title : `Episode ${view.episode.number}`,
+      sub: resuming ? `From ${clock(recapAt ?? 0)}` : "",
+      out: false,
+    };
     exitAt = performance.now();
     // Once it's black and silent, the moments go; the episode waits behind the card, held (`holdPlay`) till it fades.
     later(BRIDGE_IN_MS, run, () => (montage = null));
@@ -1638,7 +1644,7 @@
   <div class="ptop">
     <button type="button" class="pbtn" aria-label="Back to library" title="Back to library" onclick={() => leave("/")}><Icon name="back" /></button>
     {#if view}
-      <span class="ptitle"><b title={view.show.title}>{view.show.title}</b><span>Episode {view.episode.number} of {view.count}</span></span>
+      <span class="ptitle"><b title={view.show.title}>{view.show.title}</b>{#if !view.movie}<span>Episode {view.episode.number} of {view.count}</span>{/if}</span>
       <span class="grow"></span>
       <span class="subnote wide" title={view.episode.subsFile}>
         {#if view.episode.subsState === "synced"}<Icon name="check" />{/if}{syncNote}{#if nudge !== 0} · {nudge > 0 ? "+" : ""}{(nudge / 1000).toFixed(1)} s{/if}
@@ -1854,14 +1860,14 @@
             {#if recap.full}
               {#each recap.data.arcs ?? [] as arc, k (k)}
                 <section class="arc">
-                  <div class="arc-head"><b lang={recapLang}>{arc.title}</b><span>{spanLabel(arc.from, arc.to)}</span></div>
+                  <div class="arc-head"><b lang={recapLang}>{arc.title}</b>{#if !view.movie}<span>{spanLabel(arc.from, arc.to)}</span>{/if}</div>
                   <p class="recap-text" lang={recapLang}>{arc.summary}</p>
                 </section>
               {/each}
             {/if}
             {#if recap.data.last}
               <section class="arc">
-                <div class="arc-head"><b>{recapAt === null ? "Last time" : "So far"}</b>{#if recap.data.lastNumber}<span>Episode {recap.data.lastNumber}</span>{/if}</div>
+                <div class="arc-head"><b>{recapAt === null ? "Last time" : "So far"}</b>{#if recap.data.lastNumber && !view.movie}<span>Episode {recap.data.lastNumber}</span>{/if}</div>
                 <p class="recap-text" lang={recapLang}>{recap.data.last}</p>
               </section>
             {/if}
@@ -1894,7 +1900,7 @@
         {/each}
       </div>
       <div class="montage-top">
-        <span class="montage-label">Previously on {view.show.title} · Episode {moments[montage.i].number} · {montage.i + 1} of {moments.length}</span>
+        <span class="montage-label">Previously on {view.show.title}{view.movie ? "" : ` · Episode ${moments[montage.i].number}`} · {montage.i + 1} of {moments.length}</span>
         {#if moments[montage.i].caption}<p class="montage-caption" lang={recapLang} aria-live="polite">{moments[montage.i].caption}</p>{/if}
       </div>
       <div class="subs montage-subs" style:--sub-size={subFont}>
@@ -1917,7 +1923,7 @@
   {#if bridge}
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
     <div class="bridge" class:out={bridge.out} onclick={playFromBridge}>
-      <span class="kicker">{bridge.kicker}</span>
+      {#if bridge.kicker}<span class="kicker">{bridge.kicker}</span>{/if}
       <h2>{bridge.title}</h2>
       {#if bridge.sub}<span class="bridge-sub">{bridge.sub}</span>{/if}
     </div>

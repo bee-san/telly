@@ -6,8 +6,8 @@
 //! file <id>.json, and its number), oldest first. EARLIER=<file> is the recap
 //! this printed for the episodes before them, to carry on from. AT=<seconds>
 //! is for coming back part-way through the last of them (give its number as
-//! the episode number), as far as that. It prints how many scenes Claude
-//! picked from each episode, and how long each plays.
+//! the episode number), as far as that, and with FILM=1 it's a film. It
+//! prints how many scenes Claude picked from each episode, and how long each plays.
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -27,7 +27,12 @@ fn main() -> anyhow::Result<()> {
     if let (Some(at), Some((_, lines))) = (at, window.last_mut()) {
         lines.retain(|l| l.start < at);
     }
-    let of = if at.is_some() { ask::RecapOf::EpisodeSoFar } else { ask::RecapOf::NextEpisode };
+    let film = std::env::var("FILM").is_ok_and(|f| f == "1");
+    let of = match at {
+        Some(_) if film => ask::RecapOf::FilmSoFar,
+        Some(_) => ask::RecapOf::EpisodeSoFar,
+        None => ask::RecapOf::NextEpisode,
+    };
     let refs: Vec<(i64, &[Line])> = window.iter().map(|(n, l)| (*n, l.as_slice())).collect();
     let earlier: Option<ask::Recap> = std::env::var("EARLIER").ok().map(|file| anyhow::Ok(serde_json::from_slice(&std::fs::read(file)?)?)).transpose()?;
     let prompt = ask::recap_prompt("『FAIRY TAIL』 (Fairy Tail)", number, &refs, earlier.as_ref(), of, "", "English");
@@ -42,7 +47,7 @@ fn main() -> anyhow::Result<()> {
         Some(recap) => {
             println!("{}", serde_json::to_string_pretty(&recap)?);
             if let Some((last, lines)) = window.last() {
-                eprintln!("Episode {last} plays at most {} scenes", ask::latest_most(lines));
+                eprintln!("Episode {last} plays at most {} scenes", ask::latest_most(lines, of == ask::RecapOf::FilmSoFar));
             }
             for (n, lines) in &window {
                 let picked: Vec<usize> = recap.moments.iter().filter(|p| p.episode == *n).map(|p| p.line).collect();

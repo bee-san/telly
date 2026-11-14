@@ -513,19 +513,19 @@ export interface ScanResult {
   ffprobe: boolean;
 }
 
-/** An anime AniList's users recommend to people who liked shows in the library. */
+/** An anime AniList's users recommend to people who liked shows in the library or on your AniList list. */
 export interface Pick extends Anime {
   /** Its short title, as the library would show it. */
   title: string;
   genres: string[];
   /** AniList's synopsis, with its markup. */
   description: string;
-  /** The library's shows it's recommended from, the one that counts most first. */
+  /** The shows it's recommended from, the one that counts most first. */
   from: { title: string; votes: number }[];
 }
 
 export interface Recommended {
-  /** Shows in the library that AniList knows. */
+  /** The shows the picks go on: those in the library that AniList knows, and those on your AniList list. */
   shows: number;
   /** Every pick, best first. */
   picks: Pick[];

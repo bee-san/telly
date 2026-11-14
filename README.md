@@ -56,7 +56,7 @@ Telly builds a dictionary of the characters in what you're watching, with their 
 
 ## 💡 Find what to watch next
 
-Recommendations from AniList's users, weighed across your whole library.
+Recommendations from AniList's users, weighed across your whole library and your AniList list.
 
 ![Recommended: anime to watch next, each with the shows in your library it's recommended from](docs/recommended.webp)
 

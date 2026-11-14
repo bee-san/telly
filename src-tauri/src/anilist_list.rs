@@ -18,9 +18,10 @@
 //! fairly sure which entry it is. A number past the entry's episode count
 //! logs nothing either: better nothing than the wrong show.
 //!
-//! A copy of which anime are on your list (all but those you only plan to
-//! watch) is kept in anilist-list.json, for Recommended to leave out. It's
-//! fetched again at start-up, on signing in, and after Telly updates the list.
+//! A copy of the anime on your list (all but those you only plan to watch),
+//! with each one's status and your score, is kept in anilist-list.json for
+//! Recommended to go on and to leave out. It's fetched again at start-up, on
+//! signing in, and after Telly updates the list.
 //!
 //! Settings: anilist.token (the access token), anilist.user (its name),
 //! anilist.since (unix ms: when you signed in), anilist.error (the last
@@ -30,14 +31,14 @@
 //! were logged) and anilist.looked.<entry> (the last watch looked at for a
 //! rewatch).
 
-use crate::anilist::{self, ListEntry};
+use crate::anilist::{self, ListEntry, Listed};
 use crate::backend::Backend;
 use crate::db::{Episode, Show};
 use crate::util::now_ms;
 use crate::{matching, scan};
 use anyhow::Result;
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -70,13 +71,19 @@ fn list_path(backend: &Backend) -> PathBuf {
 }
 
 /// The anime on your list, from the copy kept on disk (none when signed out).
-pub fn on_list(backend: &Backend) -> HashSet<i64> {
-    std::fs::read(list_path(backend)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
+pub fn listed(backend: &Backend) -> Vec<Listed> {
+    let bytes = std::fs::read(list_path(backend)).unwrap_or_default();
+    serde_json::from_slice(&bytes)
+        // A copy kept by an older Telly (or in an older backup) has only the anime's IDs.
+        .or_else(|_| serde_json::from_slice::<Vec<i64>>(&bytes).map(|ids| ids.into_iter().map(|id| Listed { id, ..Default::default() }).collect()))
+        .unwrap_or_default()
 }
 
-fn fetch_list(backend: &Backend, token: &str) -> Result<()> {
-    let ids = anilist::watched_ids(token)?;
-    crate::util::write_whole(&list_path(backend), serde_json::to_vec(&ids)?)?;
+fn fetch_list(backend: &Arc<Backend>, token: &str) -> Result<()> {
+    let listed = anilist::list(token)?;
+    crate::util::write_whole(&list_path(backend), serde_json::to_vec(&listed)?)?;
+    // Recommended goes on your list too: its answers are asked for now, so the page opens with them.
+    crate::recommend::gather(backend);
     Ok(())
 }
 
@@ -421,5 +428,20 @@ mod tests {
         // Rewatching an earlier episode, or one past the entry's end.
         assert_eq!(change(&entry(Some(12), Some("CURRENT"), 8), 3), None);
         assert_eq!(change(&entry(Some(12), None, 0), 13), None);
+    }
+
+    #[test]
+    fn reads_a_copy_of_the_list_kept_by_an_older_telly() {
+        let dir = std::env::temp_dir().join(format!("telly-anilist-list-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        assert_eq!(listed(&backend), Vec::<Listed>::new());
+        // An older Telly kept only the anime's IDs.
+        std::fs::write(list_path(&backend), b"[21, 30]").unwrap();
+        assert_eq!(listed(&backend), [Listed { id: 21, ..Default::default() }, Listed { id: 30, ..Default::default() }]);
+        let kept = [Listed { id: 21, title: "ONE PIECE".into(), status: "CURRENT".into(), score: 80.0, progress: 400, episodes: None }];
+        std::fs::write(list_path(&backend), serde_json::to_vec(&kept).unwrap()).unwrap();
+        assert_eq!(listed(&backend), kept);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

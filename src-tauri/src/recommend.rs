@@ -1,11 +1,11 @@
 //! Recommended: anime to watch next, from AniList's community recommendations
-//! for the shows in the library ("liked X, try Y", voted up or down). No
-//! sign-in is needed: Telly asks about each show by its AniList ID, weighs
-//! each show's votes by how much of it you've watched and adds them up across
-//! the library, and leaves out what the library already has and, once you've
-//! signed in to AniList, what's on your list there.
+//! for the shows in the library and, once you've signed in to AniList, those
+//! on your list there ("liked X, try Y", voted up or down). Telly asks about
+//! each show by its AniList ID, weighs each show's votes by how much you liked
+//! it (your score and status on your list, or else how much of it you've
+//! watched) and adds them up, and leaves out what you have or have started.
 
-use crate::anilist::{self, Anime};
+use crate::anilist::{self, Anime, Listed};
 use crate::backend::Backend;
 use crate::util::now_ms;
 use anyhow::Result;
@@ -28,7 +28,7 @@ const FEW_VOTES: f64 = 50.0;
 /// A show started and not finished, with nothing of it watched for 30 days, was left.
 const LEFT_MS: i64 = 30 * 24 * 3600 * 1000;
 
-/// What AniList says about one show in the library.
+/// What AniList says about one show in the library or on your list.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Source {
@@ -59,7 +59,7 @@ pub struct Owned {
     pub last_watched: Option<i64>,
 }
 
-/// A show in the library that a pick is recommended from.
+/// A show in the library or on your list that a pick is recommended from.
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct From {
     pub title: String,
@@ -75,7 +75,7 @@ pub struct Pick {
     pub title: String,
     pub genres: Vec<String>,
     pub description: String,
-    /// The library's shows it's recommended from, the one that counts most first.
+    /// The shows it's recommended from, the one that counts most first.
     pub from: Vec<From>,
     #[serde(skip)]
     score: f64,
@@ -199,19 +199,49 @@ fn liking(episodes: usize, watched: usize, last_watched: Option<i64>, now: i64) 
     }
 }
 
-/// The picks, best first. Each series in the library has one say on a pick:
-/// the most any of its entries gives it, which is the square root of the
-/// pick's share of that entry's votes, times how much your liking the entry
-/// counts. So a little-known show's favourite counts as much as a famous
-/// show's, and a pick liked from many shows still beats one show's
-/// favourite. Left out: what's in the library, the rest of its series, and
+/// How much your liking an anime on your AniList list counts for, from its
+/// status and your score, or None when the list doesn't say: dropped -1;
+/// scored, 2 for your average score and 1 more or less for each 10 points
+/// above or below it (-2 to 4); else completed 2, watching 1 to 2 by how far
+/// you are, and paused 0.25.
+fn list_liking(entry: &Listed, average_score: f64) -> Option<f64> {
+    match entry.status.as_str() {
+        "DROPPED" => Some(-1.0),
+        "" => None,
+        _ if entry.score > 0.0 => Some((2.0 + (entry.score - average_score) / 10.0).clamp(-2.0, 4.0)),
+        "COMPLETED" | "REPEATING" => Some(2.0),
+        "CURRENT" => Some(1.0 + entry.episodes.filter(|&e| e > 0).map_or(0.0, |e| (entry.progress as f64 / e as f64).min(1.0))),
+        "PAUSED" => Some(0.25),
+        _ => None,
+    }
+}
+
+/// The picks, best first. Each series in the library or on your list has one
+/// say on a pick: the biggest any of its entries gives it, which is the square
+/// root of the pick's share of that entry's votes, times how much your liking
+/// the entry counts. So a little-known show's favourite counts as much as a
+/// famous show's, and a pick liked from many shows still beats one show's
+/// favourite. A show you dropped or scored low says against its picks, and a
+/// pick it says more against than the rest say for is left out. Also left
+/// out: what's in the library or on your list, the rest of their series, and
 /// what's hidden.
-pub fn rank(owned: &[Owned], sources: &[Source], hidden: &HashSet<i64>, now: i64) -> Vec<Pick> {
+pub fn rank(owned: &[Owned], listed: &[Listed], sources: &[Source], hidden: &HashSet<i64>, now: i64) -> Vec<Pick> {
     // Each show's episodes, those watched, when it was last watched and its title, across the library's copies of it.
-    let mut shows: HashMap<i64, (usize, usize, Option<i64>, &str)> = HashMap::new();
+    let mut watching: HashMap<i64, (usize, usize, Option<i64>, &str)> = HashMap::new();
     for o in owned {
-        let show = shows.entry(o.anilist_id).or_insert((0, 0, None, o.title.as_str()));
+        let show = watching.entry(o.anilist_id).or_insert((0, 0, None, o.title.as_str()));
         *show = (show.0 + o.episodes, show.1 + o.watched, show.2.max(o.last_watched), show.3);
+    }
+    // How much your liking each show counts for, and its title: as your list says, or else by how much of it you've watched.
+    let mut shows: HashMap<i64, (f64, &str)> =
+        watching.into_iter().map(|(id, (episodes, watched, last_watched, title))| (id, (liking(episodes, watched, last_watched, now), title))).collect();
+    let scores: Vec<f64> = listed.iter().map(|l| l.score).filter(|&s| s > 0.0).collect();
+    let average_score = scores.iter().sum::<f64>() / scores.len().max(1) as f64;
+    for entry in listed {
+        if let Some(liking) = list_liking(entry, average_score) {
+            let title = shows.get(&entry.id).map_or(entry.title.as_str(), |s| s.1);
+            shows.insert(entry.id, (liking, title));
+        }
     }
     let mut series: HashMap<i64, i64> = shows.keys().map(|&id| (id, id)).collect();
     let sources: Vec<&Source> = sources.iter().filter(|s| shows.contains_key(&s.id)).collect();
@@ -225,8 +255,7 @@ pub fn rank(owned: &[Owned], sources: &[Source], hidden: &HashSet<i64>, now: i64
     let mut says: HashMap<i64, (&Like, HashMap<i64, (f64, i64, &str)>)> = HashMap::new();
     for s in &sources {
         let from = series_of(&mut series, s.id);
-        let (episodes, watched, last_watched, title) = shows[&s.id];
-        let liking = liking(episodes, watched, last_watched, now);
+        let (liking, title) = shows[&s.id];
         // Its votes, but for the rest of its own series: those aren't recommendations.
         let mut votes = 0;
         for like in s.likes.iter().filter(|l| l.votes > 0) {
@@ -236,7 +265,7 @@ pub fn rank(owned: &[Owned], sources: &[Source], hidden: &HashSet<i64>, now: i64
         }
         for like in s.likes.iter().filter(|l| l.votes > 0 && !series.contains_key(&l.anime.id) && !hidden.contains(&l.anime.id)) {
             let say = liking * (like.votes as f64 / (votes as f64 + FEW_VOTES)).sqrt();
-            let best = says.entry(like.anime.id).or_insert_with(|| (like, HashMap::new())).1.entry(from).or_insert((0.0, 0, title));
+            let best = says.entry(like.anime.id).or_insert_with(|| (like, HashMap::new())).1.entry(from).or_insert((f64::NEG_INFINITY, 0, title));
             if say > best.0 {
                 *best = (say, like.votes, title);
             }
@@ -253,9 +282,11 @@ pub fn rank(owned: &[Owned], sources: &[Source], hidden: &HashSet<i64>, now: i64
                 genres: like.genres.clone(),
                 description: like.description.clone(),
                 score: from.iter().map(|f| f.0).sum(),
-                from: from.into_iter().map(|f| f.1).collect(),
+                // Only the shows that say for it: it isn't recommended from one you dropped.
+                from: from.into_iter().filter(|f| f.0 > 0.0).map(|f| f.1).collect(),
             }
         })
+        .filter(|p| p.score > 0.0)
         .collect();
     picks.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.anime.id.cmp(&b.anime.id)));
     picks
@@ -282,7 +313,7 @@ pub fn gather(backend: &Arc<Backend>) {
     });
 }
 
-/// The Recommended page: the picks, and how many of the library's shows they come from.
+/// The Recommended page: the picks, and how many shows, in the library or on your list, they come from.
 pub fn view(backend: &Backend) -> Result<Value> {
     let mut owned = Vec::new();
     for show in backend.db.shows()? {
@@ -297,13 +328,15 @@ pub fn view(backend: &Backend) -> Result<Value> {
             });
         }
     }
-    let mut ids: Vec<i64> = owned.iter().map(|o| o.anilist_id).collect();
+    let listed = crate::anilist_list::listed(backend);
+    // A copy of the list kept before Telly read its statuses only leaves its anime out.
+    let mut ids: Vec<i64> = owned.iter().map(|o| o.anilist_id).chain(listed.iter().filter(|l| !l.status.is_empty()).map(|l| l.id)).collect();
     ids.sort_unstable();
     ids.dedup();
     let sources = if ids.is_empty() { Vec::new() } else { sources_for(backend, &ids)? };
     let mut left_out = hidden(backend);
-    left_out.extend(crate::anilist_list::on_list(backend));
-    Ok(json!({ "shows": owned.len(), "picks": rank(&owned, &sources, &left_out, now_ms()) }))
+    left_out.extend(listed.iter().map(|l| l.id));
+    Ok(json!({ "shows": ids.len(), "picks": rank(&owned, &listed, &sources, &left_out, now_ms()) }))
 }
 
 #[cfg(test)]
@@ -335,7 +368,7 @@ mod tests {
     fn many_shows_beat_one_well_known_show() {
         let library = [owned(1, "Your Name.", 1, 0), owned(2, "Clannad", 23, 0), owned(3, "Angel Beats!", 13, 0), owned(4, "K-ON!", 13, 0)];
         let answers = [source(1, &[], &[(100, 6000), (101, 150)]), source(2, &[], &[(101, 120)]), source(3, &[], &[(101, 90)]), source(4, &[], &[(101, 60)])];
-        let picks = rank(&library, &answers, &HashSet::new(), NOW);
+        let picks = rank(&library, &[], &answers, &HashSet::new(), NOW);
         assert_eq!(ids(&picks), [101, 100]);
         // 150 is a sliver of Your Name.'s votes, and each other show's only pick.
         let from: Vec<(&str, i64)> = picks[0].from.iter().map(|f| (f.title.as_str(), f.votes)).collect();
@@ -347,7 +380,7 @@ mod tests {
         let library = [owned(1, "Famous", 12, 0), owned(2, "Little known", 12, 0)];
         let answers = [source(1, &[], &[(100, 6000), (102, 5000), (101, 4000)]), source(2, &[], &[(200, 40), (201, 20)])];
         // 40 of 60 votes is about as big a share as 6,000 of 15,000, and a bigger one than 5,000 of them.
-        assert_eq!(ids(&rank(&library, &answers, &HashSet::new(), NOW)), [100, 200, 102, 101, 201]);
+        assert_eq!(ids(&rank(&library, &[], &answers, &HashSet::new(), NOW)), [100, 200, 102, 101, 201]);
     }
 
     #[test]
@@ -361,7 +394,7 @@ mod tests {
             source(4, &[3], &[(100, 200)]),
             source(9, &[], &[(200, 500), (201, 400), (1, 40)]),
         ];
-        let picks = rank(&library, &answers, &HashSet::new(), NOW);
+        let picks = rank(&library, &[], &answers, &HashSet::new(), NOW);
         assert_eq!(ids(&picks), [100, 200, 201, 5]);
         // Its say is Season 2's alone: 300 of its 300 votes, as Season 3's 80 aren't a recommendation.
         assert_eq!(picks[0].from, [From { title: "Titan Season 2".into(), votes: 300 }]);
@@ -377,16 +410,52 @@ mod tests {
         let left = Owned { last_watched: Some(NOW - 31 * DAY), ..owned(3, "Left", 12, 3) };
         let library = [owned(1, "Seen", 12, 12), owned(2, "Not started", 12, 0), left];
         let answers = [source(1, &[], &[(100, 50)]), source(2, &[], &[(200, 300)]), source(3, &[], &[(300, 300)])];
-        assert_eq!(ids(&rank(&library, &answers, &HashSet::new(), NOW)), [100, 200, 300]);
+        assert_eq!(ids(&rank(&library, &[], &answers, &HashSet::new(), NOW)), [100, 200, 300]);
         let unwatched = [owned(1, "Seen", 12, 0), owned(2, "Not started", 12, 0)];
-        assert_eq!(ids(&rank(&unwatched, &answers, &HashSet::new(), NOW)), [200, 100]);
+        assert_eq!(ids(&rank(&unwatched, &[], &answers, &HashSet::new(), NOW)), [200, 100]);
+    }
+
+    fn listed(id: i64, title: &str, status: &str, score: f64) -> Listed {
+        Listed { id, title: title.into(), status: status.into(), score, progress: 0, episodes: Some(12) }
+    }
+
+    #[test]
+    fn your_score_and_status_say_how_much_a_show_on_your_list_counts() {
+        let at = |score| list_liking(&listed(1, "", "COMPLETED", score), 75.0);
+        assert_eq!([at(95.0), at(85.0), at(75.0), at(55.0), at(40.0), at(10.0)], [4.0, 3.0, 2.0, 0.0, -1.5, -2.0].map(Some));
+        assert_eq!(at(0.0), Some(2.0));
+        assert_eq!(list_liking(&listed(1, "", "DROPPED", 90.0), 75.0), Some(-1.0));
+        assert_eq!(list_liking(&Listed { progress: 6, ..listed(1, "", "CURRENT", 0.0) }, 75.0), Some(1.5));
+        assert_eq!(list_liking(&Listed { episodes: None, ..listed(1, "", "CURRENT", 0.0) }, 75.0), Some(1.0));
+        assert_eq!(list_liking(&listed(1, "", "PAUSED", 0.0), 75.0), Some(0.25));
+        // A copy of the list kept before Telly read statuses.
+        assert_eq!(list_liking(&listed(1, "", "", 0.0), 75.0), None);
+    }
+
+    #[test]
+    fn your_anilist_list_says_for_and_against_picks() {
+        // Nothing in the library: the picks come from the list alone.
+        let list = [listed(1, "Loved", "COMPLETED", 90.0), listed(2, "Fine", "COMPLETED", 60.0), listed(3, "Dropped", "DROPPED", 0.0)];
+        let answers = [source(1, &[], &[(100, 50)]), source(2, &[], &[(200, 100), (300, 100)]), source(3, &[], &[(300, 300), (400, 300), (2, 50)])];
+        let picks = rank(&[], &list, &answers, &HashSet::new(), NOW);
+        // Your average is 75: Loved counts 3.5, Fine 0.5 and Dropped -1. 300 has
+        // Fine's say for it but more of Dropped's against, and 400 only
+        // Dropped's: both are left out.
+        assert_eq!(ids(&picks), [100, 200]);
+        assert_eq!(picks[0].from, [From { title: "Loved".into(), votes: 50 }]);
+        // A show in the library and on your list counts as the list says (2, at
+        // your average score), by the library's name for it.
+        let library = [owned(1, "Loved (in the library)", 12, 0)];
+        let picks = rank(&library, &list[..1], &answers, &HashSet::new(), NOW);
+        assert_eq!(picks[0].from, [From { title: "Loved (in the library)".into(), votes: 50 }]);
+        assert!((picks[0].score - 2.0 * (50.0 / (50.0 + FEW_VOTES)).sqrt()).abs() < 1e-9);
     }
 
     #[test]
     fn leaves_out_hidden_and_voted_down_picks_and_shows_since_removed() {
         let library = [owned(1, "Death Note", 37, 0)];
         let answers = [source(1, &[], &[(100, 90), (101, 80), (102, -3), (103, 0)]), source(7, &[], &[(104, 999)])];
-        assert_eq!(ids(&rank(&library, &answers, &HashSet::from([100]), NOW)), [101]);
+        assert_eq!(ids(&rank(&library, &[], &answers, &HashSet::from([100]), NOW)), [101]);
     }
 
     #[test]

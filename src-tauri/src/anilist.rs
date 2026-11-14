@@ -193,25 +193,58 @@ pub fn viewer(token: &str) -> Result<String> {
     answer.pointer("/data/Viewer/name").and_then(Value::as_str).map(str::to_string).ok_or_else(|| anyhow!("AniList didn’t say who this token is for"))
 }
 
-/// The anime on the user's list that they've started: all but those they only plan to watch.
-pub fn watched_ids(token: &str) -> Result<Vec<i64>> {
+/// An anime on the user's list, as Recommended reads it.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct Listed {
+    pub id: i64,
+    /// Its short title.
+    pub title: String,
+    /// CURRENT, COMPLETED, PAUSED, DROPPED or REPEATING ("" in a copy of the list kept before Telly read them).
+    pub status: String,
+    /// The user's score out of 100 (0 when they haven't scored it).
+    pub score: f64,
+    pub progress: i64,
+    pub episodes: Option<i64>,
+}
+
+/// The anime on the user's list that they've started (all but those they only
+/// plan to watch), with each one's status and score.
+pub fn list(token: &str) -> Result<Vec<Listed>> {
     let viewer = query_as("query { Viewer { id } }", json!({}), Some(token))?;
     let user = viewer.pointer("/data/Viewer/id").and_then(Value::as_i64).ok_or_else(|| anyhow!("AniList didn’t say who this token is for"))?;
     let q = "query ($user: Int, $chunk: Int) { MediaListCollection(userId: $user, type: ANIME, status_not: PLANNING, chunk: $chunk, perChunk: 500) {
-      hasNextChunk lists { entries { mediaId } } } }";
-    let mut ids = Vec::new();
+      hasNextChunk lists { entries { mediaId status score(format: POINT_100) progress media { id episodes title { romaji english native } } } } } }";
+    let mut found = Vec::new();
     for chunk in 1.. {
         let answer = query_as(q, json!({ "user": user, "chunk": chunk }), Some(token))?;
-        for list in answer.pointer("/data/MediaListCollection/lists").and_then(Value::as_array).into_iter().flatten() {
-            ids.extend(list.get("entries").and_then(Value::as_array).into_iter().flatten().filter_map(|e| e.get("mediaId").and_then(Value::as_i64)));
-        }
+        found.extend(listed_in(&answer));
         if answer.pointer("/data/MediaListCollection/hasNextChunk").and_then(Value::as_bool) != Some(true) {
             break;
         }
     }
-    ids.sort_unstable();
-    ids.dedup();
-    Ok(ids)
+    // An anime in one of the user's own lists is in its status's list too.
+    found.sort_by_key(|l| l.id);
+    found.dedup_by_key(|l| l.id);
+    Ok(found)
+}
+
+/// The anime in one chunk of the user's list.
+fn listed_in(answer: &Value) -> Vec<Listed> {
+    let lists = answer.pointer("/data/MediaListCollection/lists").and_then(Value::as_array).into_iter().flatten();
+    lists
+        .flat_map(|list| list.get("entries").and_then(Value::as_array).into_iter().flatten())
+        .filter_map(|e| {
+            let anime = e.get("media").and_then(Anime::from_api);
+            Some(Listed {
+                id: e.get("mediaId")?.as_i64()?,
+                title: anime.as_ref().map(Anime::short_title).unwrap_or_default(),
+                status: e.get("status").and_then(Value::as_str).unwrap_or("").to_string(),
+                score: e.get("score").and_then(Value::as_f64).unwrap_or(0.0),
+                progress: e.get("progress").and_then(Value::as_i64).unwrap_or(0),
+                episodes: anime.and_then(|a| a.episodes),
+            })
+        })
+        .collect()
 }
 
 /// An anime on the user's list: its episode count (if AniList knows it),
@@ -540,5 +573,21 @@ mod tests {
         assert_eq!(a.short_title(), "Polar Bear Cafe");
         let b = anime(2, "Sousou no Frieren", "Frieren: Beyond Journey’s End", "TV", Some(28));
         assert_eq!(b.short_title(), "Sousou no Frieren");
+    }
+
+    #[test]
+    fn reads_the_users_list() {
+        let answer = json!({ "data": { "MediaListCollection": { "hasNextChunk": false, "lists": [
+            { "entries": [
+                { "mediaId": 154587, "status": "COMPLETED", "score": 90, "progress": 28,
+                  "media": { "id": 154587, "episodes": 28, "title": { "romaji": "Sousou no Frieren", "english": "Frieren: Beyond Journey’s End", "native": "葬送のフリーレン" } } },
+                { "mediaId": 21, "status": "CURRENT", "score": 0, "progress": 400, "media": { "id": 21, "episodes": null, "title": { "romaji": "ONE PIECE" } } },
+            ] },
+            { "entries": [{ "mediaId": 30, "status": "DROPPED", "score": 35.5, "progress": 3, "media": null }] },
+        ] } } });
+        let frieren = Listed { id: 154587, title: "Sousou no Frieren".into(), status: "COMPLETED".into(), score: 90.0, progress: 28, episodes: Some(28) };
+        let one_piece = Listed { id: 21, title: "ONE PIECE".into(), status: "CURRENT".into(), score: 0.0, progress: 400, episodes: None };
+        let dropped = Listed { id: 30, title: "".into(), status: "DROPPED".into(), score: 35.5, progress: 3, episodes: None };
+        assert_eq!(listed_in(&answer), [frieren, one_piece, dropped]);
     }
 }

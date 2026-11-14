@@ -46,7 +46,7 @@
 - 🗂️ **A library to browse:** it lists your library as movies, series or both, sorted by when it was added, name, year released or the share of its words you know; what you're watching is one row that scrolls sideways.
 - 🖼️ **A cover for everything:** what AniList doesn't know (live action, a folder of specials) gets a cover too: the poster from Wikipedia's article of that very name, else a frame from the video, taken at random when it's added, with the title drawn over it as on a poster. Every cover gets a small copy when it's got, which is what the app draws, so the Library scrolls without waiting for pictures. A film is listed as a movie, with its length.
 - 🔁 **Every time through:** each show or film's page in the Library shows when you first finished it and the dates you completed full rewatches.
-- 💡 **[Something to watch next](#-recommended):** it recommends anime to watch next, from what AniList's users recommend to people who liked the shows in your library.
+- 💡 **[Something to watch next](#-recommended):** it recommends anime to watch next, from what AniList's users recommend to people who liked the shows in your library and on your AniList list.
 - 📈 **Logged for you:** it logs what you watch for [Tidepool](https://github.com/bee-san/tidepool), and on your [AniList list](#-your-anilist-list) once you've signed in.
 
 ![The Library: what you're watching, then every show with the share of its words you know](library.webp)
@@ -236,11 +236,13 @@ On 850,000 lines in 2,700 episodes (made up, a tenth of them without their words
 
 ![Recommended: anime to watch next, each with the shows in your library it's recommended from](recommended.webp)
 
-**Recommended**, in the library's toolbar, lists anime to watch next. It goes on the shows in your library and needs no AniList sign-in. On AniList, people pair shows ("liked this, try that") and vote each pair up or down; Telly asks for the 25 most voted pairs of every show AniList knows, 50 shows to a request. It asks when Telly starts and when a show is added, about the shows it hasn't asked about that week, so the page opens with its answers.
+**Recommended**, in the library's toolbar, lists anime to watch next. It goes on the shows in your library and needs no sign-in; once you've [signed in to AniList](#-your-anilist-list), it goes on the anime on your list there too. On AniList, people pair shows ("liked this, try that") and vote each pair up or down; Telly asks for the 25 most voted pairs of every show AniList knows, 50 shows to a request. It asks when Telly starts and when a show is added, about the shows it hasn't asked about that week, so the page opens with its answers.
 
 - **Adding up:** each show has a say on a pick, from the pick's share of that show's votes (its square root, so a quarter of the votes counts half as much as all of them). A little-known show's favourite counts as much as a famous show's, and a pick liked from many of your shows still beats one show's favourite. A show with only a handful of votes has a smaller say, as its share is worked out as if it had 50 more. Votes for the rest of the show's own series (its sequel, say) aren't counted.
 - **How much you've watched:** a show watched to the end counts 2; one you're watching, 1 to 2, by how much of it you've seen; one not started, 0.5, as having it only says you're curious; and one left part-way, with nothing of it watched for 30 days, 0.25.
-- **Series:** a show's seasons, films and side stories (AniList's relations) have one say between them, the biggest any of them gives. The rest of a series you have isn't offered as a pick.
+- **Your AniList list:** signed in, each anime on your list (but those you only plan to watch) counts as the list says. One you've scored counts 2 at your average score, and 1 more or less for each 10 points above or below it, from -2 to 4: with your average at 7.5/10, a 9 counts 3.5, and a 5 counts -0.5, against its picks. Without a score, one completed counts 2, one you're watching 1 to 2 by how far you are, and one paused 0.25. One you dropped counts -1. A show in your library and on your list counts as the list says.
+- **Against:** a pick that your dropped and low-scored shows say more against than the rest say for is left out, and a show that says against a pick isn't among those it's recommended from.
+- **Series:** a show's seasons, films and side stories (AniList's relations) have one say between them, the biggest any of them gives. The rest of a series you have, or have on your list, isn't offered as a pick.
 - **A pick** opens with its synopsis, the shows it's recommended from with their votes, and **Open on AniList**. **Hide** leaves it out from now on, for one you've seen elsewhere.
 
 AniList's answers are kept for a week. A show is asked about again after that, and a show you add is asked about the next time the page opens.
@@ -266,7 +268,7 @@ In **Settings → AniList**, **Get a token** opens AniList, which shows an acces
 - A show added as one folder holding several seasons: the first season folder goes to the show's own entry, and a later one to the entry AniList finds for its folder's name, numbered from 1 within that folder. When AniList isn't fairly sure which entry a folder is, or a number is past the entry's last episode, nothing is logged.
 - Shows AniList doesn't know aren't logged.
 - If AniList can't be reached, Telly tries again every 10 minutes, and Settings says why it failed.
-- **Recommended** leaves out what's on your list, except what you only plan to watch. A copy of the list is kept, fetched again when Telly starts, when you sign in and after Telly updates it.
+- **Recommended** goes on what's on your list, except what you only plan to watch, and leaves it out of its picks ([Recommended](#-recommended) says how each counts). A copy of the list, with each anime's status and your score, is kept, fetched again when Telly starts, when you sign in and after Telly updates it.
 
 ## 🎯 How subtitles are matched
 
@@ -369,7 +371,7 @@ Telly knows a show's episodes by where their rips are. When the rips aren't ther
 | `%LOCALAPPDATA%\Telly\known-words.json` | Telly's copy of the words Anki says you have a studied card for |
 | `%LOCALAPPDATA%\Telly\telly-lines.sqlite` | every spoken line and its words, for searching lines; made again from `subtitles` if it's deleted |
 | `%LOCALAPPDATA%\Telly\recommended.json` | what AniList's users recommend for each of your shows, kept for a week |
-| `%LOCALAPPDATA%\Telly\anilist-list.json` | which anime are on your AniList list, once you've signed in |
+| `%LOCALAPPDATA%\Telly\anilist-list.json` | the anime on your AniList list, with each one's status and your score, once you've signed in |
 | `%APPDATA%\Telly\telly-log.sqlite` | what you watched, for Tidepool (counts only, never the text) |
 
 A backup (Settings → Backup) has `telly.sqlite`, `telly-log.sqlite`, `subtitles`, `known-words.json` and `anilist-list.json`; Telly makes the rest again. A backup being restored waits in `%LOCALAPPDATA%\Telly\backup-to-restore` until Telly starts again.

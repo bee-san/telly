@@ -315,6 +315,7 @@
 
       {#if step.id === "rips"}
         <p class="lede">Choose the folders your anime is in. Telly reads them while you go on with the rest of the setup, then shows what it found for you to check. Your rips stay where they are, unchanged.</p>
+        <p class="muted">Used Telly on another computer? <button type="button" class="link-btn" onclick={() => goto("/settings#backup")}>Restore its backup…</button></p>
         {#if status && !status.tools.ffmpeg}
           <div class="actions">
             <button type="button" class="btn quiet" onclick={chooseFfmpeg}>Choose ffmpeg.exe…</button>

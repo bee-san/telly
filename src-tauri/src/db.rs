@@ -155,6 +155,9 @@ CREATE TABLE show_completions (
 );
 "];
 
+/// How many migrations this Telly has: a library of a higher version is from a newer Telly.
+pub const VERSION: i64 = MIGRATIONS.len() as i64;
+
 /// The next id for a show or an episode: after every one given out, removed or not.
 const NEXT_SHOW_ID: &str = "(SELECT id + 1 FROM last_ids WHERE name = 'shows')";
 const NEXT_EPISODE_ID: &str = "(SELECT id + 1 FROM last_ids WHERE name = 'episodes')";

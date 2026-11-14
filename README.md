@@ -377,6 +377,18 @@ Telly knows a show's episodes by where their rips are. When the rips aren't ther
 - **Settings → Moved rips** does the same for every show in a folder at once: everything that was in `D:\Anime` is now in `E:\Anime`.
 - **Look for new episodes** (and Telly's look every 10 minutes) finds a rip moved within its show's folder, into a season folder, say, by its name and size, rather than taking it for a new release of the episode.
 
+## 💾 Backing up, and moving to another computer
+
+**Settings → Backup → Back up…** saves one file (a .zip) with what Telly can't make again: your shows, where you are in each and what you watched, your settings, the subtitles with your choices and nudges, Tidepool's log, the words you know and your AniList list. It can be made while Telly is busy: each database is copied whole as it is at that moment. Telly's copies of episodes, covers, the seek bar's pictures, line search's index, recommendations and the character dictionary aren't in it, as Telly makes them again, and nor are your rips. A backup holds your Jimaku and OpenRouter keys and your AniList token, so keep it where only you can open it.
+
+**Restore…**, in the same place, or **Restore its backup…** on the first screen of the setup on a new install, says what's in a backup (which Telly made it, when, and how many shows and episodes) before anything changes. **Restore and restart** puts it in place of the library here, and Telly starts again into it:
+
+- A file that isn't a backup Telly made isn't restored, and nor is one from a newer Telly than this one: update Telly first.
+- The backup is unpacked beside the library, and takes its place as Telly starts, before anything opens it. The library it replaces is set aside first and put back if anything fails, and Telly says why.
+- Where shows' rips aren't where the backup has them, Telly opens on Settings → Moved rips, with the folder they were in filled in (or offered, when they were in several), to say where they are now ([When your rips move](#-when-your-rips-move)).
+- What belongs to the computer stays this computer's: where Telly's copies go, and the dictionaries its Hachidori has. ffmpeg and the dictionaries folder are this computer's choice, else the backup's when they're here too. Episodes whose copy isn't here are converted again; Telly's copies of episodes that are the same in both libraries are kept.
+- The development server can't start itself again: restart it to finish restoring.
+
 ## 📂 Where things go
 
 | Where | What |
@@ -390,6 +402,8 @@ Telly knows a show's episodes by where their rips are. When the rips aren't ther
 | `%LOCALAPPDATA%\Telly\recommended.json` | what AniList's users recommend for each of your shows, kept for a week |
 | `%LOCALAPPDATA%\Telly\anilist-list.json` | which anime are on your AniList list, once you've signed in |
 | `%APPDATA%\Telly\telly-log.sqlite` | what you watched, for Tidepool (counts only, never the text) |
+
+A backup (Settings → Backup) has `telly.sqlite`, `telly-log.sqlite`, `subtitles`, `known-words.json` and `anilist-list.json`; Telly makes the rest again. A backup being restored waits in `%LOCALAPPDATA%\Telly\backup-to-restore` until Telly starts again.
 
 > [!NOTE]
 > Your rips are never moved or changed.

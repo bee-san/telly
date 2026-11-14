@@ -47,7 +47,8 @@ const MAX_SHOWS: usize = 6;
 const REFRESH_MS: i64 = 30 * 24 * 3600 * 1000;
 /// After a failed import, how long the engine page waits before trying that copy again.
 const RETRY_MS: i64 = 5 * 60 * 1000;
-const ZIP: &str = "telly-characters.zip";
+/// The character dictionary, in the names folder.
+pub const ZIP: &str = "telly-characters.zip";
 
 /// Supporting characters get the honorifics anime use most (their notes come
 /// from the builder's own list); main characters get every one of them.

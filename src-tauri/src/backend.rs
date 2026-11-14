@@ -1540,7 +1540,7 @@ impl Backend {
             "show" => self.show_view(arg(&args, "id")?).map(|v| tagged(v, &args)),
             "scan" => self.scan(&arg::<String>(&args, "folder")?),
             "searchAnilist" => {
-                let mut found = anilist::search(&arg::<String>(&args, "query")?)?;
+                let mut found = anilist::search_loosely(&arg::<String>(&args, "query")?)?;
                 let count = arg::<Option<usize>>(&args, "count")?.unwrap_or(0);
                 anilist::rank(&mut found, &arg::<String>(&args, "query")?, count);
                 anilist::follow_sequels(&mut found, &arg::<String>(&args, "query")?)?;

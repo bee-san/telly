@@ -165,12 +165,12 @@ pub fn query_patiently(q: &str, variables: Value) -> Result<Value> {
 }
 
 /// Anime matching `text`, AniList's best match first. A season in it
-/// ("Season 2") isn't searched for: AniList finds every season by the show's
-/// name, and the words throw it ("K-On! Season 1" finds other shows). `rank`
-/// picks the season out.
+/// ("Season 2", "S2") isn't searched for: AniList finds every season by the
+/// show's name, and the words throw it ("K-On! Season 1" finds other shows,
+/// "Overlord S2" nothing). `rank` picks the season out.
 pub fn search(text: &str) -> Result<Vec<Anime>> {
     static SEASON: OnceLock<Regex> = OnceLock::new();
-    let season = SEASON.get_or_init(|| Regex::new(r"(?i)\bseason\s*\d+\b").expect("valid pattern"));
+    let season = SEASON.get_or_init(|| Regex::new(r"(?i)\b(?:season\s*\d+|s\d{1,2})\b").expect("valid pattern"));
     let text = season.replace_all(text, " ");
     let q = format!("query ($search: String) {{ Page(perPage: 10) {{ media(search: $search, type: ANIME, sort: SEARCH_MATCH) {{ {FIELDS} }} }} }}");
     let answer = query(&q, json!({ "search": text.split_whitespace().collect::<Vec<_>>().join(" ") }))?;
@@ -335,7 +335,7 @@ fn format_hint(title: &str) -> &'static str {
     let has = |w: &[&str]| words.iter().any(|x| w.contains(&x.as_str()));
     if has(&["ova", "oad", "ovas", "oads"]) {
         "OVA"
-    } else if has(&["movie", "film", "gekijouban", "劇場版"]) {
+    } else if has(&["movie", "movies", "film", "films", "gekijouban", "劇場版"]) {
         "MOVIE"
     } else if has(&["special", "specials", "sp"]) {
         "SPECIAL"
@@ -346,10 +346,15 @@ fn format_hint(title: &str) -> &'static str {
     }
 }
 
-/// The season a title names: "Season 2", "2nd Season", "Second Season", or a
-/// number ending it ("Konosuba 2", "Overlord II", but not "Part 2").
+/// The season a title names: "Season 2", "2nd Season", "Second Season", "S2",
+/// or a number ending it ("Konosuba 2", "Overlord II", but not "Part 2").
 pub(crate) fn season(title: &str) -> Option<i64> {
     let words = words(title);
+    // "S2" and "S02", as release groups name season folders.
+    let short = |w: &String| w.strip_prefix('s').filter(|n| (1..=2).contains(&n.len()) && n.bytes().all(|b| b.is_ascii_digit())).and_then(|n| n.parse::<i64>().ok());
+    if let Some(n) = words.iter().find_map(short).filter(|&n| n > 0) {
+        return Some(n);
+    }
     let ordinal = |w: &str| -> Option<i64> {
         match w {
             "second" => Some(2),
@@ -537,6 +542,29 @@ mod tests {
         assert_eq!(season("Sword Art Online II"), Some(2));
         assert_eq!(season("Pokémon Concierge Part 2"), None);
         assert_eq!(season("FAIRY TAIL (2014)"), None);
+        assert_eq!(season("Overlord S2"), Some(2));
+        assert_eq!(season("Clannad S02"), Some(2));
+        assert_eq!(season("Overlord S00"), None);
+    }
+
+    #[test]
+    fn a_folder_named_s2_or_movies_gets_that_season_or_a_film() {
+        // AniList's order for "Overlord": every season is TV with 13 episodes.
+        let overlord = || {
+            vec![
+                anime(20832, "Overlord", "Overlord", "TV", Some(13)),
+                anime(98437, "Overlord II", "Overlord II", "TV", Some(13)),
+                anime(101474, "Overlord III", "Overlord III", "TV", Some(13)),
+                anime(133844, "Overlord IV", "Overlord IV", "TV", Some(13)),
+            ]
+        };
+        for (folder, id) in [("Overlord S1", 20832), ("Overlord S2", 98437), ("Overlord S3", 101474)] {
+            let mut found = overlord();
+            rank(&mut found, folder, 13);
+            assert_eq!(found[0].id, id, "{folder}");
+        }
+        assert_eq!(format_hint("Overlord Movies"), "MOVIE");
+        assert_eq!(format_hint("Ghibli Films"), "MOVIE");
     }
 
     #[test]

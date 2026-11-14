@@ -19,6 +19,8 @@
   let query = $state("");
   let found = $state<Anime[]>([]);
   let searching = $state(false);
+  /** The name last searched for, once AniList has answered. */
+  let searched = $state("");
   let dragging = $state<number | null>(null);
 
   async function scan(path: string, started?: Promise<ScanResult>) {
@@ -64,7 +66,7 @@
     return false;
   });
   const visible = $derived(showAll ? files : files.slice(0, 12));
-  const searchList = $derived(found.length ? found : (result?.matches ?? []));
+  const searchList = $derived(searched ? found : (result?.matches ?? []));
 
   function drop(target: number) {
     if (dragging === null || dragging === target) return;
@@ -80,7 +82,9 @@
     if (!query.trim()) return;
     searching = true;
     try {
-      found = await call<Anime[]>("searchAnilist", { query, count: included.length });
+      const name = query.trim();
+      found = await call<Anime[]>("searchAnilist", { query: name, count: included.length });
+      searched = name;
     } catch (e) {
       error = errorText(e);
     } finally {
@@ -155,7 +159,7 @@
             </span>
           </button>
         {:else}
-          <p class="sheet-note">Nothing found yet. Try another name.</p>
+          <p class="sheet-note">{searched ? `Nothing found for “${searched}”. Try another name.` : "Nothing found yet. Try another name."}</p>
         {/each}
       </div>
       <div class="sheet-foot">
@@ -176,7 +180,7 @@
           {/if}
           <p class="folder mono">{result.scan.folder}</p>
         </div>
-        <button type="button" class="link-btn" onclick={() => { phase = "search"; if (!found.length) search(); }}>{chosen ? "Choose another show" : "Find it on AniList"}</button>
+        <button type="button" class="link-btn" onclick={() => { phase = "search"; if (!searched) search(); }}>{chosen ? "Choose another show" : "Find it on AniList"}</button>
       </div>
 
       <div class="map-top">

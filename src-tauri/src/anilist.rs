@@ -71,14 +71,14 @@ impl Anime {
         })
     }
 
-    fn names(&self) -> impl Iterator<Item = &str> {
+    pub(crate) fn names(&self) -> impl Iterator<Item = &str> {
         [self.romaji.as_str(), self.english.as_str(), self.native.as_str()]
             .into_iter()
             .chain(self.synonyms.iter().map(String::as_str))
     }
 
     /// The season its titles name. A first season's name none.
-    fn season(&self) -> i64 {
+    pub(crate) fn season(&self) -> i64 {
         self.names().find_map(season).unwrap_or(1)
     }
 
@@ -185,6 +185,17 @@ pub fn by_id(id: i64) -> Result<Anime> {
     let q = format!("query ($id: Int) {{ Media(id: $id, type: ANIME) {{ {FIELDS} }} }}");
     let answer = query(&q, json!({ "id": id }))?;
     answer.pointer("/data/Media").and_then(Anime::from_api).ok_or_else(|| anyhow!("AniList has no anime {id}"))
+}
+
+/// The anime of each of `ids` that AniList has, asked for together.
+pub fn by_ids(ids: &[i64]) -> Result<Vec<Anime>> {
+    let q = format!("query ($ids: [Int]) {{ Page(perPage: 50) {{ media(id_in: $ids, type: ANIME) {{ {FIELDS} }} }} }}");
+    let mut found = Vec::new();
+    for ids in ids.chunks(50) {
+        let answer = query_patiently(&q, json!({ "ids": ids }))?;
+        found.extend(answer.pointer("/data/Page/media").and_then(Value::as_array).into_iter().flatten().filter_map(Anime::from_api));
+    }
+    Ok(found)
 }
 
 /// The name of the user whose access token `token` is.
@@ -312,7 +323,7 @@ fn words(text: &str) -> Vec<String> {
 }
 
 /// How alike two titles are, 0 to 1: shared words over all words, with a bonus when one contains the other.
-fn likeness(a: &str, b: &str) -> f64 {
+pub(crate) fn likeness(a: &str, b: &str) -> f64 {
     let (wa, wb) = (words(a), words(b));
     if wa.is_empty() || wb.is_empty() {
         return 0.0;

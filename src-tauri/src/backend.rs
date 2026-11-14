@@ -16,6 +16,7 @@ use crate::media;
 use crate::mining::{self, Mining};
 use crate::names::{self, Names};
 use crate::own_hachidori::{self, Own};
+use crate::parts;
 use crate::nyaa;
 use crate::premine::{self, Premining};
 use crate::recommend;
@@ -134,6 +135,8 @@ pub struct Backend {
     pub downloads: Downloads,
     /// AniList's entries and the anime each belongs to (series.rs).
     pub series: series::Kept,
+    /// The folder Add media last read, so choosing another anime for it doesn't read it again.
+    scanned: Mutex<Option<scan::Scan>>,
 }
 
 /// Where "Earlier/Later from here" last moved an episode's lines from, so
@@ -316,6 +319,11 @@ fn to_value<T: Serialize>(v: T) -> Result<Value> {
 /// know it (`matched` is false) and it's one file, an hour or more long.
 pub(crate) fn is_movie(format: &str, matched: bool, lengths: &[f64]) -> bool {
     format == "MOVIE" || (!matched && lengths.len() == 1 && lengths[0] >= 3600.0)
+}
+
+/// The setting that says a show's folder holds other shows' rips too, so Look for new episodes adds none to it.
+fn shared_setting(show_id: i64) -> String {
+    format!("folder.shared.{show_id}")
 }
 
 /// The setting that says a show's cover is a frame from its video.
@@ -509,6 +517,7 @@ impl Backend {
             media_folder: RwLock::new(None),
             downloads: Downloads::default(),
             series: series::Kept::default(),
+            scanned: Mutex::new(None),
         })
     }
 
@@ -933,13 +942,27 @@ impl Backend {
         Ok(json!({ "card": card, "episodes": rows, "activity": self.activity(), "whisper": whisper, "wordsError": words_error, "completion": self.db.show_completion(id)?, "ripsMissing": rips_missing, "seriesMoved": self.db.setting(&format!("series.of.{id}"))?.is_some() }))
     }
 
-    fn scan(&self, folder: &str) -> Result<Value> {
+    /// Reads a folder for Add media: its files, the anime it is, and, when it
+    /// holds more than one show (a folder for each season, one of movies, a
+    /// loose OVA), its parts with the AniList entry of each (parts.rs). With
+    /// `base`, the anime is the one you chose, and the folder just read isn't
+    /// read again.
+    fn scan(&self, folder: &str, base: Option<i64>) -> Result<Value> {
         let tools = self.tools();
-        let scan = scan::scan(Path::new(folder), |paths| {
-            self.downloads.unless_downloading(paths, |paths| scan::probe_durations(tools.ffprobe.as_deref(), paths))
-        })?;
-        let count = scan.files.iter().filter(|f| f.number.is_some()).count();
-        let (matches, error) = match anilist::search_loosely(&scan.guess) {
+        let kept = self.scanned.lock().ok().and_then(|s| s.clone()).filter(|s| base.is_some() && s.folder == folder);
+        let scan = match kept {
+            Some(scan) => scan,
+            None => scan::scan(Path::new(folder), |paths| {
+                self.downloads.unless_downloading(paths, |paths| scan::probe_durations(tools.ffprobe.as_deref(), paths))
+            })?,
+        };
+        if let Ok(mut kept) = self.scanned.lock() {
+            *kept = Some(scan.clone());
+        }
+        let split = parts::split(&scan);
+        // Of several seasons, the first one's episodes say which entry the folder's name means.
+        let count = if split.len() > 1 { split.iter().find(|p| p.kind == parts::Kind::Season).map_or(0, parts::episodes) } else { scan.files.iter().filter(|f| f.number.is_some()).count() };
+        let (mut matches, mut error) = match anilist::search_loosely(&scan.guess) {
             Ok(mut found) => {
                 anilist::rank(&mut found, &scan.guess, count);
                 let error = anilist::follow_sequels(&mut found, &scan.guess).err().map(|e| format!("{e:#}"));
@@ -947,7 +970,30 @@ impl Backend {
             }
             Err(e) => (Vec::new(), Some(format!("{e:#}"))),
         };
-        Ok(json!({ "scan": scan, "matches": matches, "error": error, "ffprobe": tools.ffprobe.is_some() }))
+        if let Some(id) = base {
+            let chosen = anilist::by_id(id)?;
+            matches.retain(|a| a.id != id);
+            matches.insert(0, chosen);
+        }
+        // The rest of the anime: its other seasons, its movies and its OVAs.
+        let graph = matches.first().and_then(|found| match series::around(self, found.id) {
+            Ok(graph) => Some(graph),
+            Err(e) => {
+                error.get_or_insert(format!("{e:#}"));
+                None
+            }
+        });
+        let (parts, entries, anime) = match (&graph, matches.first()) {
+            (Some(graph), Some(found)) => {
+                let root = graph.root(found.id).unwrap_or(found.id);
+                let entries: Vec<&Anime> = graph.parts(root).into_iter().map(|e| &e.anime).collect();
+                (parts::assign(split, graph, found), json!(entries), json!(graph.entry(root).map_or(found, |e| &e.anime)))
+            }
+            _ => (parts::unassigned(split, &scan.guess), json!([]), json!(matches.first())),
+        };
+        // One part is one show, added as ever.
+        let parts = if parts.len() > 1 { parts } else { Vec::new() };
+        Ok(json!({ "scan": scan, "matches": matches, "parts": parts, "entries": entries, "anime": anime, "error": error, "ffprobe": tools.ffprobe.is_some() }))
     }
 
     /// Looks in a show's folder again for episodes that weren't there, or
@@ -957,6 +1003,12 @@ impl Backend {
     pub fn rescan(&self, id: i64) -> Result<usize> {
         let show = self.db.show(id)?.ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?;
         let existing = self.db.episodes(id)?;
+        // Its folder holds other shows' rips too (one of several movies, a loose OVA beside season folders, half a
+        // season folder): nothing new there is its own, so the folder is read only to find a rip of its own that moved.
+        let shared = self.db.setting_bool(&shared_setting(id), false);
+        if shared && existing.iter().all(|e| Path::new(&e.path).is_file()) {
+            return Ok(0);
+        }
         let known: std::collections::HashMap<String, f64> = existing.iter().map(|e| (e.path.clone(), e.duration)).collect();
         let taken: std::collections::HashSet<i64> = existing.iter().map(|e| e.number).collect();
         let tools = self.tools();
@@ -998,7 +1050,7 @@ impl Backend {
             gone_episodes.iter().filter(|e| !moved.iter().any(|m| m.id == e.id)).map(|e| (e.number, e.id)).collect();
         let mut new = Vec::new();
         let mut replaced = 0;
-        for f in scan.files.iter().filter(|f| f.reason.is_empty() && !known.contains_key(&f.path) && !moved_to.contains(f.path.as_str())) {
+        for f in scan.files.iter().filter(|f| !shared && f.reason.is_empty() && !known.contains_key(&f.path) && !moved_to.contains(f.path.as_str())) {
             let number = match f.parsed {
                 Some(n) if by_names => {
                     if let Some(episode) = gone.remove(&n) {
@@ -1117,6 +1169,52 @@ impl Backend {
         recommend::gather(self);
         self.jobs.poke();
         Ok(json!({ "id": id }))
+    }
+
+    /// Adds a folder's parts, each as a show of its own: an anime's seasons,
+    /// movies and OVAs, from one sheet. Nothing is added unless AniList
+    /// answers for every entry. A part with no entry is listed under `anime`
+    /// (the anime's key) with the rest.
+    fn add_shows(self: &Arc<Self>, args: &Value) -> Result<Value> {
+        #[derive(Deserialize)]
+        struct Part {
+            #[serde(flatten)]
+            show: NewShow,
+            /// Its folder holds other parts' rips too.
+            #[serde(default)]
+            shared: bool,
+        }
+        let parts: Vec<Part> = serde_json::from_value(args.get("shows").cloned().unwrap_or_default()).context("the shows to add")?;
+        let anime: Option<i64> = arg(args, "anime")?;
+        if parts.is_empty() || parts.iter().any(|p| p.show.episodes.is_empty()) {
+            return Err(anyhow!("There are no episodes to add"));
+        }
+        let ids: Vec<i64> = parts.iter().filter_map(|p| p.show.anilist_id).collect();
+        let entries = anilist::by_ids(&ids)?;
+        if let Some(missing) = ids.iter().find(|id| !entries.iter().any(|a| a.id == **id)) {
+            return Err(anyhow!("AniList has no anime {missing}"));
+        }
+        let mut added = Vec::new();
+        for mut part in parts {
+            if part.show.title.trim().is_empty() {
+                part.show.title = scan::clean_title(Path::new(&part.show.folder).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default().as_str());
+            }
+            let entry = part.show.anilist_id.and_then(|id| entries.iter().find(|a| a.id == id));
+            let new = Self::new_show_from(entry, part.show);
+            let id = self.db.add_show(&new)?;
+            if part.shared {
+                self.db.set_setting(&shared_setting(id), &json!(true))?;
+            }
+            if let (None, Some(key)) = (new.anilist_id, anime) {
+                series::move_show(self, id, Some(key))?;
+            }
+            self.fetch_cover(id, new.cover_url.clone());
+            added.push(id);
+        }
+        series::gather(self);
+        recommend::gather(self);
+        self.jobs.poke();
+        Ok(json!({ "ids": added }))
     }
 
     fn rematch(self: &Arc<Self>, id: i64, anilist_id: i64) -> Result<Value> {
@@ -1554,7 +1652,7 @@ impl Backend {
             "activity" => to_value(self.activity()),
             "queue" => to_value(self.queue()),
             "show" => self.show_view(arg(&args, "id")?).map(|v| tagged(v, &args)),
-            "scan" => self.scan(&arg::<String>(&args, "folder")?),
+            "scan" => self.scan(&arg::<String>(&args, "folder")?, arg(&args, "anilistId")?),
             "searchAnilist" => {
                 let mut found = anilist::search_loosely(&arg::<String>(&args, "query")?)?;
                 let count = arg::<Option<usize>>(&args, "count")?.unwrap_or(0);
@@ -1563,6 +1661,7 @@ impl Backend {
                 to_value(found)
             }
             "addShow" => self.add_show(&args),
+            "addShows" => self.add_shows(&args),
             "rescan" => {
                 let added = self.rescan(arg(&args, "id")?)?;
                 Ok(json!({ "added": added }))

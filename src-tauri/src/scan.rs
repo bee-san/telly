@@ -15,7 +15,7 @@ use crate::util::{half_width, natural_cmp};
 use anyhow::{anyhow, Result};
 use regex::Regex;
 use serde::Serialize;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -53,16 +53,6 @@ pub struct Scan {
     pub files: Vec<ScannedFile>,
     /// "names" when the episode numbers come from the file names, "order" when Telly put them in order.
     pub numbering: String,
-    /// Subfolders that each look like a show of their own (seasons in one folder).
-    pub groups: Vec<Group>,
-}
-
-#[derive(Serialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct Group {
-    pub folder: String,
-    pub name: String,
-    pub videos: usize,
 }
 
 fn re(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
@@ -193,6 +183,8 @@ fn guess_title(folder: &Path, stems: &[String]) -> String {
     let disc = re(&DISC, r"(?i)^(disc|disk|dvd|bd|vol(ume)?|season)\s*[0-9]+$");
     let season_folder = re(&SEASON, r"(?i)^season\s*([0-9]+)$");
     let mut season: Option<i64> = None;
+    // A folder named only for what it holds ("OVA", "Movies") says nothing of the show: its parent's name does, with that word after it.
+    let mut held: Option<String> = None;
     let mut dir = Some(folder);
     while let Some(d) = dir {
         let name = d.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
@@ -200,10 +192,17 @@ fn guess_title(folder: &Path, stems: &[String]) -> String {
         let generic = ["anime", "videos", "video", "tv", "shows", "rips", "makemkv", "downloads"]
             .contains(&cleaned.to_lowercase().as_str());
         let plain = half_width(name.trim());
+        let holds = ["ova", "ovas", "oad", "oads", "movie", "movies", "films", "specials"].contains(&cleaned.to_lowercase().as_str());
+        if holds && d.parent().is_some_and(|p| p.file_name().is_some()) {
+            held.get_or_insert(cleaned);
+            dir = d.parent();
+            continue;
+        }
         if !cleaned.is_empty() && !disc.is_match(&plain) && !generic && cleaned.chars().any(char::is_alphabetic) {
-            return match season {
-                Some(n) => format!("{cleaned} Season {n}"),
-                None => cleaned,
+            return match (season, held) {
+                (Some(n), _) => format!("{cleaned} Season {n}"),
+                (None, Some(what)) => format!("{cleaned} {what}"),
+                (None, None) => cleaned,
             };
         }
         // Season 0 holds the specials, which AniList keeps apart from the seasons.
@@ -223,38 +222,10 @@ fn guess_title(folder: &Path, stems: &[String]) -> String {
     clean_title(prefix.trim_end_matches(|c: char| c.is_ascii_digit() || ('０'..='９').contains(&c) || c == ' ' || c == '-' || c == '_'))
 }
 
-/// Subfolders whose videos number from 1 again: seasons or shows of their own.
-fn groups(folder: &Path, files: &[ScannedFile]) -> Vec<Group> {
-    let mut by_dir: BTreeMap<String, Vec<&ScannedFile>> = BTreeMap::new();
-    for f in files.iter().filter(|f| f.reason.is_empty()) {
-        let top = f.rel.split('/').next().unwrap_or("").to_string();
-        if f.rel.contains('/') {
-            by_dir.entry(top).or_default().push(f);
-        }
-    }
-    let numbered: Vec<(&String, HashSet<i64>)> = by_dir
-        .iter()
-        .filter(|(_, fs)| fs.len() >= 3)
-        .map(|(d, fs)| (d, fs.iter().filter_map(|f| f.parsed).collect::<HashSet<_>>()))
-        .collect();
-    let clash = numbered.iter().enumerate().any(|(i, (_, a))| {
-        numbered.iter().skip(i + 1).any(|(_, b)| a.intersection(b).count() >= 2)
-    });
-    // Disc folders of one season carry on from each other; seasons start again.
-    if !clash {
-        return Vec::new();
-    }
-    by_dir
-        .into_iter()
-        .filter(|(_, fs)| fs.len() >= 3)
-        .map(|(dir, fs)| Group { folder: folder.join(&dir).to_string_lossy().into_owned(), name: dir, videos: fs.len() })
-        .collect()
-}
-
 /// Orders paths (with /) folder by folder, as Explorer does: "Show" comes
 /// before "Show 2nd Season", where comparing the whole paths would put the
 /// space before the slash.
-fn path_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+pub(crate) fn path_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     let (mut a, mut b) = (a.split('/'), b.split('/'));
     loop {
         match (a.next(), b.next()) {
@@ -311,7 +282,6 @@ pub fn scan(folder: &Path, durations: impl Fn(&[PathBuf]) -> Vec<Option<f64>>) -
         })
         .collect();
 
-    let groups = groups(folder, &files);
     let episodes: Vec<usize> = (0..files.len()).filter(|&i| files[i].reason.is_empty()).collect();
     let parsed: Vec<i64> = episodes.iter().filter_map(|&i| files[i].parsed).collect();
     let unique: HashSet<i64> = parsed.iter().copied().collect();
@@ -341,7 +311,6 @@ pub fn scan(folder: &Path, durations: impl Fn(&[PathBuf]) -> Vec<Option<f64>>) -
         guess: guess_title(folder, &stems),
         files,
         numbering: if by_names { "names".into() } else { "order".into() },
-        groups,
     })
 }
 
@@ -473,7 +442,7 @@ mod tests {
             &["Show/S1/Show - 01.mkv", "Show/S1/Show - 02.mkv", "Show/S1/Show - 03.mkv", "Show/S2/Show S2 - 01.mkv", "Show/S2/Show S2 - 02.mkv", "Show/S2/Show S2 - 03.mkv"],
         );
         let scan = scan(&dir.join("Show"), |paths| vec![Some(1400.0); paths.len()]).unwrap();
-        assert_eq!(scan.groups.len(), 2);
+        assert_eq!(crate::parts::split(&scan).len(), 2);
         let one = scan_folder_with(&dir.join("Show").join("S1"));
         assert_eq!(one.numbering, "names");
         assert_eq!(one.files.iter().map(|f| f.number).collect::<Vec<_>>(), [Some(1), Some(2), Some(3)]);
@@ -485,6 +454,10 @@ mod tests {
         let dir = fake_folder("season", &["KonoSuba – God’s Blessing On This Wonderful World/Season 2/KonoSuba - S02E01.mkv", "Show/Season 00/Show - S00E01.mkv"]);
         assert_eq!(scan_folder_with(&dir.join("KonoSuba – God’s Blessing On This Wonderful World").join("Season 2")).guess, "KonoSuba – God’s Blessing On This Wonderful World Season 2");
         assert_eq!(scan_folder_with(&dir.join("Show").join("Season 00")).guess, "Show");
+        // A folder named only for what it holds is searched for by the show's name, with that word.
+        let ova = fake_folder("held", &["KonoSuba/OVA/KonoSuba - S00E03.mkv"]);
+        assert_eq!(scan_folder_with(&ova.join("KonoSuba").join("OVA")).guess, "KonoSuba OVA");
+        let _ = std::fs::remove_dir_all(ova);
         let _ = std::fs::remove_dir_all(dir);
     }
 

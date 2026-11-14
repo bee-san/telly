@@ -159,7 +159,7 @@
 
   /** What Telly took a folder to be: its show on AniList, else the name it guessed. */
   function nameOf(f: Folder): string {
-    const m = f.result?.matches[0];
+    const m = f.result?.parts.length ? f.result.anime : f.result?.matches[0];
     return (m ? m.english || m.romaji : f.result?.scan.guess) || f.path.split(/[\\/]/).filter(Boolean).pop() || f.path;
   }
 
@@ -191,7 +191,9 @@
     try {
       const l = await callKept<Library>("library");
       shows = l.shows.length;
-      f.added.push(l.shows.find((s) => s.id === id)?.title ?? nameOf(f));
+      // A folder's parts are added together: it's named by the anime they're listed under.
+      const show = l.shows.find((s) => s.id === id);
+      f.added.push((show && show.series.parts > 1 ? show.series.title : show?.title) ?? nameOf(f));
     } catch {
       f.added.push(nameOf(f));
     }
@@ -340,12 +342,12 @@
                     <span class="f-name"><span class="spin"></span> Reading…</span>
                   {:else}
                     <span class="f-name">{nameOf(f)}</span>
-                    <span class="muted">{plural(episodesOf(f.result), "episode")}{f.result.scan.groups.length >= 2 ? ` · ${f.result.scan.groups.length} seasons` : ""}{f.added.length ? ` · Added ${f.added.join(", ")}` : ""}</span>
+                    <span class="muted">{plural(episodesOf(f.result), "episode")}{f.result.parts.length ? ` · ${f.result.parts.length} parts` : ""}{f.added.length ? ` · Added ${f.added.join(", ")}` : ""}</span>
                   {/if}
                   <span class="mono path">{f.path}</span>
                 </span>
-                {#if f.result && (!f.added.length || f.result.scan.groups.length >= 2)}
-                  <button type="button" class="btn small" onclick={() => (adding = f)}>{f.added.length ? "Add another season" : "Check and add"}</button>
+                {#if f.result && !f.added.length}
+                  <button type="button" class="btn small" onclick={() => (adding = f)}>Check and add</button>
                 {:else if f.added.length}
                   <span class="done"><Icon name="check" /><span>Added</span></span>
                 {/if}

@@ -514,7 +514,26 @@ export interface Scan {
   guess: string;
   files: ScannedFile[];
   numbering: "names" | "order";
-  groups: { folder: string; name: string; videos: number }[];
+}
+
+/** One part of a folder that holds more than one show: a season's folder, a movie, an OVA (parts.rs). */
+export interface ScanPart {
+  /** What it is in the folder: a folder's name, or a movie's file's. */
+  name: string;
+  /** The folder it's added with. */
+  folder: string;
+  kind: "season" | "movie" | "ova" | "specials";
+  /** Its files: episodes first, in order, then what's left out. */
+  files: ScannedFile[];
+  numbering: "names" | "order";
+  /** Its folder holds other parts' rips too, so the folder isn't looked in for new episodes. */
+  shared: boolean;
+  /** The AniList entry it is, when Telly could place it. */
+  anime: Anime | null;
+  /** What it's called when added without an entry. */
+  title: string;
+  /** Something to check before adding: its count doesn't fit the entry's. */
+  note: string;
 }
 
 export interface Anime {
@@ -606,6 +625,12 @@ export interface DownloadsView {
 export interface ScanResult {
   scan: Scan;
   matches: Anime[];
+  /** The folder's parts, when it holds more than one show; none when it's one. */
+  parts: ScanPart[];
+  /** Every entry of the anime the folder is: its seasons, movies and OVAs, in the order they came out. */
+  entries: Anime[];
+  /** The anime the folder is, by its first season. */
+  anime: Anime | null;
   error: string | null;
   ffprobe: boolean;
 }

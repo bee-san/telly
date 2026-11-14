@@ -29,6 +29,7 @@ pub mod names;
 pub mod nyaa;
 pub mod openrouter;
 pub mod own_hachidori;
+pub mod parts;
 pub mod premine;
 pub mod recommend;
 pub mod relay;

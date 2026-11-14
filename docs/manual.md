@@ -223,6 +223,12 @@ AniList keeps each season, movie and OVA of an anime as an entry of its own, and
 - **Its page** (press its name) lists the parts in the order they came out, each with how much you've watched and the share of its words you know. A part opens its own page of episodes. **Look for new episodes**, **Find subtitles again**, **Free up space** and **Remove…** there work on every part.
 - **Premine**, on its page, [premines](#-premining) the whole anime: every season and movie you have is counted as one, so the target is a share of all its words, and a word said in three seasons is one card, with the line it first comes up in.
 - **Specials AniList doesn't know** (a `Season 00` folder) join the anime whose folders theirs sits beside.
+- **Adding a whole anime:** pick the folder that holds it all, and **Add media…** lists its parts, each against its AniList entry, and adds them together. Untick a part to leave it out. **Change…** on a part chooses another show for it (the anime's own seasons, movies and OVAs come first) or changes its files; **Choose another anime** matches every part again; **Add whole folder as one show** adds it as before.
+  - **Seasons:** folders whose episode numbers start again are a part each, matched along AniList's sequels from the first season. Folders that carry on from each other (discs, or a long series kept in season folders) are one show. A folder with more episodes than its entry is split when the entries after it make up the rest exactly: 22 episodes of a third season are its 12 and the 10 of its Part 2, each numbered from 1.
+  - **Movies:** each file in a folder of movies is a part, placed by the number in its name (`Movie 2`), else its title, else the order they came out. A movie may run past two hours.
+  - **OVAs and specials** go to the anime's entry of that kind with as many episodes; three OVA series in one folder are split between their entries.
+  - **What can't be placed** is listed as not matched, and added under the anime without an entry: better none than the wrong one.
+  - A part whose folder holds other parts' rips too (one of several movies, a loose OVA, half a season folder) isn't looked in for new episodes.
 - **Move to another anime…**, on a show's page, lists it under another anime in your library, or on its own, and your choice is kept. **Put back where AniList has it** undoes it.
 
 ## 🔎 Searching shows and lines

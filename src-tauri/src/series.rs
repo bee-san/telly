@@ -143,19 +143,22 @@ impl Graph {
         entry.linked("SEQUEL").filter_map(|to| self.entries.get(&to)).min_by_key(|e| (!e.is_series(), if e.start > 0 { e.start } else { i64::MAX }, e.anime.id))
     }
 
-    /// The seasons from `id` on, following the sequels: `id` itself first.
-    /// Films and specials on the way are passed through and left out.
-    pub fn seasons_from(&self, id: i64) -> Vec<&Entry> {
+    /// `id` and what carries on from it, following the sequels: seasons, and the films and specials between them.
+    pub fn sequels_from(&self, id: i64) -> Vec<&Entry> {
         let mut seen = HashSet::from([id]);
         let mut out = Vec::new();
         let mut at = self.entries.get(&id);
         while let Some(e) = at {
-            if e.is_series() || e.anime.id == id {
-                out.push(e);
-            }
+            out.push(e);
             at = self.sequel(e.anime.id).filter(|next| seen.insert(next.anime.id));
         }
         out
+    }
+
+    /// The seasons from `id` on, following the sequels: `id` itself first.
+    /// Films and specials on the way are passed through and left out.
+    pub fn seasons_from(&self, id: i64) -> Vec<&Entry> {
+        self.sequels_from(id).into_iter().filter(|e| e.is_series() || e.anime.id == id).collect()
     }
 
     /// The season `id` carries on from: its prequel that's a series, the latest of them.
@@ -366,10 +369,19 @@ pub fn gather(backend: &Arc<Backend>) {
 
 /// The entries around `id`, for matching a folder's parts before any of it
 /// is in the library: what's kept, and AniList's answers for the rest.
-pub fn around(backend: &Backend, id: i64) -> Result<Graph> {
-    let mut known = graph(backend).entries.clone();
+pub fn around(backend: &Backend, id: i64) -> Result<Arc<Graph>> {
+    let have = graph(backend);
+    if have.entry(id).is_some() {
+        return Ok(have);
+    }
+    let mut known = have.entries.clone();
     walk(&mut known, &[id], &fetch)?;
-    Ok(Graph::new(known.into_values()))
+    // Kept, so the Library lists the folder's shows together the moment they're added.
+    let entries: Vec<&Entry> = known.values().collect();
+    crate::util::write_whole(&kept_path(backend), serde_json::to_vec(&entries)?)?;
+    let graph = Arc::new(Graph::new(known.into_values()));
+    *backend.series.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(graph.clone());
+    Ok(graph)
 }
 
 #[cfg(test)]

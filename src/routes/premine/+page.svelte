@@ -3,13 +3,17 @@
   import { page } from "$app/state";
   import { onMount } from "svelte";
   import Icon from "$lib/Icon.svelte";
-  import { call, callKept, errorText, kept, setWindowTitle, type PremineStatus, type PremineWord, type ShowView } from "$lib/api";
+  import { call, callKept, errorText, kept, setWindowTitle, type Library, type PremineStatus, type PremineWord, type ShowView } from "$lib/api";
   import { clock, plural } from "$lib/format";
   import { app } from "$lib/state.svelte";
   import { toast } from "$lib/toast-store.svelte";
 
   const id = $derived(Number(page.url.searchParams.get("show")));
-  let view = $state.raw<ShowView | null>(kept<ShowView>("show", { id: Number(page.url.searchParams.get("show")) }));
+  /** The anime to premine (its key), when the page is for a whole anime and not one show: ?anime=. */
+  const anime = $derived(page.url.searchParams.has("anime") ? Number(page.url.searchParams.get("anime")) : null);
+  let view = $state.raw<ShowView | null>(page.url.searchParams.has("anime") ? null : kept<ShowView>("show", { id: Number(page.url.searchParams.get("show")) }));
+  /** The anime's names, for the heading. */
+  let names = $state<{ title: string; native: string } | null>(null);
   let status = $state<PremineStatus | null>(null);
   let error = $state("");
   /** The share of the show's words to know, in per cent. */
@@ -19,7 +23,9 @@
   let reported = false;
 
   const key = (w: PremineWord) => `${w.headword}|${w.reading}`;
-  const list = $derived(status && status.show === id ? status.list : null);
+  /** Whether premining's list is this page's: this show's, or this anime's. */
+  const mine = (s: PremineStatus) => (anime === null ? s.show === id && s.anime === 0 : s.anime === anime);
+  const list = $derived(status && mine(status) ? status.list : null);
   /** The share known now, in per cent. */
   const known = $derived(list && list.uses ? (100 * list.knownUses) / list.uses : 0);
   /** The lowest whole target above it. */
@@ -36,15 +42,21 @@
       out.push(w);
       uses += w.count;
     }
-    return out.sort((a, b) => a.number - b.number || a.start - b.start);
+    return out.sort((a, b) => a.at - b.at || a.number - b.number || a.start - b.start);
   });
 
   onMount(() => {
     app.dark = false;
     (async () => {
       try {
-        view = await callKept<ShowView>("show", { id });
-        setWindowTitle(`Premine ${view.card.title} — Telly`);
+        if (anime === null) {
+          view = await callKept<ShowView>("show", { id });
+          setWindowTitle(`Premine ${view.card.title} — Telly`);
+        } else {
+          const place = (await callKept<Library>("library")).shows.find((s) => s.series.id === anime)?.series;
+          names = place ? { title: place.title, native: place.native } : null;
+          setWindowTitle(`Premine ${place?.title ?? ""} — Telly`);
+        }
         await start();
       } catch (e) {
         error = errorText(e);
@@ -56,7 +68,7 @@
   async function start() {
     error = "";
     try {
-      status = await call<PremineStatus>("premine", { show: id });
+      status = await call<PremineStatus>("premine", anime === null ? { show: id } : { anime });
       follow();
     } catch (e) {
       error = errorText(e);
@@ -66,7 +78,7 @@
   function follow() {
     clearTimeout(timer);
     // Another show's list or cards were being made: now they're done, this show's turn.
-    if (status && !status.working && status.show !== id) return void start();
+    if (status && !status.working && !mine(status)) return void start();
     if (!status?.working) return report();
     timer = setTimeout(async () => {
       try {
@@ -109,11 +121,16 @@
 </script>
 
 <div class="pm scroll">
-  <button type="button" class="back" onclick={() => goto(`/show?id=${id}`)}><Icon name="back" /><span>Back</span></button>
+  <button type="button" class="back" onclick={() => goto(anime === null ? `/show?id=${id}` : `/anime?id=${anime}`)}><Icon name="back" /><span>Back</span></button>
   {#if view}
     <div class="pm-head">
       <h2>Premine</h2>
       <p class="pm-meta" lang="ja">{view.card.titleNative || view.card.title}</p>
+    </div>
+  {:else if names}
+    <div class="pm-head">
+      <h2>Premine</h2>
+      <p class="pm-meta"><span lang="ja">{names.native || names.title}</span> · every season and movie you have, as one</p>
     </div>
   {/if}
 
@@ -122,7 +139,7 @@
   {/if}
 
   {#if status?.working}
-    <p class="pm-step"><span class="spin"></span>{status.show === id ? status.step : "Waiting for another show’s premining"}</p>
+    <p class="pm-step"><span class="spin"></span>{mine(status) ? status.step : "Waiting for another show’s premining"}</p>
     <span class="bar pm-bar"><i style:width="{Math.round(100 * status.progress)}%"></i></span>
   {:else if status?.error}
     <p class="err">{status.error}</p>
@@ -131,10 +148,10 @@
 
   {#if list}
     {#if list.withoutSubs.length}
-      <p class="pm-note">{listed(list.withoutSubs)} {list.withoutSubs.length === 1 ? "has" : "have"} no subtitles yet and {list.withoutSubs.length === 1 ? "isn’t" : "aren’t"} counted.</p>
+      <p class="pm-note">{anime === null ? listed(list.withoutSubs) : plural(list.withoutSubs.length, "episode")} {list.withoutSubs.length === 1 ? "has" : "have"} no subtitles yet and {list.withoutSubs.length === 1 ? "isn’t" : "aren’t"} counted.</p>
     {/if}
     {#if list.uses}
-      <p class="pm-sum"><b>{Math.floor(known)}%</b> of the words in the show are known</p>
+      <p class="pm-sum"><b>{Math.floor(known)}%</b> of the words in the {anime === null ? "show" : "anime"} are known</p>
       {#if status && !status.working && status.skipped.length}
         <div class="pm-skipped">
           <p>{plural(status.skipped.length, "card")} not added:</p>
@@ -165,7 +182,7 @@
             <span class="pm-word"><b lang="ja">{w.headword}</b>{#if w.reading && w.reading !== w.headword}<span lang="ja">{w.reading}</span>{/if}</span>
             <span class="num">×{w.count}</span>
             <span class="num rank">{w.rank ? `#${w.rank.toLocaleString("en-GB")}` : "–"}</span>
-            <span class="pm-line"><q lang="ja">{w.before}<mark>{w.word}</mark>{w.after}</q><small>E{w.number} · {clock(w.start)}</small></span>
+            <span class="pm-line"><q lang="ja">{w.before}<mark>{w.word}</mark>{w.after}</q><small>{w.part ? `${w.part} · ` : ""}E{w.number} · {clock(w.start)}</small></span>
           </div>
         {/each}
       {/if}

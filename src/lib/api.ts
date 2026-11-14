@@ -778,6 +778,10 @@ export interface PremineWord {
   before: string;
   word: string;
   after: string;
+  /** The show its first line is in, when the list is of an anime's several shows ("" for one show's). */
+  part: string;
+  /** Where that episode comes in the list's episodes, from 0. */
+  at: number;
 }
 
 export interface PremineList {
@@ -792,7 +796,10 @@ export interface PremineList {
 }
 
 export interface PremineStatus {
+  /** The show the list is of, or 0 when it's of an anime. */
   show: number;
+  /** The anime (its key) the list is of, or 0 when it's of one show. */
+  anime: number;
   working: boolean;
   step: string;
   progress: number;

@@ -148,6 +148,7 @@
             <span class="an-now">{now.title}</span>
           {/if}
           <span class="grow"></span>
+          <button type="button" class="btn quiet" onclick={() => goto(`/premine?anime=${anime.id}`)} title="Make cards for the words that take you to the share of the whole anime you choose">Premine</button>
           <button type="button" class="btn quiet" onclick={add} title="Pick the folder of another season or movie: it joins this anime">Add a season or movie…</button>
           <button type="button" class="btn quiet" onclick={lookAgain}>Look for new episodes</button>
           <button type="button" class="btn quiet" onclick={findSubtitles}>Find subtitles again</button>

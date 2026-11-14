@@ -239,6 +239,15 @@ pub fn places(graph: &Graph, shows: &[Show], settings: &Map<String, Value>) -> H
         .collect()
 }
 
+/// The library's shows listed under the anime `key`, in the order they came out.
+pub fn shows_of(backend: &Backend, key: i64) -> Result<Vec<Show>> {
+    let shows = backend.db.shows()?;
+    let places = places(&graph(backend), &shows, &backend.db.settings()?);
+    let mut parts: Vec<Show> = shows.into_iter().filter(|s| places.get(&s.id).is_some_and(|p| p.id == key)).collect();
+    parts.sort_by_key(|s| (places[&s.id].order, s.id));
+    Ok(parts)
+}
+
 fn query() -> String {
     format!(
         "query ($ids: [Int], $page: Int) {{ Page(page: $page, perPage: 50) {{ pageInfo {{ hasNextPage }}

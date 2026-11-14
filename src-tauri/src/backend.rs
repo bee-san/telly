@@ -1747,7 +1747,10 @@ impl Backend {
             "searchLines" => search::find(self, &arg::<String>(&args, "q")?),
             "searchShows" => search::matching_shows(self, &arg::<String>(&args, "q")?),
             "scene" => search::scene(self, arg(&args, "id")?, arg(&args, "line")?),
-            "premine" => to_value(premine::start_list(self, arg(&args, "show")?)?),
+            "premine" => match arg::<Option<i64>>(&args, "anime")? {
+                Some(key) => to_value(premine::start_anime_list(self, key)?),
+                None => to_value(premine::start_list(self, arg(&args, "show")?)?),
+            },
             "premineStatus" => to_value(premine::status(self)),
             "ownHachidori" => to_value(own_hachidori::report(self)),
             "premineCards" => to_value(premine::start_cards(self, arg(&args, "words")?)?),

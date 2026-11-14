@@ -221,6 +221,7 @@ AniList keeps each season, movie and OVA of an anime as an entry of its own, and
 - **The card** is named after the anime's first TV series, whether or not you have it, and has the cover of the first part you have. It says what's next and in which part, and how many seasons, movies, OVAs and specials you have. Pressing it plays what's next. An anime of one show looks and opens as it always did. One that's only movies is listed under Movies; one with a season, under Series.
 - **Currently watching** has an anime while a part of it is being watched, and between seasons: when you've finished one and the next waits.
 - **Its page** (press its name) lists the parts in the order they came out, each with how much you've watched and the share of its words you know. A part opens its own page of episodes. **Look for new episodes**, **Find subtitles again**, **Free up space** and **Remove…** there work on every part.
+- **Premine**, on its page, [premines](#-premining) the whole anime: every season and movie you have is counted as one, so the target is a share of all its words, and a word said in three seasons is one card, with the line it first comes up in.
 - **Specials AniList doesn't know** (a `Season 00` folder) join the anime whose folders theirs sits beside.
 - **Move to another anime…**, on a show's page, lists it under another anime in your library, or on its own, and your choice is kept. **Put back where AniList has it** undoes it.
 

@@ -87,6 +87,12 @@ pub struct Word {
     pub before: String,
     pub word: String,
     pub after: String,
+    /// The show its first line is in, when the list is of an anime's several shows ("" for one show's).
+    #[serde(default)]
+    pub part: String,
+    /// Where that episode comes in the list's episodes, from 0.
+    #[serde(default)]
+    pub at: usize,
 }
 
 /// The words to premine in a show.
@@ -108,7 +114,10 @@ pub struct List {
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
+    /// The show the list is of, or 0 when it's of an anime.
     pub show: i64,
+    /// The anime (its key, series.rs) the list is of: every show of it in the library. 0 when it's of one show.
+    pub anime: i64,
     pub working: bool,
     /// "Reading Episode 4", "Making cards · 3 of 40".
     pub step: String,
@@ -691,22 +700,30 @@ pub(crate) fn bracketed(text: &str, at: usize) -> bool {
     depth > 0
 }
 
-/// The words to premine in `show`.
-fn make_list(backend: &Backend, show: &Show, step: &dyn Fn(&str, f64)) -> Result<List> {
-    let mut episodes: Vec<Episode> = backend.db.episodes(show.id)?;
-    episodes.sort_by_key(|e| e.number);
-    let deck = premined_deck(backend, show);
+/// The words to premine in `shows`: one show, or an anime's seasons and
+/// movies in the order they came out, counted together.
+fn make_list(backend: &Backend, shows: &[Show], step: &dyn Fn(&str, f64)) -> Result<List> {
+    let first = shows.first().ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?;
+    // Each episode with the show it's of.
+    let mut episodes: Vec<(&Show, Episode)> = Vec::new();
+    for show in shows {
+        let mut of_show: Vec<Episode> = backend.db.episodes(show.id)?;
+        of_show.sort_by_key(|e| e.number);
+        episodes.extend(of_show.into_iter().map(|e| (show, e)));
+    }
+    let deck = premined_deck(backend, first);
 
     step("Reading your card format", 0.0);
     card_format(backend)?;
-    let cast: HashSet<String> = names::show_names(backend, show).into_iter().map(|n| n.term).collect();
+    let cast: HashSet<String> = shows.iter().flat_map(|show| names::show_names(backend, show)).map(|n| n.term).collect();
 
     // Each use of each word, episode by episode; an episode without subtitles adds none.
     let mut lines: Vec<Vec<Line>> = Vec::new();
     let mut without_subs = Vec::new();
     let mut uses: Vec<(Term, Use)> = Vec::new();
-    for (episode, e) in episodes.iter().enumerate() {
-        step(&format!("Finding the words in Episode {}", e.number), 0.8 * episode as f64 / episodes.len() as f64);
+    for (episode, (show, e)) in episodes.iter().enumerate() {
+        let of = if shows.len() > 1 { format!("{} ", show.title) } else { String::new() };
+        step(&format!("Finding the words in {of}Episode {}", e.number), 0.8 * episode as f64 / episodes.len() as f64);
         let episode_lines = spoken_lines(backend, e.id);
         if episode_lines.is_empty() {
             without_subs.push(e.number);
@@ -759,7 +776,7 @@ fn make_list(backend: &Backend, show: &Show, step: &dyn Fn(&str, f64)) -> Result
         let (first, count) = seen[&(term.headword.clone(), term.reading.clone())];
         let at = &uses[first].1;
         let line = &lines[at.episode][at.line];
-        let episode = &episodes[at.episode];
+        let (show, episode) = &episodes[at.episode];
         words.push((
             first,
             Word {
@@ -774,6 +791,8 @@ fn make_list(backend: &Backend, show: &Show, step: &dyn Fn(&str, f64)) -> Result
                 before: line.text[..at.from].replace('\n', ""),
                 word: line.text[at.from..at.to].to_string(),
                 after: line.text[at.to..].replace('\n', ""),
+                part: if shows.len() > 1 { show.title.clone() } else { String::new() },
+                at: at.episode,
             },
         ));
     }
@@ -1178,13 +1197,15 @@ pub fn status(backend: &Backend) -> Status {
 
 /// Starts finding the words to premine in a show, unless that list is being
 /// made or made already.
-/// What a show's list is made from: each episode's saved words, and the
-/// state of your known words.
-fn list_inputs(backend: &Backend, show_id: i64) -> String {
+/// What a list is made from: each episode's saved words, and the state of
+/// your known words.
+fn list_inputs(backend: &Backend, shows: &[Show]) -> String {
     let mut inputs = known::stamp(backend);
-    for e in backend.db.episodes(show_id).unwrap_or_default() {
-        let saved = std::fs::metadata(words_path(backend, e.id)).and_then(|m| m.modified()).ok();
-        inputs.push_str(&format!(" {}:{:?}", e.id, saved));
+    for show in shows {
+        for e in backend.db.episodes(show.id).unwrap_or_default() {
+            let saved = std::fs::metadata(words_path(backend, e.id)).and_then(|m| m.modified()).ok();
+            inputs.push_str(&format!(" {}:{:?}", e.id, saved));
+        }
     }
     inputs
 }
@@ -1194,22 +1215,37 @@ fn list_inputs(backend: &Backend, show_id: i64) -> String {
 /// show's list or cards are being made, that's what's said; the page asks again.
 pub fn start_list(backend: &Arc<Backend>, show_id: i64) -> Result<Status> {
     let show = backend.db.show(show_id)?.ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?;
-    let inputs = list_inputs(backend, show_id);
+    start(backend, vec![show], show_id, 0)
+}
+
+/// `start_list` for a whole anime (`key`, series.rs): every show of it in
+/// the library, in the order they came out, counted as one. A word said in
+/// three seasons is listed once, with the line it first comes up in.
+pub fn start_anime_list(backend: &Arc<Backend>, key: i64) -> Result<Status> {
+    let shows = crate::series::shows_of(backend, key)?;
+    if shows.is_empty() {
+        return Err(anyhow!("That anime isn’t in Telly any more"));
+    }
+    start(backend, shows, 0, key)
+}
+
+fn start(backend: &Arc<Backend>, shows: Vec<Show>, show_id: i64, anime: i64) -> Result<Status> {
+    let inputs = list_inputs(backend, &shows);
     {
         let mut status = backend.premining.status.lock().map_err(|_| anyhow!("premining stopped"))?;
         let unchanged = backend.premining.list_from.lock().is_ok_and(|from| *from == inputs);
-        if status.working || (status.show == show_id && status.list.is_some() && unchanged) {
+        if status.working || (status.show == show_id && status.anime == anime && status.list.is_some() && unchanged) {
             return Ok(status.clone());
         }
-        *status = Status { show: show_id, working: true, step: "Starting".into(), ..Default::default() };
+        *status = Status { show: show_id, anime, working: true, step: "Starting".into(), ..Default::default() };
     }
     let worker = backend.clone();
     std::thread::spawn(move || {
         let step = |text: &str, progress: f64| set(&worker, |s| (s.step, s.progress) = (text.to_string(), progress));
-        let result = make_list(&worker, &show, &step);
+        let result = make_list(&worker, &shows, &step);
         // Working the words out may have saved some: the list is of what's saved now.
         if let Ok(mut from) = worker.premining.list_from.lock() {
-            *from = list_inputs(&worker, show.id);
+            *from = list_inputs(&worker, &shows);
         }
         set(&worker, |s| {
             s.working = false;
@@ -1282,6 +1318,8 @@ mod tests {
             before: "腹が".into(),
             word: "減っ".into(),
             after: "た".into(),
+            part: String::new(),
+            at: 0,
         };
         let line = word_line(&lines, &word, 0.5);
         assert_eq!((line.start, line.end, line.text.as_str()), (10.5, 14.0, "腹が減った"));
@@ -1414,6 +1452,8 @@ mod tests {
             before: String::new(),
             word: headword.into(),
             after: String::new(),
+            part: String::new(),
+            at: 0,
         };
         set(&backend, |s| (s.show, s.list) = (show, Some(List { words: vec![word("悪意"), word("魔導士")], uses: 10, ..Default::default() })));
 
@@ -1491,6 +1531,8 @@ mod tests {
             before: "彼らを".into(),
             word: "魔導士".into(),
             after: "と呼んだ".into(),
+            part: String::new(),
+            at: 0,
         };
         let values = sentence_markers(&word).unwrap();
         assert_eq!(values["sentence"], "彼らを<b>魔導士</b>と呼んだ");
@@ -1566,6 +1608,8 @@ mod tests {
             before: String::new(),
             word: headword.into(),
             after: String::new(),
+            part: String::new(),
+            at: 0,
         };
         let mut words = vec![(0, word("稀", 1, Some(40000))), (1, word("依頼", 5, Some(3000))), (2, word("報酬", 5, Some(800))), (3, word("謎", 1, None))];
         sort_words(&mut words);

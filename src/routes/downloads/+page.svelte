@@ -30,7 +30,6 @@
   let sent = $state<Record<number, "sending" | "sent">>({});
   /** How much is downloading, and where new shows go. */
   let view = $state.raw<DownloadsView | null>(kept<DownloadsView>("downloads"));
-  const downloading = $derived(view?.torrents.filter((t) => t.progress < 1).length ?? 0);
   const date = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
 
   async function loadDownloads() {
@@ -95,7 +94,7 @@
     try {
       const { folder } = await call<{ folder: string }>("download", { magnet: r.magnet, torrent: r.torrent, title: r.title, show: show?.id ?? null });
       sent[r.id] = "sent";
-      toast({ key: `download-${r.id}`, state: "done", title: "Downloading", text: `Into ${folder}. Processing shows how it’s going.` });
+      toast({ key: `download-${r.id}`, state: "done", title: "Downloading", text: `Into ${folder}. The title bar shows how it’s going.` });
       loadDownloads();
     } catch (e) {
       delete sent[r.id];
@@ -118,8 +117,6 @@
 <div class="dls scroll">
   <div class="dl-top">
     <button type="button" class="back" onclick={() => goto(show ? `/show?id=${show.id}` : fromRecommended ? "/recommended" : "/")}><Icon name="back" /><span>{show ? show.title : fromRecommended ? "Recommended" : "Library"}</span></button>
-    <span class="grow"></span>
-    <a class="btn quiet" href="/processing">{downloading ? `Processing · ${downloading} downloading` : "Processing"}</a>
   </div>
   <div class="dl-head">
     <h2>Download</h2>
@@ -186,7 +183,6 @@
 <style>
   .dls { position: absolute; inset: 0; overflow: auto; padding: 22px 32px 40px; }
   .dl-top { display: flex; align-items: center; gap: 12px; height: 38px; margin-bottom: 24px; }
-  .dl-top a.btn { text-decoration: none; }
   .dl-head { display: flex; align-items: baseline; gap: 10px; margin: 0 0 6px; }
   .dl-head h2 { font: 600 17px/1.2 var(--font-ui); }
   .dl-head span { font-size: 13px; color: var(--ink-2); }

@@ -250,7 +250,6 @@
     <span class="grow"></span>
     <a class="btn quiet" href="/recommended">Recommended</a>
     <a class="btn quiet" href="/stats">Stats</a>
-    <a class="btn quiet" href="/processing" title="What’s downloading, and what Telly is getting ready">Processing</a>
     <a class="btn quiet" href="/downloads" title="Find a show on nyaa.si, and Telly downloads it"><Icon name="download" /><span>Download…</span></a>
     <a class="btn quiet" href="/settings"><Icon name="gear" /><span>Settings</span></a>
     <button type="button" class="btn" onclick={add}><Icon name="plus" /><span>Add media…</span></button>

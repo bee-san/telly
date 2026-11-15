@@ -182,6 +182,12 @@ fn answer_in(backend: &Backend) -> &'static str {
     if backend.db.setting_str("claude.language") == "ja" { "simple Japanese" } else { "English" }
 }
 
+/// What an explanation (`base` its version) or a recap (`base` empty) is kept
+/// with, so one written in another language isn't shown: English's is `base` alone.
+fn kept_with(base: &str, language: &str) -> String {
+    if language == "English" { base.to_string() } else { format!("{base}|{language}") }
+}
+
 fn spoken(lines: &[Line]) -> impl DoubleEndedIterator<Item = (usize, &Line)> {
     lines.iter().enumerate().filter(|(_, l)| !l.sign && !l.text.trim().is_empty())
 }
@@ -348,17 +354,19 @@ pub fn explain(backend: &Arc<Backend>, episode_id: i64, index: usize) -> Result<
     let lines = jobs::read_lines(backend, episode_id);
     let line = lines.get(index).ok_or_else(|| anyhow!("That line isn’t in the subtitles any more"))?;
     let about = one_line(&line.text);
+    let language = answer_in(backend);
+    let extra = kept_with(LINE_ANSWER_VERSION, language);
     if let Some(kept) = backend.db.answer(episode_id, "line", index as i64)? {
-        if kept.about == about && kept.extra == LINE_ANSWER_VERSION {
+        if kept.about == about && kept.extra == extra {
             return Ok(json!({ "text": kept.text, "done": true, "line": about }));
         }
     }
     let context: String = lines[index.saturating_sub(12)..=index].iter().map(|l| l.text.as_str()).collect();
-    let prompt = explain_prompt(&show_title(&show), episode.number, &lines, index, &names_line(backend, &show, &context), answer_in(backend));
+    let prompt = explain_prompt(&show_title(&show), episode.number, &lines, index, &names_line(backend, &show, &context), language);
     let keeper = backend.clone();
     let kept_about = about.clone();
     let id = backend.asks.start(prompt, who(backend), EFFORT, true, move |answer| {
-        let _ = keeper.db.save_answer(episode_id, "line", index as i64, &kept_about, answer, LINE_ANSWER_VERSION);
+        let _ = keeper.db.save_answer(episode_id, "line", index as i64, &kept_about, answer, &extra);
     });
     Ok(json!({ "ask": id, "line": about }))
 }
@@ -802,6 +810,9 @@ fn recap_about(source: &Source) -> String {
 /// The recap kept for before the episode `id`, while the subtitles it was made from are as they were.
 fn kept(backend: &Backend, id: i64) -> Option<Recap> {
     let answer = backend.db.answer(id, "recap", -1).ok().flatten()?;
+    if answer.extra != kept_with("", answer_in(backend)) {
+        return None;
+    }
     let same = answer.about.strip_prefix(ABOUT)?.split(',').all(|part| {
         let of: Option<i64> = part.split(':').next().and_then(|id| id.parse().ok());
         of.is_some_and(|of| about_part(of, &jobs::read_lines(backend, of)) == part)
@@ -963,7 +974,8 @@ pub fn recap_state(backend: &Backend, episode: &Episode, at: Option<f64>) -> Val
     if source.episodes.is_empty() {
         return json!({ "possible": false });
     }
-    let ready = backend.db.answer(episode.id, kind(at), -1).ok().flatten().is_some_and(|a| a.about == recap_about(&source));
+    let extra = kept_with("", answer_in(backend));
+    let ready = backend.db.answer(episode.id, kind(at), -1).ok().flatten().is_some_and(|a| a.about == recap_about(&source) && a.extra == extra);
     json!({ "possible": true, "ready": ready })
 }
 
@@ -992,8 +1004,10 @@ pub fn recap(backend: &Arc<Backend>, episode_id: i64, start: bool, at: Option<f6
     };
     // The show whose story is told: this one, or before its first episode, the season before.
     let told = source.of.clone().unwrap_or_else(|| show.clone());
+    let language = answer_in(backend);
+    let extra = kept_with("", language);
     if let Some(kept) = backend.db.answer(episode_id, kind(at), -1)? {
-        if kept.about == about {
+        if kept.about == about && kept.extra == extra {
             if let Ok(recap) = serde_json::from_str::<Recap>(&kept.text) {
                 return recap_view(backend, told.id, &source, &recap, at, of == RecapOf::FilmSoFar);
             }
@@ -1002,14 +1016,14 @@ pub fn recap(backend: &Arc<Backend>, episode_id: i64, start: bool, at: Option<f6
     if !start {
         return Ok(json!({ "done": false }));
     }
-    let key = format!("{episode_id}|{}|{about}", kind(at));
+    let key = format!("{episode_id}|{}|{about}|{language}", kind(at));
     if let Some(id) = backend.asks.going(&key) {
         return Ok(json!({ "ask": id }));
     }
     let text: String = source.episodes.iter().flat_map(|(_, lines)| lines.iter().map(|l| l.text.as_str())).collect();
     let numbered: Vec<(i64, &[Line])> = source.episodes.iter().map(|(e, lines)| (e.number, lines.as_slice())).collect();
     let number = if of == RecapOf::SeasonBefore { numbered.last().map_or(1, |(n, _)| n + 1) } else { episode.number };
-    let prompt = recap_prompt(&show_title(&told), number, &numbered, source.earlier.as_ref(), of, &names_line(backend, &told, &text), answer_in(backend));
+    let prompt = recap_prompt(&show_title(&told), number, &numbered, source.earlier.as_ref(), of, &names_line(backend, &told, &text), language);
     let keeper = backend.clone();
     let kind = kind(at);
     let read: Vec<i64> = source.episodes.iter().map(|(e, _)| e.number).collect();
@@ -1017,7 +1031,7 @@ pub fn recap(backend: &Arc<Backend>, episode_id: i64, start: bool, at: Option<f6
     let id = backend.asks.start(prompt, who(backend), EFFORT, false, move |answer| {
         if let Some(mut recap) = parse_recap(answer) {
             recap.moments = seen_picks(recap.moments, &read, earlier.as_ref());
-            let _ = keeper.db.save_answer(episode_id, kind, -1, &about, &serde_json::to_string(&recap).unwrap_or_default(), "");
+            let _ = keeper.db.save_answer(episode_id, kind, -1, &about, &serde_json::to_string(&recap).unwrap_or_default(), &extra);
         }
     });
     backend.asks.writing(key, id);
@@ -1347,6 +1361,26 @@ mod tests {
     fn keep(backend: &Backend, episode: &Episode, recap: &Recap) {
         let about = recap_about(&source(backend, episode, None).unwrap());
         backend.db.save_answer(episode.id, "recap", -1, &about, &serde_json::to_string(recap).unwrap(), "").unwrap();
+    }
+
+    #[test]
+    fn an_explanation_or_recap_kept_in_english_isn_t_shown_once_answers_are_in_japanese() {
+        let lines: Vec<Line> = (0..30).map(|i| line(100.0 + i as f64 * 3.0, 102.0 + i as f64 * 3.0, &format!("台詞{i}"))).collect();
+        let (backend, episodes, dir) = library("language", 2, &lines);
+        backend.db.save_answer(episodes[0].id, "line", 1, "台詞1", "A line.", LINE_ANSWER_VERSION).unwrap();
+        keep(&backend, &episodes[1], &Recap { last: "Roman runs.".into(), ..Recap::default() });
+        assert_eq!(explain(&backend, episodes[0].id, 1).unwrap()["text"], "A line.");
+        assert_eq!(recap_state(&backend, &episodes[1], None)["ready"], true);
+        assert!(kept(&backend, episodes[1].id).is_some());
+
+        backend.db.set_setting("claude.language", &json!("ja")).unwrap();
+        assert_eq!(super::recap(&backend, episodes[1].id, false, None).unwrap()["done"], false);
+        assert_eq!(recap_state(&backend, &episodes[1], None)["ready"], false);
+        assert!(kept(&backend, episodes[1].id).is_none());
+        backend.db.save_answer(episodes[0].id, "line", 1, "台詞1", "セリフです。", &kept_with(LINE_ANSWER_VERSION, "simple Japanese")).unwrap();
+        assert_eq!(explain(&backend, episodes[0].id, 1).unwrap()["text"], "セリフです。");
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

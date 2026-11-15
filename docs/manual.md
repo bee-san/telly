@@ -131,7 +131,7 @@ Claude Code takes 3 to 15 seconds to start, longer than Haiku takes to answer. S
 
 ### Explain
 
-**Explain** (E, or Explain on a transcript line) pauses and starts with a translation, then explains the words and grammar a learner might trip on. It uses the selected line and earlier dialogue for context. The answer shows as it's written and is saved, so asking again is instant. Under it:
+**Explain** (E, or Explain on a transcript line) pauses and starts with a translation, then explains the words and grammar a learner might trip on. It uses the selected line and earlier dialogue for context. The answer shows as it's written and is saved, so asking again is instant (unless you've switched between English and Japanese since; a recap, likewise, is written again in the language you've switched to). Under it:
 
 | Button | What it gives |
 |---|---|

@@ -419,6 +419,8 @@
     lastT = cur;
     if (skipEndings && !endingFired && endingStart && duration > 0 && endingStart > duration * 0.5 && cur >= endingStart) {
       endingFired = true;
+      // Skipped: it doesn't play on behind the card.
+      video.pause();
       finish();
     }
   }

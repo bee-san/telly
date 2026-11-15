@@ -19,6 +19,10 @@
   let show = $state<{ id: number; title: string; folder: string } | null>(null);
   /** Where the AniList entry's download goes, and the libraries it could go in. */
   let plan = $state.raw<DownloadPlan | null>(null);
+  /** What waits on which library it goes in: started, once you've said, into the library chosen. */
+  let choosing = $state.raw<{ what: string; go: (library: number | null) => void } | null>(null);
+  /** Telly couldn't work out where the AniList entry's download goes. */
+  let placeFailed = $state(false);
   /** The release whose show is being asked. */
   let asking = $state.raw<Release | null>(null);
 
@@ -82,6 +86,7 @@
     untrack(() => {
       show = null;
       plan = null;
+      choosing = null;
       asking = null;
       releases = [];
       more = false;
@@ -108,11 +113,14 @@
   /** Asks where the AniList entry's download goes: in its usual library, or `library`. */
   function placeEntry(library?: number) {
     const [title, forEntry] = [asked, anilistId];
+    placeFailed = false;
     call<DownloadPlan>("placeDownload", { title, anilistId: forEntry, library: library ?? null })
       .then((p) => {
         if (anilistId === forEntry) plan = p;
       })
-      .catch(() => {});
+      .catch(() => {
+        if (anilistId === forEntry) placeFailed = true;
+      });
   }
 
   async function search(next = false) {
@@ -153,9 +161,27 @@
     }
   }
 
-  /** Downloads each of the set's releases, one after another, into the entry's place. */
-  async function downloadAll(s: EpisodeSet) {
-    const [forEntry, library] = [entry, plan?.to.library ?? null];
+  /** Whether a download for the AniList entry asks which library it goes in: it's a new show, and there's a choice. */
+  const asksLibrary = $derived(!show && !!entry && !!plan && plan.to.show === null && plan.libraries.length > 1);
+
+  /** Starts `go` into the library you choose, asking first when there's a choice. Pressed before Telly
+   *  knows where the entry goes, it waits for that. */
+  function intoLibrary(what: string, go: (library: number | null) => void) {
+    if (asksLibrary || (entry && !show && !plan && !placeFailed)) choosing = { what, go };
+    else go(entry ? (plan?.to.library ?? null) : null);
+  }
+
+  // Once Telly knows where the entry goes, a download that waited on it asks, or starts when there's no choice.
+  $effect(() => {
+    if (!choosing || (!plan && !placeFailed) || asksLibrary) return;
+    const go = choosing.go;
+    choosing = null;
+    go(plan?.to.library ?? null);
+  });
+
+  /** Downloads each of the set's releases, one after another, into the entry's place in `library`. */
+  async function downloadAll(s: EpisodeSet, library: number | null) {
+    const forEntry = entry;
     const todo = s.releases.filter((r) => !sent[r.id]);
     let [started, failed, folder] = [0, "", ""];
     sending = { done: 0, of: todo.length };
@@ -190,15 +216,19 @@
     loadDownloads();
   }
 
-  async function download(r: Release) {
-    // A release for no show yet: its sheet asks which it is.
+  function download(r: Release) {
+    // A release for no show yet: its sheet asks which it is, and where it goes.
     if (!show && !entry) {
       asking = r;
       return;
     }
+    intoLibrary(r.title, (library) => start(r, library));
+  }
+
+  async function start(r: Release, library: number | null) {
     sent[r.id] = "sending";
     try {
-      const { folder } = await call<{ folder: string }>("download", { magnet: r.magnet, torrent: r.torrent, title: r.title, show: show?.id ?? null, anilistId: entry, library: entry ? (plan?.to.library ?? null) : null });
+      const { folder } = await call<{ folder: string }>("download", { magnet: r.magnet, torrent: r.torrent, title: r.title, show: show?.id ?? null, anilistId: entry, library });
       started(r, folder);
     } catch (e) {
       delete sent[r.id];
@@ -231,11 +261,6 @@
   <div class="dl-head">
     <h2>Download</h2>
     <span>{show ? `Into ${show.title}’s folder` : entry && plan ? `Into ${plan.to.folder}` : "Telly asks which show a release is, and puts it in its place"}</span>
-    {#if !show && entry && plan && plan.to.show === null && plan.libraries.length}
-      <select class="input" aria-label="Library" value={plan.to.library ?? 0} onchange={(e) => placeEntry(Number(e.currentTarget.value))}>
-        {#each plan.libraries as l, i (i)}<option value={i}>{l.name}</option>{/each}
-      </select>
-    {/if}
   </div>
 
   {#if view?.error}
@@ -281,7 +306,7 @@
           </span>
           {#if s.missing.length}<span class="row-meta warn">{episodesText(s.missing)} {s.missing.length === 1 ? "isn’t" : "aren’t"} on nyaa from them.</span>{/if}
         </div>
-        <button type="button" class="btn small" disabled={sending !== null || left === 0} onclick={() => downloadAll(s)} title="Telly downloads each episode’s torrent into its place in your library">
+        <button type="button" class="btn small" disabled={sending !== null || left === 0} onclick={() => intoLibrary(`All ${plural(s.releases.length, "episode")}`, (library) => downloadAll(s, library))} title="Telly downloads each episode’s torrent into its place in your library">
           {#if sending}<span>Starting {Math.min(sending.done + 1, sending.of)} of {sending.of}…</span>{:else if left === 0}<Icon name="check" /><span>Downloading</span>{:else}<Icon name="download" /><span>Download {left === s.releases.length ? "all" : "the other"} {left}</span>{/if}
         </button>
       </div>
@@ -315,6 +340,42 @@
   </section>
 </div>
 
+{#if choosing && !plan}
+  <div class="modal-bg" role="presentation" onclick={(e) => e.target === e.currentTarget && (choosing = null)} onkeydown={(e) => e.key === "Escape" && (choosing = null)}>
+    <div class="sheet" role="dialog" aria-modal="true" aria-label="Finding where it goes">
+      <p class="sheet-note"><span class="spin"></span> Finding where it goes in your library…</p>
+      <div class="sheet-foot"><button type="button" class="btn quiet" onclick={() => (choosing = null)}>Cancel</button></div>
+    </div>
+  </div>
+{:else if choosing && plan}
+  {@const c = choosing}
+  {@const p = plan}
+  <div class="modal-bg" role="presentation" onclick={(e) => e.target === e.currentTarget && (choosing = null)} onkeydown={(e) => e.key === "Escape" && (choosing = null)}>
+    <div class="sheet" role="dialog" aria-modal="true" aria-label="Which library does it go in?">
+      <div class="ask-head">
+        <span class="kicker">Which library does it go in?</span>
+        <span class="mono what">{c.what}</span>
+      </div>
+      <div class="libs" role="radiogroup" aria-label="Library">
+        {#each p.libraries as l, i (i)}
+          <label class="lib" class:on={p.to.library === i}>
+            <input type="radio" name="library" checked={p.to.library === i} onchange={() => placeEntry(i)} />
+            <span class="lib-body">
+              <b>{l.name}</b>
+              <span>{l.kind === "movies" ? "Movies" : "Series"} · {l.downloads}</span>
+            </span>
+          </label>
+        {/each}
+      </div>
+      <p class="sheet-note">Goes in <span class="mono">{p.to.folder}</span></p>
+      <div class="sheet-foot">
+        <button type="button" class="btn quiet" onclick={() => (choosing = null)}>Cancel</button>
+        <button type="button" class="btn" onclick={() => { choosing = null; c.go(p.to.library); }}><Icon name="download" /><span>Download into {p.libraries[p.to.library ?? 0]?.name ?? "it"}</span></button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 {#if asking}
   {@const release = asking}
   <DownloadSheet {release} onclose={() => (asking = null)} onstarted={(folder) => { asking = null; started(release, folder); }} />
@@ -326,7 +387,6 @@
   .dl-head { display: flex; align-items: baseline; gap: 10px; margin: 0 0 6px; }
   .dl-head h2 { font: 600 17px/1.2 var(--font-ui); }
   .dl-head span { font-size: 13px; color: var(--ink-2); }
-  .dl-head select { height: 30px; font-size: 13px; }
   section { max-width: 900px; display: grid; gap: 12px; padding: 18px 0; border-bottom: 1px solid var(--rule); }
   section:last-child { border-bottom: 0; }
   .note { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; max-width: 900px; padding: 10px 14px; margin: 12px 0 0; border: 1px solid var(--rule-2); border-radius: 8px; background: var(--surface); font-size: 13.5px; color: var(--ink-2); }
@@ -346,6 +406,15 @@
   .warn { color: var(--warn); }
   .ok { color: var(--ok); font-weight: 600; }
   .more { justify-self: start; }
+  .ask-head { display: grid; gap: 4px; }
+  .kicker { font-size: 12.5px; color: var(--ink-3); }
+  .what { font-size: 13px; overflow-wrap: anywhere; }
+  .libs { display: grid; gap: 6px; }
+  .lib { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: start; padding: 10px 12px; border: 1px solid var(--rule); border-radius: 8px; cursor: pointer; }
+  .lib.on { border-color: var(--ink-3); background: var(--sunk); }
+  .lib input { margin: 3px 0 0; }
+  .lib-body { display: grid; gap: 2px; min-width: 0; font-size: 13.5px; }
+  .lib-body span { font-size: 12.5px; color: var(--ink-2); overflow-wrap: anywhere; }
   .set { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: center; padding: 12px 14px; border: 1px solid var(--rule-2); border-radius: 8px; background: var(--surface); }
   .set.first { border-color: var(--ink-3); }
 </style>

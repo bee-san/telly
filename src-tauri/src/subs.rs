@@ -46,7 +46,17 @@ pub fn decode(bytes: &[u8]) -> String {
     match std::str::from_utf8(bytes) {
         Ok(text) => text.to_string(),
         Err(_) if mostly_utf8(bytes) => String::from_utf8_lossy(bytes).into_owned(),
-        Err(_) => encoding_rs::SHIFT_JIS.decode(bytes).0.into_owned(),
+        Err(_) => {
+            // Shift_JIS, else EUC-JP (older files made on Linux), whichever reads cleanly.
+            let (text, _, bad) = encoding_rs::SHIFT_JIS.decode(bytes);
+            if bad {
+                let (euc, _, euc_bad) = encoding_rs::EUC_JP.decode(bytes);
+                if !euc_bad {
+                    return euc.into_owned();
+                }
+            }
+            text.into_owned()
+        }
     }
 }
 
@@ -416,6 +426,15 @@ mod tests {
         assert_eq!(lines[0].text, "もしもし\n元気？");
         assert!(!lines[0].sign);
         assert!(lines[1].sign && lines[2].sign);
+    }
+
+    #[test]
+    fn reads_a_file_in_euc_jp() {
+        let srt = "1\n00:00:01,000 --> 00:00:02,000\n日本語の字幕です\n";
+        let (euc, _, _) = encoding_rs::EUC_JP.encode(srt);
+        assert_eq!(parse("ep.srt", &euc).unwrap()[0].text, "日本語の字幕です");
+        let (sjis, _, _) = encoding_rs::SHIFT_JIS.encode(srt);
+        assert_eq!(parse("ep.srt", &sjis).unwrap()[0].text, "日本語の字幕です");
     }
 
     #[test]

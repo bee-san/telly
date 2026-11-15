@@ -1556,10 +1556,18 @@ impl Backend {
         // one before it). Not both: one would go unused.
         if let Ok(e) = self.episode_or_err(id) {
             let seen = position.unwrap_or(e.position);
-            let finished = e.watched_at.is_some() || (e.duration > 0.0 && seen >= e.duration * 0.9);
+            let finished = e.watched_at.is_some() || (e.duration > 0.0 && seen >= self.watched_from(&e));
             ask::prepare_recaps(self, id, finished, (!finished && ask::resuming(&e, seen)).then_some(seen));
         }
         Ok(json!({}))
+    }
+
+    /// Where an episode counts as watched: where its ending starts (its
+    /// chapters', else AniSkip's, as the player has it), else 90% of the way in.
+    fn watched_from(&self, episode: &Episode) -> f64 {
+        let duration = episode.duration.max(0.0);
+        let ending = episode.ending_at.or_else(|| self.db.ending(episode.id).ok().flatten().map(|(start, _)| start));
+        ending.filter(|e| *e > duration * 0.5 && *e < duration).unwrap_or(duration * 0.9)
     }
 
     fn tick(&self, a: TickArgs) -> Result<Value> {
@@ -1568,7 +1576,7 @@ impl Backend {
         let now = Instant::now();
         let mut finished = false;
         let duration = if episode.duration > 0.0 { episode.duration } else { 0.0 };
-        let watched_from = episode.ending_at.filter(|e| *e > duration * 0.5).unwrap_or(duration * 0.9);
+        let watched_from = self.watched_from(&episode);
         let at_end = duration > 0.0 && a.position >= watched_from;
         {
             let mut guard = self.playing.lock().map_err(|_| anyhow!("busy"))?;
@@ -2357,6 +2365,29 @@ mod tests {
         let again: Vec<i64> = watches.iter().map(|w| w.0).filter(|id| *id == eps[0].id).collect();
         assert_eq!(again.len(), 2, "the first watch and one rewatch: {watches:?}");
         assert_eq!(watches.iter().filter(|w| w.0 == eps[1].id).count(), 1);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_episode_played_to_where_aniskip_says_its_ending_starts_is_watched() {
+        let dir = std::env::temp_dir().join(format!("telly-aniskip-end-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let episodes = vec![crate::db::NewEpisode { number: 1, path: "1.mkv".into(), size: 1, duration: 1420.0 }];
+        let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), anilist_id: Some(5), episodes, ..Default::default() }).unwrap();
+        let id = backend.db.episodes(show).unwrap()[0].id;
+        // No chapters; AniSkip has the ending at 21:00, 89% of the way in: Skip endings stops there.
+        let skips = crate::aniskip::Skips { opening: None, ending: Some((1260.0, 1350.0)) };
+        assert!(backend.db.set_opening_if(id, 1, 5, skips).unwrap());
+        let tick = |position: f64| {
+            backend.tick(serde_json::from_value(json!({ "id": id, "position": position, "playing": true })).unwrap()).unwrap();
+        };
+        tick(10.0);
+        tick(1259.0);
+        assert!(backend.db.episode(id).unwrap().unwrap().watched_at.is_none());
+        tick(1260.5);
+        assert!(backend.db.episode(id).unwrap().unwrap().watched_at.is_some());
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

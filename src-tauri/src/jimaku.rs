@@ -173,20 +173,34 @@ fn episode_of(name: &str) -> Option<i64> {
 pub fn fetch_all(key: &str, entry_id: i64, dir: &Path) -> Result<Vec<Local>> {
     std::fs::create_dir_all(dir)?;
     let mut out = Vec::new();
+    // A file that can't be had (a broken zip, one that's really a RAR) is left
+    // out, so the entry's other files are still used.
+    let mut failed = None;
     for file in files(key, entry_id)? {
         let ext = extension(&file.name);
         if is_subtitle(&file.name) {
             let path = dir.join(safe_file_name(&file.name));
             if !path.is_file() {
-                let bytes = download(key, &file.url, 16 * 1024 * 1024)?;
-                std::fs::write(&path, bytes)?;
+                match download(key, &file.url, 16 * 1024 * 1024) {
+                    Ok(bytes) => std::fs::write(&path, bytes)?,
+                    Err(e) => {
+                        eprintln!("Jimaku: leaving out {}: {e:#}", file.name);
+                        failed = Some(e);
+                        continue;
+                    }
+                }
             }
             out.push(Local { episode: episode_of(&file.name), name: file.name, path });
         } else if ext == "zip" && file.size <= MAX_ZIP {
             let unpacked = dir.join(format!("{}.d", safe_file_name(&file.name)));
             if !unpacked.is_dir() {
-                let bytes = download(key, &file.url, MAX_ZIP)?;
-                unzip_subtitles(&bytes, &unpacked).with_context(|| format!("unpacking {}", file.name))?;
+                let unzipped = download(key, &file.url, MAX_ZIP)
+                    .and_then(|bytes| unzip_subtitles(&bytes, &unpacked).with_context(|| format!("unpacking {}", file.name)));
+                if let Err(e) = unzipped {
+                    eprintln!("Jimaku: leaving out {}: {e:#}", file.name);
+                    failed = Some(e);
+                    continue;
+                }
             }
             for entry in walk(&unpacked) {
                 let name = entry.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
@@ -194,7 +208,12 @@ pub fn fetch_all(key: &str, entry_id: i64, dir: &Path) -> Result<Vec<Local>> {
             }
         }
     }
-    Ok(out)
+    // Nothing could be had at all (Jimaku can't be reached): say so, rather
+    // than that the entry has nothing.
+    match failed {
+        Some(e) if out.is_empty() => Err(e),
+        _ => Ok(out),
+    }
 }
 
 /// The files of an entry already downloaded to `dir` (what `fetch_all` left
@@ -234,6 +253,18 @@ pub fn unzip_subtitles(bytes: &[u8], dir: &Path) -> Result<()> {
     let staging = dir.with_extension("part");
     let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging)?;
+    let unpacked = unzip_into(bytes, &staging);
+    if unpacked.is_err() {
+        // Half a zip's files aren't left where the entry's files are looked for.
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+    unpacked?;
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::rename(&staging, dir)?;
+    Ok(())
+}
+
+fn unzip_into(bytes: &[u8], staging: &Path) -> Result<()> {
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)?;
@@ -242,6 +273,10 @@ pub fn unzip_subtitles(bytes: &[u8], dir: &Path) -> Result<()> {
         }
         let name = entry.name()?.replace('\\', "/");
         let base = name.rsplit('/').next().unwrap_or(&name).to_string();
+        // A Mac's zip carries "__MACOSX/._name.srt" beside each file: not subtitles.
+        if name.starts_with("__MACOSX/") || base.starts_with("._") {
+            continue;
+        }
         if !is_subtitle(&base) || entry.size() > 16 * 1024 * 1024 {
             continue;
         }
@@ -251,8 +286,6 @@ pub fn unzip_subtitles(bytes: &[u8], dir: &Path) -> Result<()> {
         let flat = safe_file_name(&name.replace('/', " - "));
         std::fs::write(staging.join(flat), data)?;
     }
-    let _ = std::fs::remove_dir_all(dir);
-    std::fs::rename(&staging, dir)?;
     Ok(())
 }
 
@@ -323,7 +356,7 @@ mod tests {
         {
             let mut zip = zip::ZipWriter::new(&mut buffer);
             let options: zip::write::SimpleFileOptions = Default::default();
-            for (name, body) in [("Season 1/Show - 01.srt", "a"), ("Season 1/Show - 02.ass", "b"), ("readme.txt", "c")] {
+            for (name, body) in [("Season 1/Show - 01.srt", "a"), ("Season 1/Show - 02.ass", "b"), ("readme.txt", "c"), ("__MACOSX/Season 1/._Show - 01.srt", "d"), ("Season 1/._Show - 02.ass", "e")] {
                 zip.start_file(name, options).unwrap();
                 std::io::Write::write_all(&mut zip, body.as_bytes()).unwrap();
             }

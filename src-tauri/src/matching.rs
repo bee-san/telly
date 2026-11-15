@@ -12,11 +12,12 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 /// The season folder an episode is in, relative to the show's folder ("" when
-/// it's straight in the show's folder).
+/// it's straight in the show's folder, or not in it at all: a rip left where
+/// it was when the rest of the show was found somewhere else is no season).
 pub fn group_of(show_folder: &str, episode_path: &str) -> String {
     let parent = Path::new(episode_path).parent().map(Path::to_path_buf).unwrap_or_default();
     let base = Path::new(show_folder);
-    let relative = parent.strip_prefix(base).map(Path::to_path_buf).unwrap_or(parent);
+    let relative = parent.strip_prefix(base).map(Path::to_path_buf).unwrap_or_default();
     relative.to_string_lossy().replace('\\', "/").trim_matches('/').to_string()
 }
 
@@ -195,6 +196,16 @@ mod tests {
         let g = groups(SHOW, &library());
         assert_eq!(g, vec![("[Judas] Fairy Tail (2009)".to_string(), 175), ("[Judas] Fairy Tail (2011) - OVAs".to_string(), 9), ("[Judas] Fairy Tail (2014)".to_string(), 102)]);
         assert_eq!(group_of(SHOW, &format!(r"{SHOW}\Show - 01.mkv")), "");
+    }
+
+    #[test]
+    fn a_rip_left_outside_the_show_s_folder_is_no_season_of_its_own() {
+        assert_eq!(group_of("/anime/Show", "/anime/Show/Season 2/01.mkv"), "Season 2");
+        assert_eq!(group_of("/anime/Show", "/anime/Show/01.mkv"), "");
+        // Found elsewhere but for this one, left where it was.
+        assert_eq!(group_of("/new/Show", "/anime/Show/01.mkv"), "");
+        let listing: Vec<(i64, String)> = vec![(1, "/anime/Show/01.mkv".into()), (2, "/new/Show/02.mkv".into())];
+        assert_eq!(groups("/new/Show", &listing), vec![(String::new(), 2)]);
     }
 
     #[test]

@@ -2054,6 +2054,7 @@ impl Backend {
             "premineCards" => to_value(premine::start_cards(self, arg(&args, "words")?)?),
             "recommendations" => recommend::view(self),
             "searchPicks" => to_value(recommend::search(self, &arg::<String>(&args, "q")?)?),
+            "chartPage" => recommend::chart_page(self, &arg::<String>(&args, "key")?, arg::<Option<u32>>(&args, "page")?.unwrap_or(1)),
             "stats" => stats::overview(self),
             "showStats" => stats::show(self, arg(&args, "id")?),
             "anilistSignIn" => Ok(json!({ "user": anilist_list::sign_in(self, &arg::<String>(&args, "token")?)? })),

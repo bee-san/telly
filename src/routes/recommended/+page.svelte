@@ -4,7 +4,7 @@
   import Cover from "$lib/Cover.svelte";
   import Icon from "$lib/Icon.svelte";
   import PickRow from "$lib/PickRow.svelte";
-  import { call, callKept, errorText, inTauri, kept, setWindowTitle, type Pick, type Recommended, type Verdict } from "$lib/api";
+  import { call, callKept, errorText, inTauri, kept, setWindowTitle, type Pick, type PickRowView, type Recommended, type Verdict } from "$lib/api";
   import { plural } from "$lib/format";
   import { downloadLink, pickMeta } from "$lib/search";
   import { app } from "$lib/state.svelte";
@@ -26,6 +26,13 @@
   let grid = $state<HTMLElement | null>(null);
   /** Show all is on: every pick is listed, where the rows were. */
   let all = $state(false);
+  /** One of AniList's rows listed in full, where the rows were, a page at a time. */
+  let full = $state.raw<{ key: string; title: string; note: string; picks: Pick[]; page: number; more: boolean } | null>(null);
+  let fullAsking = $state(false);
+  /** The page's scrolling box. */
+  let box = $state<HTMLElement | null>(null);
+  /** How far down the rows were when a list was opened in full, to go back to. */
+  let rowsAt = 0;
   // Searching AniList, for an anime that's neither a pick nor trending.
   let q = $state("");
   let searching = $state(false);
@@ -168,6 +175,47 @@
     return null;
   });
 
+  /** The rows whose list AniList has more of: its charts and genres. */
+  const charted = (key: string) => ["series", "movies", "season", "finished", "short", "gems", "top"].includes(key) || key.startsWith("genre:");
+
+  /** Lists a row in full: every pick for Suggested for you, else AniList's whole list, its first page. */
+  function showAll(row: PickRowView) {
+    rowsAt = box?.scrollTop ?? 0;
+    if (row.key === "suggested") all = true;
+    else {
+      full = { key: row.key, title: row.title, note: row.note, picks: row.picks, page: 0, more: true };
+      moreOfFull();
+    }
+    if (box) box.scrollTop = 0;
+  }
+
+  /** Back to the rows, where they were. */
+  async function showRows() {
+    all = false;
+    full = null;
+    await tick();
+    if (box) box.scrollTop = rowsAt;
+  }
+
+  /** Asks AniList for the next page of the list shown in full. The first replaces the row's picks. */
+  async function moreOfFull() {
+    const asked = full;
+    if (!asked || fullAsking) return;
+    fullAsking = true;
+    try {
+      const got = await call<{ picks: Pick[]; more: boolean }>("chartPage", { key: asked.key, page: asked.page + 1 });
+      if (full?.key !== asked.key) return;
+      const before = asked.page === 0 ? [] : full.picks;
+      const seen = new Set(before.map((p) => p.id));
+      full = { ...full, picks: [...before, ...got.picks.filter((p) => !seen.has(p.id))], page: asked.page + 1, more: got.more };
+      error = "";
+    } catch (e) {
+      error = errorText(e);
+    } finally {
+      fullAsking = false;
+    }
+  }
+
   /** Opens nyaa.si's search for a pick, for Telly to download it. */
   function download(p: Pick) {
     goto(`${downloadLink(p)}&from=recommended`);
@@ -180,7 +228,7 @@
   }
 </script>
 
-<div class="rec scroll" inert={!!open}>
+<div class="rec scroll" inert={!!open} bind:this={box}>
   <div class="rec-top">
     <button type="button" class="back" onclick={() => goto("/")}><Icon name="back" /><span>Library</span></button>
   </div>
@@ -226,7 +274,7 @@
       <h3>Suggested for you</h3>
       <span>{plural(rec.picks.length, "pick")}</span>
       <span class="grow"></span>
-      <button type="button" class="link-btn" onclick={() => (all = false)}>Show fewer</button>
+      <button type="button" class="link-btn" onclick={showRows}>Show fewer</button>
     </div>
     <div class="picks" bind:this={grid}>
       {#each rec.picks.slice(0, shown) as p (p.id)}
@@ -240,6 +288,27 @@
     </div>
     {#if shown < rec.picks.length}
       <button type="button" class="btn quiet more" onclick={() => (shown += STEP)}>Show more</button>
+    {/if}
+  {:else if full}
+    {@const f = full}
+    <div class="shelf">
+      <h3>{f.title}</h3>
+      {#if f.note}<span>{f.note}</span>{/if}
+      <span class="grow"></span>
+      <button type="button" class="link-btn" onclick={showRows}>Show fewer</button>
+    </div>
+    <div class="picks" bind:this={grid}>
+      {#each f.picks as p (p.id)}
+        <button type="button" class="pick" onclick={(e) => show(p, e.currentTarget)}>
+          <span aria-hidden="true"><Cover cover={p.cover} color={p.color} native={p.native} title={p.title} /></span>
+          <span class="p-title" title={p.title}>{p.title}</span>
+          <span class="p-meta">{meta(p)}</span>
+          <span class="p-why" class:have={p.show !== null}>{listedAs(p)}</span>
+        </button>
+      {/each}
+    </div>
+    {#if f.more}
+      <button type="button" class="btn quiet more" disabled={fullAsking} onclick={moreOfFull}>{fullAsking ? "Asking AniList…" : "Show more"}</button>
     {/if}
   {:else}
     {#if hero}
@@ -270,7 +339,7 @@
         {meta}
         line={lineFor(row.key)}
         onpick={show}
-        onall={row.key === "suggested" && rec.picks.length > row.picks.length ? () => (all = true) : undefined}
+        onall={(row.key === "suggested" && rec.picks.length > row.picks.length) || charted(row.key) ? () => showAll(row) : undefined}
       />
     {/each}
     {#if rec.leftOut?.length}

@@ -686,6 +686,30 @@ pub fn search(backend: &Backend, text: &str) -> Result<Vec<Pick>> {
     Ok(list(&answer, "/data/Page/media").iter().filter_map(listed_anime).map(|like| listed_pick(&like, like.unreleased, &have)).collect())
 }
 
+/// How many anime a page of a chart's full list holds.
+const CHART_PAGE: usize = 50;
+
+/// One page of the full list behind one of AniList's rows ("season", "genre:Romance"…),
+/// as AniList has it now, and whether it has another: everything on it, the anime you
+/// have marked, but not the picks you left out.
+pub fn chart_page(backend: &Backend, key: &str, page: u32) -> Result<Value> {
+    let (_, filter) = chart_queries(now_ms()).into_iter().find(|(k, _)| k == key).ok_or_else(|| anyhow::anyhow!("AniList has no list \"{key}\""))?;
+    let q = format!(
+        "query ($page: Int) {{ Page(page: $page, perPage: {CHART_PAGE}) {{ pageInfo {{ hasNextPage }} media(type: ANIME, isAdult: false, {filter}) {{ genres description(asHtml: false) bannerImage relations {{ edges {{ relationType }} }} {} }} }} }}",
+        anilist::FIELDS
+    );
+    let answer = anilist::query_patiently(&q, json!({ "page": page.max(1) }))?;
+    let (have, hidden) = (in_library(backend)?, hidden(backend));
+    let picks: Vec<Pick> = list(&answer, "/data/Page/media")
+        .iter()
+        .filter_map(listed_anime)
+        .filter(|like| !hidden.contains(&like.anime.id))
+        .map(|like| listed_pick(&like, like.unreleased, &have))
+        .collect();
+    let more = answer.pointer("/data/Page/pageInfo/hasNextPage").and_then(Value::as_bool).unwrap_or(false);
+    Ok(json!({ "picks": picks, "more": more }))
+}
+
 /// One row of the page.
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]

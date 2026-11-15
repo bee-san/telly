@@ -46,7 +46,7 @@
 
 <section class="prow" aria-label={title}>
   <div class="head">
-    <h3>{title}</h3>
+    <h3>{#if onall}<button type="button" class="all" onclick={onall} title="Show all of {title}">{title}</button>{:else}{title}{/if}</h3>
     {#if note}<span>{note}</span>{/if}
     <span class="grow"></span>
     {#if onall}<button type="button" class="link-btn" onclick={onall}>Show all</button>{/if}
@@ -73,6 +73,9 @@
   .prow { min-width: 0; margin-bottom: 30px; }
   .head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-height: 36px; margin: 0 0 14px; }
   .head h3 { font: 600 17px/1.2 var(--font-ui); }
+  .head h3 .all { all: unset; cursor: pointer; }
+  .head h3 .all:hover { text-decoration: underline; text-underline-offset: 3px; }
+  .head h3 .all:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; border-radius: 2px; }
   .head > span { font-size: 13px; color: var(--ink-3); }
   .pager { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 1px solid var(--rule-2); border-radius: 6px; background: transparent; color: var(--ink); cursor: pointer; }
   .pager:hover:not(:disabled) { background: var(--sunk); }

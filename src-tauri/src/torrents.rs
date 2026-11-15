@@ -252,6 +252,11 @@ impl Downloads {
         paths.iter().map(|p| if downloading(p) { None } else { lengths.next().flatten() }).collect()
     }
 
+    /// How many downloads have stopped on an error, at the last look.
+    pub fn stopped(&self) -> usize {
+        self.seen.lock().map(|s| s.torrents.iter().filter(|t| t.state == "error").count()).unwrap_or(0)
+    }
+
     /// How the downloads are going, all together, from the last look.
     pub fn summary(&self) -> Option<Summary> {
         let seen = self.seen.lock().ok()?;

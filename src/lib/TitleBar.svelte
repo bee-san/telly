@@ -10,9 +10,14 @@
   const task = $derived(act?.tasks[0] ?? null);
   /** With no other work, the title bar shows the downloads, and goes to Processing. */
   const downloads = $derived(act?.downloading ?? null);
-  const onlyDownloads = $derived(!task && !!downloads);
+  /** Nothing else going on, but downloads wait in Processing: to be added, or stopped. */
+  const toAdd = $derived(act?.downloadsToAdd ?? 0);
+  const stopped = $derived(act?.downloadsStopped ?? 0);
+  const onlyDownloads = $derived(!task && (!!downloads || toAdd > 0 || stopped > 0));
   const label = $derived.by(() => {
     if (onlyDownloads && downloads) return `Downloading ${downloads.count === 1 ? "1 release" : `${downloads.count} releases`} · ${Math.floor(downloads.progress * 100)}%`;
+    if (onlyDownloads && stopped) return stopped === 1 ? "A download stopped" : `${stopped} downloads stopped`;
+    if (onlyDownloads && toAdd) return toAdd === 1 ? "A download to add to the library" : `${toAdd} downloads to add to the library`;
     if (!act || !task) return "";
     if (act.total > 0 && act.done < act.total) {
       const what = act.shows > 1 ? `${act.shows} shows` : act.title;
@@ -22,6 +27,7 @@
   });
   const progress = $derived.by(() => {
     if (onlyDownloads && downloads) return downloads.progress;
+    if (onlyDownloads && !stopped) return 1;
     if (!act || !task) return 0;
     if (act.total > 0 && act.done < act.total) return act.done / act.total;
     return task.progress;
@@ -163,7 +169,7 @@
         onclick={() => (onlyDownloads ? goto("/processing") : opened ? close(false) : open("first"))}
         onkeydown={onButtonKey}
       >
-        <span class="spin"></span>
+        {#if !onlyDownloads || downloads}<span class="spin"></span>{/if}
         <span>{label}</span>
         <span class="wt-bar"><i style:width="{Math.round(progress * 100)}%"></i></span>
       </button>

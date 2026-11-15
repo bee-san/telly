@@ -95,9 +95,9 @@
   /** What happens to it once it's down. */
   const after = $derived.by(() => {
     const to = chosen ? plan?.to : null;
-    if (!to) return "It goes in the downloads folder, and the Library offers it to add once it’s down.";
+    if (!to) return "It goes in the downloads folder, and Processing offers it to add once it’s down.";
     if (to.show !== null) return "More of a show in your library. Each episode joins it as it finishes.";
-    if (!to.joins) return "This release holds several seasons or movies. The Library offers them to add once it’s down.";
+    if (!to.joins) return "This release holds several seasons or movies. Processing offers them to add once it’s down.";
     return "Added to the library when its first file finishes.";
   });
   /** Whether there's no library for a new show to go in. */

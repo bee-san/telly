@@ -133,6 +133,9 @@ export interface Activity {
   total: number;
   /** How the downloads are going, all together, while any are. */
   downloading: DownloadSummary | null;
+  /** Downloads finished that wait to be added (Processing offers them), and downloads stopped on an error. */
+  downloadsToAdd: number;
+  downloadsStopped: number;
 }
 
 export interface DownloadSummary {

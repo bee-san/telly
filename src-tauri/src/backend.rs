@@ -262,6 +262,10 @@ pub struct Activity {
     pub total: usize,
     /// How the downloads are going, while any are.
     pub downloading: Option<torrents::Summary>,
+    /// Downloads finished that wait for you to add them (Processing offers
+    /// them), and downloads stopped on an error: the title bar says so.
+    pub downloads_to_add: usize,
+    pub downloads_stopped: usize,
 }
 
 /// What the title bar's list shows: what each worker is doing, and the work
@@ -832,7 +836,13 @@ impl Backend {
     }
 
     fn activity(&self) -> Activity {
-        let mut activity = Activity { tasks: self.tasks(), downloading: self.downloads.summary(), ..Default::default() };
+        let mut activity = Activity {
+            tasks: self.tasks(),
+            downloading: self.downloads.summary(),
+            downloads_to_add: torrents::offers(self).iter().filter(|o| !o.downloading).count(),
+            downloads_stopped: self.downloads.stopped(),
+            ..Default::default()
+        };
         // Several episodes are worked on at once, often of different shows.
         let mut seen = std::collections::HashSet::new();
         for t in activity.tasks.iter().filter(|t| t.show_id != 0) {

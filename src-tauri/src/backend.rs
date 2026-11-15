@@ -1631,10 +1631,21 @@ impl Backend {
         // or near its end, else this one's up to here (in its first 5 minutes, the
         // one before it). Not both: one would go unused.
         if let Ok(e) = self.episode_or_err(id) {
+            // Time away from the show is from now, when you left it, not from when it opened.
+            let _ = self.db.touch_show(e.show_id);
             let seen = position.unwrap_or(e.position);
             let finished = e.watched_at.is_some() || (e.duration > 0.0 && seen >= self.watched_from(&e));
             ask::prepare_recaps(self, id, finished, (!finished && ask::resuming(&e, seen)).then_some(seen));
         }
+        // Explain's Claude Code is kept only while the player is open: it goes a
+        // minute after the player closes, unless another episode has opened.
+        let backend = self.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(60));
+            if backend.now_playing().is_none() && backend.playing.lock().is_ok_and(|p| p.is_none()) {
+                crate::claude::end_warm();
+            }
+        });
         Ok(json!({}))
     }
 

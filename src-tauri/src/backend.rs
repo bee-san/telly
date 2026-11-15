@@ -1448,6 +1448,10 @@ impl Backend {
         if let Some(m) = self.mining.get() {
             m.watch(true);
         }
+        // Not ready to play (one you watched, whose copy was let go): it's got ready now.
+        if episode.media_state == "pending" {
+            self.jobs.ask_for(id);
+        }
         self.jobs.poke();
         // Explain answers in a second or two from a Claude Code that's already started.
         if crate::claude::find().is_some() {
@@ -1807,7 +1811,7 @@ impl Backend {
                 let episode = self.episode_or_err(id)?;
                 let _ = std::fs::remove_file(jobs::copy_path(self, episode.show_id, id));
                 self.db.media_reset(id)?;
-                self.jobs.poke();
+                self.jobs.ask_for(id);
                 Ok(json!({}))
             }
             "retrySubs" => {

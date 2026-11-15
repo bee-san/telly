@@ -206,6 +206,9 @@ pub struct Jobs {
     caught_up: Mutex<HashSet<i64>>,
     /// The episodes `keep_own_files` has looked beside since Telly started.
     looked_beside: Mutex<HashSet<i64>>,
+    /// Episodes you opened or asked to convert while they weren't ready: got
+    /// ready first, wherever they are in their show (one you've watched too).
+    asked: Mutex<HashSet<i64>>,
     /// Episodes given a file from beside their rip, whose words are still to
     /// work out (`words_worker`), first in first.
     words: Mutex<std::collections::VecDeque<i64>>,
@@ -242,6 +245,7 @@ impl Default for Jobs {
             catching_up: Mutex::new(None),
             caught_up: Mutex::new(HashSet::new()),
             looked_beside: Mutex::new(HashSet::new()),
+            asked: Mutex::new(HashSet::new()),
             words: Mutex::new(std::collections::VecDeque::new()),
             working_out: Mutex::new(None),
             download: Mutex::new(None),
@@ -257,6 +261,13 @@ impl Default for Jobs {
 }
 
 impl Jobs {
+    /// You want this episode to play (you opened it, or asked for it to be
+    /// converted): it's got ready next, even if it's one you've watched.
+    pub fn ask_for(&self, episode_id: i64) {
+        self.asked.lock().unwrap_or_else(|e| e.into_inner()).insert(episode_id);
+        self.poke();
+    }
+
     /// Something changed (a show was added, a setting changed): look for work now.
     pub fn poke(&self) {
         if let Ok(mut n) = self.wake.lock() {
@@ -437,6 +448,7 @@ pub fn waiting<'a>(backend: &Backend, kind: &str, library: &'a [(Show, Vec<Episo
     let ahead = ahead(backend);
     let convert_rest = backend.db.setting_bool("convert.rest", false);
     let idle = backend.idle_for().is_none_or(|d| d >= IDLE_AFTER);
+    let asked = backend.jobs.asked.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let mut found: Vec<((u8, usize, i64), &Show, &Episode, usize)> = Vec::new();
     for (rank, (show, episodes)) in library.iter().enumerate() {
         let count = episodes.len();
@@ -460,7 +472,8 @@ pub fn waiting<'a>(backend: &Backend, kind: &str, library: &'a [(Show, Vec<Episo
             if !*here.get_or_insert_with(|| Path::new(&show.folder).is_dir()) {
                 break;
             }
-            let bucket = bucket(e.number, next, ahead);
+            let asked = matches!(kind, "media" | "probe") && asked.contains(&e.id);
+            let bucket = if asked { 0 } else { bucket(e.number, next, ahead) };
             // Only episodes near the next are got ready, but for a copy got ready
             // again for another audio track (follow_audio): it's there already,
             // and until it's done the episode doesn't play.
@@ -539,6 +552,9 @@ fn take(backend: &Backend, kind: &str) -> Option<(Show, Episode, usize)> {
         }
         let claimed = if kind == "subs" { backend.db.claim_subs(episode.id) } else { backend.db.claim_media(episode.id) };
         if claimed.unwrap_or(false) {
+            if kind == "media" {
+                backend.jobs.asked.lock().unwrap_or_else(|e| e.into_inner()).remove(&episode.id);
+            }
             return Some((show, episode, count));
         }
     }
@@ -2441,6 +2457,17 @@ mod tests {
         // One that never had a copy still waits until it's near.
         backend.db.media_reset(after[21].id).unwrap();
         assert_eq!(take(&backend, "media").map(|(_, e, _)| e.number), None);
+        // Unless you ask for it (Convert in the player).
+        backend.jobs.ask_for(after[21].id);
+        assert_eq!(take(&backend, "media").map(|(_, e, _)| e.number), Some(22));
+        // So is one you've watched, opened again after its copy was let go.
+        for e in &after[..5] {
+            backend.db.set_watched(e.id, true).unwrap();
+        }
+        backend.db.media_reset(after[1].id).unwrap();
+        assert_eq!(take(&backend, "media").map(|(_, e, _)| e.number), None);
+        backend.call("openPlayer", serde_json::json!({ "id": after[1].id })).unwrap();
+        assert_eq!(take(&backend, "media").map(|(_, e, _)| e.number), Some(2));
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

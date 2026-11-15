@@ -1140,13 +1140,18 @@ fn make_card(backend: &Backend, url: &str, format: &CardFormat, deck: &str, word
 }
 
 /// Makes a card for each of `words`; returns the words that got one, and why the rest didn't.
-fn make_cards(backend: &Backend, words: &[Word], step: &dyn Fn(&str, f64)) -> Result<(HashSet<(String, String)>, Vec<String>)> {
+/// `deck` is the one the list named; without it, the first word's show's.
+fn make_cards(backend: &Backend, words: &[Word], deck: Option<String>, step: &dyn Fn(&str, f64)) -> Result<(HashSet<(String, String)>, Vec<String>)> {
     step("Reading your card format", 0.0);
     let format = card_format(backend)?;
-    let episode = words.first().map(|w| w.episode_id).unwrap_or_default();
-    let show = backend.db.episode(episode)?.and_then(|e| backend.db.show(e.show_id).ok().flatten());
-    let show = show.ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?;
-    let deck = premined_deck(backend, &show);
+    let deck = match deck {
+        Some(deck) => deck,
+        None => {
+            let episode = words.first().map(|w| w.episode_id).unwrap_or_default();
+            let show = backend.db.episode(episode)?.and_then(|e| backend.db.show(e.show_id).ok().flatten());
+            premined_deck(backend, &show.ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?)
+        }
+    };
     let url = cards::anki_url(backend);
     anki::invoke(&url, "createDeck", json!({ "deck": deck }))?;
     let padding = backend.db.setting_str("clip.padding");
@@ -1261,11 +1266,14 @@ fn start(backend: &Arc<Backend>, shows: Vec<Show>, show_id: i64, anime: i64) -> 
 /// Starts making cards for `words`. When it's done, those that got one drop
 /// out of the list and count as known.
 pub fn start_cards(backend: &Arc<Backend>, words: Vec<Word>) -> Result<Status> {
+    // The deck the page says they go into: of an anime's list, its first show's.
+    let deck;
     {
         let mut status = backend.premining.status.lock().map_err(|_| anyhow!("premining stopped"))?;
         if status.working {
             return Ok(status.clone());
         }
+        deck = status.list.as_ref().map(|l| l.deck.clone()).filter(|d| !d.is_empty());
         status.working = true;
         status.error.clear();
         (status.step, status.progress) = ("Making cards".into(), 0.0);
@@ -1274,7 +1282,7 @@ pub fn start_cards(backend: &Arc<Backend>, words: Vec<Word>) -> Result<Status> {
     let worker = backend.clone();
     std::thread::spawn(move || {
         let step = |text: &str, progress: f64| set(&worker, |s| (s.step, s.progress) = (text.to_string(), progress));
-        let result = make_cards(&worker, &words, &step);
+        let result = make_cards(&worker, &words, deck, &step);
         // Only the words that got a card: one skipped stays on the list.
         if let (Ok(mut all), Ok((made, _))) = (worker.premining.made.lock(), result.as_ref()) {
             all.extend(made.iter().cloned());

@@ -673,9 +673,12 @@
   async function lateFromHere(ms: number) {
     if (!view) return;
     subMenu = false;
+    const id = view.episode.id;
     try {
       // The player's time: Telly takes the nudge off it for the file's.
-      const updated = await call<Line[]>("lateFromHere", { id: view.episode.id, from: now - 1, ms });
+      const updated = await call<Line[]>("lateFromHere", { id, from: now - 1, ms });
+      // Another episode is open now: its lines aren't these.
+      if (view?.episode.id !== id) return;
       view.lines = updated;
       flash(`Lines from here on ${(Math.abs(ms) / 1000).toFixed(1)} seconds ${ms > 0 ? "later" : "earlier"}`);
     } catch (e) {
@@ -687,10 +690,15 @@
     if (!view) return;
     subMenu = false;
     toast({ key: "resync", state: "working", title: "Syncing another file", text: name });
+    const id = view.episode.id;
     try {
-      const v = await call<PlayerView>("useSubtitle", { id: view.episode.id, path, name });
+      const v = await call<PlayerView>("useSubtitle", { id, path, name });
+      // Another episode is open now (the next started meanwhile): the file is that one's all the same.
+      if (view?.episode.id !== id) return toast({ key: "resync", state: "done", title: "Subtitles changed", text: name });
       view.lines = v.lines;
       view.episode = v.episode;
+      // Lines are counted for the log by their place, which the new file changes.
+      counted.clear();
       // A nudge was made for the old file's lines: the new file comes without it.
       nudge = v.episode.subsNudgeMs;
       const how =v.episode.subsScore === null ? "as it is" : `${Math.round(v.episode.subsScore * 100)}%`;

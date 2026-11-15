@@ -2091,6 +2091,20 @@ impl Backend {
                 &arg::<Option<String>>(&args, "sort")?.unwrap_or_default(),
                 arg::<Option<u32>>(&args, "page")?.unwrap_or(1),
             )?),
+            "everyEpisode" => {
+                // Without AniList's count, the episodes nyaa has from the first on are taken to be all there is.
+                let out = match arg::<Option<i64>>(&args, "anilistId")? {
+                    Some(id) => crate::anilist::episodes_out(id).ok().flatten(),
+                    None => None,
+                };
+                to_value(nyaa::every_episode(
+                    &self.db.setting_str("nyaa.site"),
+                    &arg::<String>(&args, "q")?,
+                    &arg::<Option<String>>(&args, "category")?.unwrap_or_default(),
+                    arg::<Option<bool>>(&args, "trusted")?.unwrap_or(false),
+                    out,
+                )?)
+            }
             "placeDownload" => {
                 let torrent = arg::<Option<String>>(&args, "torrent")?.unwrap_or_default();
                 torrents::plan(self, &arg::<String>(&args, "title")?, &torrent, arg(&args, "show")?, arg(&args, "anilistId")?, arg(&args, "library")?)

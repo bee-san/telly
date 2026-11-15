@@ -50,10 +50,10 @@ pub(crate) fn like_setting(show: i64) -> String {
 
 /// How a release names an episode: its tags, its words with the episode's number taken out, and the number.
 #[derive(Debug, Clone, PartialEq)]
-struct Shape {
-    tags: Vec<String>,
-    words: Vec<String>,
-    number: i64,
+pub(crate) struct Shape {
+    pub(crate) tags: Vec<String>,
+    pub(crate) words: Vec<String>,
+    pub(crate) number: i64,
 }
 
 impl Shape {
@@ -68,7 +68,7 @@ fn re(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
 }
 
 /// How `name` (a rip's file name, or a release's title) names its episode, when it gives a number.
-fn shape(name: &str) -> Option<Shape> {
+pub(crate) fn shape(name: &str) -> Option<Shape> {
     static TAG: OnceLock<Regex> = OnceLock::new();
     static CRC: OnceLock<Regex> = OnceLock::new();
     static EPISODE: OnceLock<Regex> = OnceLock::new();

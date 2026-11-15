@@ -3,6 +3,12 @@
 //! best-seeded first unless you ask for the newest, and downloads the one you
 //! pick from its .torrent file (torrents.rs).
 //!
+//! An anime nyaa has only as a release for each episode, with no one release
+//! of all of them, can still be downloaded whole: `every_episode` reads a few
+//! pages of what nyaa finds and puts together the episodes one group released
+//! at one resolution, named alike (as Follow reads them, follow.rs), one
+//! release for each.
+//!
 //!   GET /?q=frieren&c=1_0&f=0&s=seeders&o=desc&p=1
 //!   GET /download/2088335.torrent
 //!
@@ -13,6 +19,7 @@
 use anyhow::{anyhow, Result};
 use regex::Regex;
 use serde::Serialize;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -88,6 +95,114 @@ pub fn search(chosen_site: &str, query: &str, category: &str, trusted: bool, sor
     let params = [("q", query.trim()), ("c", category), ("f", if trusted { "2" } else { "0" }), ("s", sort), ("o", "desc"), ("p", page.as_str())];
     let html = fetch(&format!("{site}/"), &params)?;
     parse(&String::from_utf8_lossy(&html), &site)
+}
+
+/// How many of nyaa's pages of releases `every_episode` reads, at most: 75 releases each.
+const PAGES: u32 = 4;
+
+/// One release for each episode of an anime, from the same group at the same resolution,
+/// named alike: what downloads all of it when no one release has every episode.
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EpisodeSet {
+    /// One release for each episode, the first episode first.
+    pub releases: Vec<Release>,
+    /// The episodes that are out but nyaa has none of, from this group.
+    pub missing: Vec<i64>,
+    /// The fewest people sharing any one of them.
+    pub seeders: i64,
+    pub bytes: u64,
+    /// Whether nyaa has a release of several episodes in one that people are sharing.
+    pub batch: bool,
+}
+
+/// The set of single-episode releases nyaa has for `query` that gets the most
+/// of the anime: every one of its `episodes` that are out (or, when AniList
+/// doesn't say, every one up to the last nyaa has), from one group.
+pub fn every_episode(chosen_site: &str, query: &str, category: &str, trusted: bool, episodes: Option<i64>) -> Result<Option<EpisodeSet>> {
+    let mut found = Vec::new();
+    for page in 1..=PAGES {
+        match search(chosen_site, query, category, trusted, "seeders", page) {
+            Ok(Found { releases, more }) => {
+                found.extend(releases);
+                if !more {
+                    break;
+                }
+            }
+            // The pages already read are enough to go on.
+            Err(_) if page > 1 => break,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(episode_set(&found, query, episodes))
+}
+
+/// The resolution a tag or word says, "1080p".
+fn resolution(text: &str) -> Option<String> {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| Regex::new(r"(?i)\b([0-9]{3,4}p)\b").expect("a valid pattern")).captures(text).map(|c| c[1].to_lowercase())
+}
+
+/// Whether a release's title says it has several episodes: "(01-28)", "01 ~ 12", "E01-E12", "Batch", "Complete".
+fn several_episodes(title: &str) -> bool {
+    static WORD: OnceLock<Regex> = OnceLock::new();
+    static RANGE: OnceLock<Regex> = OnceLock::new();
+    if WORD.get_or_init(|| Regex::new(r"(?i)\b(?:batch|complete)\b").expect("a valid pattern")).is_match(title) {
+        return true;
+    }
+    let range = RANGE.get_or_init(|| {
+        Regex::new(r"(?i)(?:^|[^a-z0-9.]|s[0-9]{1,2})(?:ep?)?([0-9]{1,4})(?:-|\s*~\s*)(?:ep?)?([0-9]{1,4})(?:[^a-z0-9.]|$)").expect("a valid pattern")
+    });
+    range.captures_iter(title).any(|c| {
+        let (first, last) = (c[1].parse::<i64>().unwrap_or(0), c[2].parse::<i64>().unwrap_or(0));
+        first < last && last < 1900
+    })
+}
+
+/// Of the releases `found` for `query`, the best set of single episodes: each
+/// episode's release from one group, at one resolution, titled alike. The set
+/// with every episode comes first, then the one whose title has the fewest
+/// words `query` hasn't (a sequel's "2nd Season" when the first is asked for),
+/// then the one with the most episodes, then the one most shared.
+fn episode_set(found: &[Release], query: &str, episodes: Option<i64>) -> Option<EpisodeSet> {
+    let asked: HashSet<String> = query.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_string).collect();
+    let mut sets: HashMap<(String, String, Vec<String>), BTreeMap<i64, &Release>> = HashMap::new();
+    let mut batch = false;
+    for release in found {
+        let shape = if several_episodes(&release.title) { None } else { crate::follow::shape(&release.title) };
+        let Some(shape) = shape else {
+            batch |= release.seeders > 0;
+            continue;
+        };
+        if shape.number < 1 || episodes.is_some_and(|out| shape.number > out) {
+            continue;
+        }
+        let at = shape.tags.iter().chain(&shape.words).find_map(|t| resolution(t)).unwrap_or_default();
+        let group = if release.title.trim_start().starts_with('[') { shape.tags.first().cloned().unwrap_or_default() } else { String::new() };
+        let words = shape.words.into_iter().filter(|w| resolution(w).is_none()).collect();
+        let picked = sets.entry((group, at, words)).or_default().entry(shape.number).or_insert(release);
+        // Of two of an episode, the one people share, then the newer upload (a v2 over the first).
+        if (release.seeders > 0, release.id) > (picked.seeders > 0, picked.id) {
+            *picked = release;
+        }
+    }
+    let best = sets
+        .into_iter()
+        .filter(|(_, by_number)| by_number.len() >= 2)
+        .map(|((_, _, words), by_number)| {
+            let last = episodes.or_else(|| by_number.keys().next_back().copied()).unwrap_or(0);
+            let missing: Vec<i64> = (1..=last).filter(|n| !by_number.contains_key(n)).collect();
+            let extra = words.iter().take_while(|w| !w.ends_with('#')).filter(|w| !asked.contains(*w)).count();
+            let releases: Vec<Release> = by_number.into_values().cloned().collect();
+            let seeders = releases.iter().map(|r| r.seeders).min().unwrap_or(0);
+            let shared: i64 = releases.iter().map(|r| r.seeders).sum();
+            let first = std::cmp::Reverse(releases[0].id);
+            ((missing.is_empty(), std::cmp::Reverse(extra), releases.len(), seeders > 0, seeders, shared, first), (releases, missing, seeders))
+        })
+        .max_by(|a, b| a.0.cmp(&b.0))?;
+    let (releases, missing, seeders) = best.1;
+    let bytes = releases.iter().map(|r| r.bytes).sum();
+    Some(EpisodeSet { releases, missing, seeders, bytes, batch })
 }
 
 /// A release's .torrent file.
@@ -354,5 +469,77 @@ mod tests {
         // Chinese fansub groups joined by "&" right beside wide characters.
         assert_eq!(unescape("[千夏字幕组&amp;喵萌奶茶屋] 葬送的芙莉莲"), "[千夏字幕组&喵萌奶茶屋] 葬送的芙莉莲");
         assert_eq!(unescape("[豌豆字幕组&风之圣殿字幕组]"), "[豌豆字幕组&风之圣殿字幕组]");
+    }
+
+    fn release(id: i64, title: &str, seeders: i64) -> Release {
+        Release {
+            id,
+            title: title.into(),
+            magnet: String::new(),
+            torrent: String::new(),
+            size: String::new(),
+            bytes: 100,
+            seeders,
+            leechers: 0,
+            completed: 0,
+            date: 0,
+            trusted: false,
+            remake: false,
+            page: String::new(),
+        }
+    }
+
+    /// The ids of the releases `episode_set` picks from `found` (id, title, seeders), and the episodes it misses.
+    fn picked(found: &[(i64, &str, i64)], query: &str, episodes: Option<i64>) -> Option<(Vec<i64>, Vec<i64>, bool)> {
+        let found: Vec<Release> = found.iter().map(|&(id, title, seeders)| release(id, title, seeders)).collect();
+        episode_set(&found, query, episodes).map(|set| (set.releases.iter().map(|r| r.id).collect(), set.missing, set.batch))
+    }
+
+    #[test]
+    fn a_release_for_each_episode_makes_a_set() {
+        let found = [
+            (11, "[SubsPlease] Show - 01 (1080p) [AAAAAAAA].mkv", 50),
+            (12, "[SubsPlease] Show - 02 (1080p) [BBBBBBBB].mkv", 40),
+            (13, "[SubsPlease] Show - 03 (1080p) [CCCCCCCC].mkv", 30),
+            (14, "[SubsPlease] Show - 03v2 (1080p) [DDDDDDDD].mkv", 5),
+            (21, "[SubsPlease] Show - 01 (720p) [EEEEEEEE].mkv", 90),
+            (22, "[SubsPlease] Show - 02 (720p) [FFFFFFFF].mkv", 90),
+            (31, "[Erai-raws] Show - 01 [1080p][Multiple Subtitle]", 99),
+            (32, "[Erai-raws] Show - 02 [1080p][Multiple Subtitle][ENG]", 99),
+            (33, "[Erai-raws] Show - 03 [1080p][Multiple Subtitle]", 0),
+            (41, "[SubsPlease] Show 2nd Season - 01 (1080p) [11111111].mkv", 500),
+            (42, "[SubsPlease] Show 2nd Season - 02 (1080p) [22222222].mkv", 500),
+            (43, "[SubsPlease] Show 2nd Season - 03 (1080p) [33333333].mkv", 500),
+        ];
+        // SubsPlease's 1080p has all three (episode 3's v2); the 720p has two, Erai-raws' episode 3
+        // no one shares, and the second season isn't the one asked for.
+        assert_eq!(picked(&found, "Show", Some(3)), Some((vec![11, 12, 14], vec![], false)));
+        // Asked for, the second season is.
+        assert_eq!(picked(&found, "Show 2nd Season", Some(3)), Some((vec![41, 42, 43], vec![], false)));
+        // Without AniList's count, the set that goes furthest without a gap.
+        assert_eq!(picked(&found, "Show", None), Some((vec![11, 12, 14], vec![], false)));
+    }
+
+    #[test]
+    fn a_set_with_an_episode_missing_says_which() {
+        let found = [
+            (1, "Show.S01E01.1080p.WEB.H264-GRP", 9),
+            (3, "Show.S01E03.1080p.WEB.H264-GRP", 9),
+            (4, "[Judas] Show (Season 1) [BD 1080p][HEVC x265 10bit]", 300),
+            (5, "[Group] Show (01-12) [1080p] [Batch]", 0),
+        ];
+        // The batch no one shares doesn't count, Judas' whole season does.
+        assert_eq!(picked(&found, "Show", Some(3)), Some((vec![1, 3], vec![2], true)));
+        assert_eq!(picked(&found[..1], "Show", Some(3)), None);
+    }
+
+    #[test]
+    fn several_episodes_in_one() {
+        for title in ["[SubsPlease] Frieren (01-28) (1080p) [Batch]", "[Erai-raws] Show - 01 ~ 12 [1080p]", "Show S01E01-E12 1080p", "Show - 01-12 [720p]", "Show Complete Series"] {
+            assert!(several_episodes(title), "{title}");
+        }
+        for title in ["[SubsPlease] Spy x Family Season 2 - 05 (1080p)", "[Group] Show - 05 [1080p x264-10bit]", "Show (2019-2020) - 05", "86 - 05", "Show S02E05 AAC2.0-GRP"] {
+            assert!(!several_episodes(title), "{title}");
+        }
     }
 }

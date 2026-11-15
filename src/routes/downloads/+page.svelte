@@ -4,8 +4,8 @@
   import { onMount, untrack } from "svelte";
   import DownloadSheet from "$lib/DownloadSheet.svelte";
   import Icon from "$lib/Icon.svelte";
-  import { call, callKept, errorText, inTauri, kept, setWindowTitle, type DownloadPlan, type DownloadsView, type NyaaFound, type Release, type ShowView } from "$lib/api";
-  import { plural } from "$lib/format";
+  import { call, callKept, errorText, inTauri, kept, setWindowTitle, type DownloadPlan, type DownloadsView, type EpisodeSet, type NyaaFound, type Release, type ShowView } from "$lib/api";
+  import { bytes, plural } from "$lib/format";
   import { app } from "$lib/state.svelte";
   import { toast } from "$lib/toast-store.svelte";
 
@@ -37,6 +37,12 @@
   /** The AniList entry the releases listed are: the one asked for, until something else is searched for. */
   const entry = $derived(anilistId && searched === asked.trim() ? anilistId : null);
   let searchError = $state("");
+  /** A release for each episode of the AniList entry, from one group, for when no one release has them all. */
+  let set = $state.raw<EpisodeSet | null>(null);
+  /** nyaa's pages are being read for a release of each episode. */
+  let lookingForSet = $state(false);
+  /** How many of the set's releases Download all has started, while it's starting them. */
+  let sending = $state<{ done: number; of: number } | null>(null);
   /** Releases started downloading from this page. */
   let sent = $state<Record<number, "sending" | "sent">>({});
   /** How much is downloading, and where new shows go. */
@@ -79,6 +85,7 @@
       asking = null;
       releases = [];
       more = false;
+      set = null;
       searched = "";
       searchError = "";
       if (forShow) {
@@ -115,6 +122,7 @@
     searching = true;
     searchError = "";
     const at = next ? pageNo + 1 : 1;
+    if (!next) findSet(run, query);
     try {
       const found = await call<NyaaFound>("searchNyaa", { q: query, category, trusted, sort, page: at });
       if (run !== searchRun) return;
@@ -127,6 +135,52 @@
     } finally {
       if (run === searchRun) searching = false;
     }
+  }
+
+  /** Looks for a release of each episode of the AniList entry, for when nyaa has no one release of them all. */
+  async function findSet(run: number, query: string) {
+    set = null;
+    const forEntry = anilistId && query === asked.trim() ? anilistId : null;
+    if (!forEntry) return;
+    lookingForSet = true;
+    try {
+      const found = await call<EpisodeSet | null>("everyEpisode", { q: query, category, trusted, anilistId: forEntry });
+      if (run === searchRun) set = found;
+    } catch {
+      // The releases listed are still there to pick from.
+    } finally {
+      if (run === searchRun) lookingForSet = false;
+    }
+  }
+
+  /** Downloads each of the set's releases, one after another, into the entry's place. */
+  async function downloadAll(s: EpisodeSet) {
+    const [forEntry, library] = [entry, plan?.to.library ?? null];
+    const todo = s.releases.filter((r) => !sent[r.id]);
+    let [started, failed, folder] = [0, "", ""];
+    sending = { done: 0, of: todo.length };
+    for (const r of todo) {
+      sent[r.id] = "sending";
+      try {
+        ({ folder } = await call<{ folder: string }>("download", { magnet: r.magnet, torrent: r.torrent, title: r.title, show: null, anilistId: forEntry, library }));
+        sent[r.id] = "sent";
+        started++;
+      } catch (e) {
+        delete sent[r.id];
+        failed ||= errorText(e);
+      }
+      sending = { done: todo.indexOf(r) + 1, of: todo.length };
+    }
+    sending = null;
+    if (started) toast({ key: "download-all", state: "done", title: `Downloading ${plural(started, "episode")}`, text: `Into ${folder}. The title bar shows how it’s going.` });
+    if (failed) toast({ key: "download", state: "failed", title: `${plural(todo.length - started, "episode")} couldn’t start downloading`, text: failed });
+    loadDownloads();
+  }
+
+  /** "Episode 7", "Episodes 2, 5 and 9". */
+  function episodesText(numbers: number[]): string {
+    if (numbers.length === 1) return `Episode ${numbers[0]}`;
+    return `Episodes ${numbers.slice(0, -1).join(", ")} and ${numbers[numbers.length - 1]}`;
   }
 
   /** A release is on its way into `folder`. */
@@ -208,6 +262,26 @@
     {#if searched && !releases.length && !searching && !searchError}
       <p class="hint">nyaa has nothing for “{searched}”.</p>
     {/if}
+    {#if set && entry}
+      {@const s = set}
+      {@const left = s.releases.filter((r) => sent[r.id] !== "sent").length}
+      <div class="set" class:first={!s.batch}>
+        <div class="row-body">
+          <span class="row-title">{s.missing.length ? `${plural(s.releases.length, "episode")}` : `All ${plural(s.releases.length, "episode")}`}, one torrent each</span>
+          <span class="row-meta">
+            {s.batch ? "" : "No one release on nyaa has every episode, so Telly found one for each. "}Named like {s.releases[0].title} ·
+            {bytes(s.bytes)} ·
+            <span class:warn={s.seeders === 0}>{s.seeders === 0 ? "One of them no one is sharing" : `At least ${plural(s.seeders, "person", "people")} sharing each`}</span>
+          </span>
+          {#if s.missing.length}<span class="row-meta warn">{episodesText(s.missing)} {s.missing.length === 1 ? "isn’t" : "aren’t"} on nyaa from them.</span>{/if}
+        </div>
+        <button type="button" class="btn small" disabled={sending !== null || left === 0} onclick={() => downloadAll(s)} title="Telly downloads each episode’s torrent into its place in your library">
+          {#if sending}<span>Starting {Math.min(sending.done + 1, sending.of)} of {sending.of}…</span>{:else if left === 0}<Icon name="check" /><span>Downloading</span>{:else}<Icon name="download" /><span>Download {left === s.releases.length ? "all" : "the other"} {left}</span>{/if}
+        </button>
+      </div>
+    {:else if lookingForSet && entry}
+      <p class="hint">Looking for a release of each episode, in case no one release has them all…</p>
+    {/if}
     {#if releases.length}
       <ul class="list" role="list">
         {#each releases as r (r.id)}
@@ -266,4 +340,6 @@
   .warn { color: var(--warn); }
   .ok { color: var(--ok); font-weight: 600; }
   .more { justify-self: start; }
+  .set { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: center; padding: 12px 14px; border: 1px solid var(--rule-2); border-radius: 8px; background: var(--surface); }
+  .set.first { border-color: var(--ink-3); }
 </style>

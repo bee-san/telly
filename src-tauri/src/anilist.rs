@@ -187,6 +187,21 @@ pub fn by_id(id: i64) -> Result<Anime> {
     answer.pointer("/data/Media").and_then(Anime::from_api).ok_or_else(|| anyhow!("AniList has no anime {id}"))
 }
 
+/// How many of an anime's episodes are out: every one once it's finished, those before the
+/// next to air while it's airing, and None when AniList doesn't say.
+pub fn episodes_out(id: i64) -> Result<Option<i64>> {
+    let q = "query ($id: Int) { Media(id: $id, type: ANIME) { episodes status nextAiringEpisode { episode } } }";
+    let answer = query(q, json!({ "id": id }))?;
+    let media = answer.pointer("/data/Media").ok_or_else(|| anyhow!("AniList has no anime {id}"))?;
+    if let Some(next) = media.pointer("/nextAiringEpisode/episode").and_then(Value::as_i64) {
+        return Ok(Some(next - 1));
+    }
+    if media.get("status").and_then(Value::as_str) == Some("RELEASING") {
+        return Ok(None);
+    }
+    Ok(media.get("episodes").and_then(Value::as_i64))
+}
+
 /// The anime of each of `ids` that AniList has, asked for together.
 pub fn by_ids(ids: &[i64]) -> Result<Vec<Anime>> {
     let q = format!("query ($ids: [Int]) {{ Page(perPage: 50) {{ media(id_in: $ids, type: ANIME) {{ {FIELDS} }} }} }}");

@@ -590,6 +590,20 @@ export interface NyaaFound {
   more: boolean;
 }
 
+/** One release for each episode of an anime, from one group at one resolution: what downloads
+ *  all of it when no one release has every episode. */
+export interface EpisodeSet {
+  /** One release for each episode, the first episode first. */
+  releases: Release[];
+  /** The episodes that are out but nyaa has none of, from this group. */
+  missing: number[];
+  /** The fewest people sharing any one of them. */
+  seeders: number;
+  bytes: number;
+  /** Whether nyaa has a release of several episodes in one that people are sharing. */
+  batch: boolean;
+}
+
 /** One of Telly's downloads. */
 export interface Torrent {
   /** What Pause and Remove name it by; null while its files are being found. */

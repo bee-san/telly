@@ -87,6 +87,8 @@ struct Playing {
     position: f64,
     playing: bool,
     at: Instant,
+    /// When a tick last said it was playing: the player ticks while paused too.
+    played_at: Instant,
     saved_at: Instant,
     session: Option<i64>,
     /// The first reads of a resumed episode are for its index and the frame it was left at.
@@ -1562,6 +1564,7 @@ impl Backend {
                 position: episode.position,
                 playing: false,
                 at: now,
+                played_at: now,
                 saved_at: now,
                 session: None,
                 starting_midway,
@@ -1632,6 +1635,7 @@ impl Backend {
                     position: a.position,
                     playing: false,
                     at: now,
+                    played_at: now,
                     saved_at: now,
                     session: None,
                     starting_midway: false,
@@ -1642,8 +1646,9 @@ impl Backend {
             let p = guard.as_mut().expect("just set");
             let gap = now.duration_since(p.at);
             let seconds = if a.playing && p.playing { gap.as_secs_f64().min(3.0) } else { 0.0 };
-            // A new sitting after a long pause, so the log's times are real.
-            if (a.playing || !a.lines.is_empty()) && (p.session.is_none() || gap > Duration::from_secs(600)) {
+            // A new sitting after a long pause (or the computer asleep), so the log's times are real.
+            let paused = now.duration_since(p.played_at).max(gap);
+            if (a.playing || !a.lines.is_empty()) && (p.session.is_none() || paused > Duration::from_secs(600)) {
                 let sitting = Sitting {
                     show_id: show.id,
                     title: &show.title,
@@ -1686,6 +1691,9 @@ impl Backend {
             p.position = a.position;
             p.playing = a.playing;
             p.at = now;
+            if a.playing {
+                p.played_at = now;
+            }
             if a.playing {
                 if let Ok(mut l) = self.last_play.lock() {
                     *l = Some(now);

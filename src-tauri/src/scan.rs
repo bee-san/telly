@@ -78,19 +78,24 @@ pub fn episode_number(stem: &str) -> Option<(Option<i64>, i64)> {
     if let Some(c) = re(&SXE, r"(?i)\bS([0-9]{1,2})\s*[ ._-]?\s*E([0-9]{1,4})").captures(&stem) {
         return Some((c[1].parse().ok(), c[2].parse().ok()?));
     }
-    if let Some(c) = re(&JA, r"第\s*([0-9]{1,4})\s*[話话回]").captures(&stem) {
-        return Some((None, c[1].parse().ok()?));
+    // 第5話, 第5回, and 05話 (回 alone is as often "times").
+    if let Some(c) = re(&JA, r"(?:第\s*([0-9]{1,4})\s*[話话回]|([0-9]{1,4})\s*[話话])").captures(&stem) {
+        let n = c.get(1).or(c.get(2))?;
+        return Some((None, n.as_str().parse().ok()?));
     }
+    static CHANNELS: OnceLock<Regex> = OnceLock::new();
+    // Audio channels after a codec (AAC2.0, DDP5.1, FLAC 2.0) are no episode number.
     let bare = strip_brackets(&stem).replace('_', " ");
+    let bare = re(&CHANNELS, r"(?i)(?:aac|ddp?|e?ac-?3|flac|opus|dts(?:-hd)?|truehd|l?pcm)\s*[2578]\.[01]").replace_all(&bare, " ").into_owned();
     if let Some(c) = re(&EP, r"(?i)\b(?:ep|episode|e)\s*\.?\s*([0-9]{1,4})(?:v[0-9])?\b").captures(&bare) {
         return Some((None, c[1].parse().ok()?));
     }
-    if let Some(c) = re(&DASH, r"\s-\s*([0-9]{1,4})(?:v[0-9])?(?:\s|$)").captures(&bare) {
+    if let Some(c) = re(&DASH, r"\s-\s*([0-9]{1,4})(?:v[0-9])?(?:\s|$|「|『)").captures(&bare) {
         return Some((None, c[1].parse().ok()?));
     }
     // The last number that isn't a resolution, a codec or a year.
     let mut found = None;
-    for c in re(&NUM, r"(?i)(?:^|[\s.#-])([0-9]{1,4})(?:v[0-9])?(?:$|[\s.-])").captures_iter(&bare) {
+    for c in re(&NUM, r"(?i)(?:^|[\s.#-])([0-9]{1,4})(?:v[0-9])?(?:$|[\s.-]|「|『)").captures_iter(&bare) {
         let text = &c[1];
         let n: i64 = text.parse().ok()?;
         let resolution = matches!(n, 480 | 576 | 720 | 1080 | 2160);
@@ -376,6 +381,14 @@ mod tests {
         assert_eq!(n("Naruto EP12 x264"), Some(12));
         assert_eq!(n("Show 1080p"), None);
         assert_eq!(n("[Group] Show (2009) [720p] [ABCD1234]"), None);
+        // 話 without 第, a title in 「」 after the number, and audio channels after a codec.
+        assert_eq!(n("葬送のフリーレン 05話"), Some(5));
+        assert_eq!(n("葬送のフリーレン #05「タイトル」"), Some(5));
+        assert_eq!(n("Show - 05「タイトル」"), Some(5));
+        assert_eq!(n("Show.05.1080p.BluRay.x264.AAC2.0-GRP"), Some(5));
+        assert_eq!(n("Show.05.1080p.WEB.DDP5.1.H.264"), Some(5));
+        assert_eq!(n("Show 05 1080p FLAC 2.0"), Some(5));
+        assert_eq!(n("今日から3回目"), None);
         assert_eq!(makemkv_title("title_t03"), Some(3));
         assert_eq!(makemkv_title("NARUTO_DISC1_t12"), Some(12));
         assert_eq!(makemkv_title("Naruto - 03"), None);

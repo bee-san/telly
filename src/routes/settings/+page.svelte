@@ -419,7 +419,13 @@
   }
   async function chooseDownloadsFolder() {
     const folder = await pickFolder("Choose where new shows are downloaded");
-    if (folder) await set("downloads.folder", folder);
+    if (folder) await setDownloadsFolder(folder);
+  }
+
+  /** Chooses where new shows go (null: Downloads\Telly), and shows where that is now. */
+  async function setDownloadsFolder(folder: string | null) {
+    await set("downloads.folder", folder);
+    downloadsFolder = await call<DownloadsView>("downloads").then((d) => d.folder).catch(() => downloadsFolder);
   }
   const routerMaker = $derived((ROUTER_MODELS.find(([id]) => id === str("openrouter.model")) ?? ROUTER_MODELS[0])[2]);
 
@@ -779,7 +785,7 @@
         <span>Folder for new shows</span>
         <span class="inline"><input class="input grow mono" value={str("downloads.folder") || downloadsFolder} readonly aria-label="Folder for new shows" /><button type="button" class="btn quiet" onclick={chooseDownloadsFolder}>Choose folder…</button></span>
         <small>A new show gets a folder of its own in here when no library takes it. More episodes of a show in the library go in its folder.</small>
-        {#if str("downloads.folder")}<span><button type="button" class="link-btn" onclick={() => set("downloads.folder", null)}>Use Downloads\Telly in your home folder</button></span>{/if}
+        {#if str("downloads.folder")}<span><button type="button" class="link-btn" onclick={() => setDownloadsFolder(null)}>Use Downloads\Telly in your home folder</button></span>{/if}
       </div>
       <label class="field narrow">
         <span>nyaa address</span>

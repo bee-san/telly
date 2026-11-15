@@ -580,13 +580,15 @@
     toast({ key: "audio", state: "working", title: "Changing audio", text: name });
     try {
       const v = await call<PlayerView>("setAudio", { id: view.episode.id, track });
-      if (view.episode.id !== v.episode.id) return;
+      const changed = () => toast({ key: "audio", state: "done", title: "Audio changed", text: name });
+      // Another episode is open now (or none): the track is changed all the same.
+      if (!view || !video || view.episode.id !== v.episode.id) return changed();
       reloadAt = { t: video.currentTime, paused: video.paused };
       view.episode = v.episode;
       view.audioTrack = v.audioTrack;
       view.listedAudio = v.listedAudio;
       view.src = v.src;
-      toast({ key: "audio", state: "done", title: "Audio changed", text: name });
+      changed();
     } catch (e) {
       toast({ key: "audio", state: "failed", title: "Couldn’t change audio", text: errorText(e) });
     }

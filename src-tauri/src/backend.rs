@@ -138,6 +138,9 @@ pub struct Backend {
     pub series: series::Kept,
     /// The folder Add media last read, so choosing another anime for it doesn't read it again.
     scanned: Mutex<Option<scan::Scan>>,
+    /// Held while a show's folder is looked in for new episodes, so two looks
+    /// at once (a download finishing, the 10-minute look) don't both add one.
+    rescanning: Mutex<()>,
 }
 
 /// Where "Earlier/Later from here" last moved an episode's lines from, so
@@ -519,6 +522,7 @@ impl Backend {
             downloads: Downloads::default(),
             series: series::Kept::default(),
             scanned: Mutex::new(None),
+            rescanning: Mutex::new(()),
         })
     }
 
@@ -1003,6 +1007,7 @@ impl Backend {
     /// many it added. An episode's rip moved within the folder is found where
     /// it is now, keeping everything (relink.rs).
     pub fn rescan(&self, id: i64) -> Result<usize> {
+        let _one_look_at_a_time = self.rescanning.lock().unwrap_or_else(|e| e.into_inner());
         let show = self.db.show(id)?.ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?;
         let existing = self.db.episodes(id)?;
         // Its folder holds other shows' rips too (one of several movies, a loose OVA beside season folders, half a

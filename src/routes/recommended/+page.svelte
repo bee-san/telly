@@ -32,23 +32,31 @@
   /** What AniList found, and for which words; null when nothing has been searched for. */
   let results = $state.raw<{ for: string; picks: Pick[] } | null>(null);
 
+  /** Which search is the latest: an older one's answer, coming back after it, is let go. */
+  let searchRun = 0;
+
   async function search() {
     const words = q.trim();
+    const run = ++searchRun;
     if (!words) return void (results = null);
     searching = true;
     try {
-      results = { for: words, picks: await call<Pick[]>("searchPicks", { q: words }) };
+      const picks = await call<Pick[]>("searchPicks", { q: words });
+      if (run !== searchRun) return;
+      results = { for: words, picks };
       error = "";
     } catch (e) {
-      error = errorText(e);
+      if (run === searchRun) error = errorText(e);
     } finally {
-      searching = false;
+      if (run === searchRun) searching = false;
     }
   }
 
   function clearSearch() {
     q = "";
     results = null;
+    searchRun++;
+    searching = false;
   }
 
   async function load() {

@@ -1033,7 +1033,12 @@
     montage = null;
     holdPlay = false;
     // An episode that has ended stays at its end card, rather than starting again behind it.
-    if (play && wasOpen && video && !ended) video.play().catch(() => {});
+    if (play && wasOpen && video && !ended) {
+      // It plays now, whatever paused it for reading before.
+      pausedByHover = false;
+      clearResume();
+      video.play().catch(() => {});
+    }
   }
 
   /** The moments to play: those whose episode can play here, of the episode just left (in a film, all of it so far) unless it’s the whole story. */
@@ -1248,7 +1253,11 @@
     const run = ++montageRun;
     if (recap || montage) closeRecap(false);
     bridge.out = true;
-    if (video && !ended) video.play().catch(() => {});
+    if (video && !ended) {
+      pausedByHover = false;
+      clearResume();
+      video.play().catch(() => {});
+    }
     later(BRIDGE_OUT_MS, run, () => (bridge = null));
   }
 

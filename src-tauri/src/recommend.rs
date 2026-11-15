@@ -36,6 +36,9 @@ const KEPT_MS: i64 = 7 * 24 * 3600 * 1000;
 const FEW_VOTES: f64 = 50.0;
 /// A show started and not finished, with nothing of it watched for 30 days, was left.
 const LEFT_MS: i64 = 30 * 24 * 3600 * 1000;
+/// What a kept answer has in it: one kept by an older Telly, which didn't
+/// note sequels and what isn't out yet, is asked for again.
+const KEPT_VERSION: u32 = 1;
 
 /// What AniList says about one show in the library or on your list.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -43,6 +46,8 @@ const LEFT_MS: i64 = 30 * 24 * 3600 * 1000;
 pub struct Source {
     pub id: i64,
     pub fetched_at: i64,
+    #[serde(default)]
+    pub version: u32,
     /// The rest of its series, in the library or not.
     pub related: Vec<i64>,
     /// Its 25 most voted recommendations.
@@ -62,6 +67,9 @@ pub struct Like {
     /// It carries on from another entry (AniList calls that its prequel): not one to start with.
     #[serde(default)]
     pub sequel: bool,
+    /// It isn't out yet, so there's nothing of it to download.
+    #[serde(default)]
+    pub unreleased: bool,
 }
 
 /// A show in the library, as the ranking sees it.
@@ -114,7 +122,8 @@ fn query() -> String {
   media(id_in: $ids, type: ANIME) {{ id
     relations {{ edges {{ relationType(version: 2) node {{ id type }} }} }}
     recommendations(sort: RATING_DESC, perPage: 25) {{ nodes {{ rating
-      mediaRecommendation {{ type genres description(asHtml: false) bannerImage {} }} }} }} }} }} }}",
+      mediaRecommendation {{ type genres description(asHtml: false) bannerImage
+        relations {{ edges {{ relationType(version: 2) }} }} {} }} }} }} }} }} }}",
         anilist::FIELDS
     )
 }
@@ -145,11 +154,12 @@ fn sources(answer: &Value, now: i64) -> Vec<Source> {
                         genres: list(to, "/genres").iter().filter_map(Value::as_str).map(str::to_string).collect(),
                         description: to.get("description").and_then(Value::as_str).unwrap_or("").to_string(),
                         banner: to.get("bannerImage").and_then(Value::as_str).unwrap_or("").to_string(),
-                        sequel: false,
+                        sequel: list(to, "/relations/edges").iter().any(|e| e.get("relationType").and_then(Value::as_str) == Some("PREQUEL")),
+                        unreleased: to.get("status").and_then(Value::as_str) == Some("NOT_YET_RELEASED"),
                     })
                 })
                 .collect();
-            Some(Source { id: media.get("id")?.as_i64()?, fetched_at: now, related, likes })
+            Some(Source { id: media.get("id")?.as_i64()?, fetched_at: now, version: KEPT_VERSION, related, likes })
         })
         .collect()
 }
@@ -167,7 +177,7 @@ fn fetch(ids: &[i64]) -> Result<Vec<Source>> {
     // An ID AniList no longer has is kept too, empty, so it isn't asked about every time the page opens.
     for id in ids {
         if !found.iter().any(|s| s.id == *id) {
-            found.push(Source { id: *id, fetched_at: now, ..Default::default() });
+            found.push(Source { id: *id, fetched_at: now, version: KEPT_VERSION, ..Default::default() });
         }
     }
     Ok(found)
@@ -178,7 +188,7 @@ fn kept_path(backend: &Backend) -> PathBuf {
 }
 
 /// What AniList says about each of `ids`: kept answers, and fresh ones for
-/// shows it hasn't been asked about this week.
+/// shows it hasn't been asked about this week (or only by an older Telly).
 fn sources_for(backend: &Backend, ids: &[i64]) -> Result<Vec<Source>> {
     // One asking at a time: a page opened while `gather` is asking waits for its answers rather than asking again.
     static ASKING: Mutex<()> = Mutex::new(());
@@ -187,7 +197,7 @@ fn sources_for(backend: &Backend, ids: &[i64]) -> Result<Vec<Source>> {
     let mut kept: Vec<Source> = std::fs::read(&path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
     kept.retain(|s| ids.contains(&s.id));
     let now = now_ms();
-    let old: Vec<i64> = ids.iter().copied().filter(|id| !kept.iter().any(|s| s.id == *id && now - s.fetched_at < KEPT_MS)).collect();
+    let old: Vec<i64> = ids.iter().copied().filter(|id| !kept.iter().any(|s| s.id == *id && s.version == KEPT_VERSION && now - s.fetched_at < KEPT_MS)).collect();
     if !old.is_empty() {
         match fetch(&old) {
             Ok(fresh) => {
@@ -252,7 +262,8 @@ fn list_liking(entry: &Listed, average_score: f64) -> Option<f64> {
 /// famous show's, and a pick liked from many shows still beats one show's
 /// favourite. A show you dropped or scored low says against its picks, and a
 /// pick it says more against than the rest say for is left out. Also left
-/// out: what's in the library or on your list, and what's hidden.
+/// out: what's in the library or on your list, what's hidden, sequels (not
+/// somewhere to start) and what isn't out yet.
 ///
 /// The rest of an anime you have is picked too (`graph` has which entries
 /// those are): its seasons and movies you don't have, each as that anime's
@@ -306,7 +317,8 @@ pub fn rank(owned: &[Owned], listed: &[Listed], sources: &[Source], hidden: &Has
                 votes += like.votes;
             }
         }
-        for like in s.likes.iter().filter(|l| l.votes > 0 && !series.contains_key(&l.anime.id) && !hidden.contains(&l.anime.id)) {
+        // A sequel isn't somewhere to start, and what isn't out yet can't be had.
+        for like in s.likes.iter().filter(|l| l.votes > 0 && !l.sequel && !l.unreleased && !series.contains_key(&l.anime.id) && !hidden.contains(&l.anime.id)) {
             let say = liking * (like.votes as f64 / (votes as f64 + FEW_VOTES)).sqrt();
             let best = says.entry(like.anime.id).or_insert_with(|| (like, HashMap::new())).1.entry(from).or_insert((f64::NEG_INFINITY, 0, title));
             if say > best.0 {
@@ -417,22 +429,22 @@ impl Charts {
     }
 }
 
-/// One anime of a list AniList answers with, and whether it's still to come out.
-fn listed_anime(media: &Value) -> Option<(Like, bool)> {
-    let like = Like {
+/// One anime of a list AniList answers with.
+fn listed_anime(media: &Value) -> Option<Like> {
+    Some(Like {
         votes: 0,
         anime: Anime::from_api(media)?,
         genres: list(media, "/genres").iter().filter_map(Value::as_str).map(str::to_string).collect(),
         description: media.get("description").and_then(Value::as_str).unwrap_or("").to_string(),
         banner: media.get("bannerImage").and_then(Value::as_str).unwrap_or("").to_string(),
         sequel: list(media, "/relations/edges").iter().any(|e| e.get("relationType").and_then(Value::as_str) == Some("PREQUEL")),
-    };
-    Some((like, media.get("status").and_then(Value::as_str) == Some("NOT_YET_RELEASED")))
+        unreleased: media.get("status").and_then(Value::as_str) == Some("NOT_YET_RELEASED"),
+    })
 }
 
 /// The anime of one of the answer's lists that are out: one still to come has nothing to download.
 fn out_now(answer: &Value, name: &str) -> Vec<Like> {
-    list(answer, &format!("/data/{name}/media")).iter().filter_map(listed_anime).filter(|(_, unreleased)| !unreleased).map(|(like, _)| like).collect()
+    list(answer, &format!("/data/{name}/media")).iter().filter_map(listed_anime).filter(|like| !like.unreleased).collect()
 }
 
 /// The year, month and day of a time (unix ms), in UTC.
@@ -554,7 +566,7 @@ pub fn search(backend: &Backend, text: &str) -> Result<Vec<Pick>> {
     let q = format!("query ($search: String) {{ Page(perPage: 20) {{ media(search: $search, type: ANIME, sort: SEARCH_MATCH) {{ genres description(asHtml: false) bannerImage {} }} }} }}", anilist::FIELDS);
     let answer = anilist::query_patiently(&q, json!({ "search": text.split_whitespace().collect::<Vec<_>>().join(" ") }))?;
     let have = in_library(backend)?;
-    Ok(list(&answer, "/data/Page/media").iter().filter_map(listed_anime).map(|(like, unreleased)| listed_pick(&like, unreleased, &have)).collect())
+    Ok(list(&answer, "/data/Page/media").iter().filter_map(listed_anime).map(|like| listed_pick(&like, like.unreleased, &have)).collect())
 }
 
 /// One row of the page.
@@ -627,7 +639,7 @@ fn rows(picks: &[Pick], charts: &Charts, owned: &[Owned], sources: &[Source], gr
         let mut likes: Vec<&Like> = source
             .likes
             .iter()
-            .filter(|l| l.votes > 0 && !have.contains_key(&l.anime.id) && !left_out.contains(&l.anime.id))
+            .filter(|l| l.votes > 0 && !l.sequel && !l.unreleased && !have.contains_key(&l.anime.id) && !left_out.contains(&l.anime.id))
             .filter(|l| graph.root(l.anime.id).is_none_or(|root| !yours.contains(&root)))
             .collect();
         likes.sort_by_key(|l| std::cmp::Reverse(l.votes));
@@ -709,6 +721,7 @@ mod tests {
         Source {
             id,
             fetched_at: 0,
+            version: KEPT_VERSION,
             related: related.to_vec(),
             likes: likes.iter().map(|&(to, votes)| Like { votes, anime: Anime { id: to, romaji: format!("Anime {to}"), ..Default::default() }, ..Default::default() }).collect(),
         }
@@ -868,6 +881,18 @@ mod tests {
     }
 
     #[test]
+    fn leaves_out_sequels_and_what_isn_t_out_yet() {
+        let mut answer = source(1, &[], &[(100, 90), (101, 80), (102, 70), (103, 60)]);
+        answer.likes[0].sequel = true;
+        answer.likes[1].unreleased = true;
+        let library = [owned(1, "Death Note", 37, 37)];
+        assert_eq!(ids(&rank(&library, &[], &[answer.clone()], &HashSet::new(), NOW, &Graph::default())), [102, 103]);
+        // Their votes still say how much of Death Note's the rest have.
+        let picks = rank(&library, &[], &[answer], &HashSet::new(), NOW, &Graph::default());
+        assert!((picks[0].score - 2.0 * (70.0 / (300.0 + FEW_VOTES)).sqrt()).abs() < 1e-9);
+    }
+
+    #[test]
     fn reads_anilists_answer() {
         let answer = json!({ "data": { "Page": { "pageInfo": { "hasNextPage": false }, "media": [{
             "id": 21519,
@@ -882,13 +907,20 @@ mod tests {
                     "title": { "romaji": "Koe no Katachi", "english": "A Silent Voice", "native": "聲の形" },
                     "coverImage": { "extraLarge": "https://s4.anilist.co/a.jpg", "large": "", "color": "#5dbbe4" } } },
                 { "rating": 12, "mediaRecommendation": { "id": 30001, "type": "MANGA", "title": { "romaji": "A manga" } } },
+                { "rating": 9, "mediaRecommendation": { "id": 20955, "type": "ANIME", "status": "FINISHED", "title": { "romaji": "Season 2" },
+                    "relations": { "edges": [{ "relationType": "PREQUEL" }, { "relationType": "SEQUEL" }] } } },
+                { "rating": 8, "mediaRecommendation": { "id": 20956, "type": "ANIME", "status": "NOT_YET_RELEASED", "title": { "romaji": "To come" },
+                    "relations": { "edges": [{ "relationType": "SEQUEL" }] } } },
                 { "rating": 3, "mediaRecommendation": null },
             ] },
         }] } } });
         let found = sources(&answer, 7);
         assert_eq!(found.len(), 1);
         assert_eq!((found[0].id, found[0].fetched_at, found[0].related.as_slice()), (21519, 7, &[5][..]));
-        assert_eq!(found[0].likes.len(), 1);
+        assert_eq!(found[0].likes.len(), 3);
+        let flags: Vec<(bool, bool)> = found[0].likes.iter().map(|l| (l.sequel, l.unreleased)).collect();
+        assert_eq!(flags, [(false, false), (true, false), (false, true)]);
+        assert_eq!(found[0].version, KEPT_VERSION);
         let like = &found[0].likes[0];
         assert_eq!((like.votes, like.anime.id, like.anime.short_title().as_str()), (6187, 20954, "A Silent Voice"));
         assert_eq!((like.genres.as_slice(), like.description.as_str()), (&["Drama".to_string(), "Romance".to_string()][..], "A boy<br>meets a girl."));

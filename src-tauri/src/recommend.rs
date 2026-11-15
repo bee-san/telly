@@ -300,7 +300,8 @@ fn list_liking(entry: &Listed, average_score: f64) -> Option<f64> {
 ///
 /// The rest of an anime you have is picked too (`graph` has which entries
 /// those are): its seasons and movies you don't have, each as that anime's
-/// own favourite, with the whole say of the part you liked most. Of several,
+/// own favourite, with the whole say of the part you liked most (however long
+/// ago you watched it). Of several,
 /// the earliest out has that say, the next half of it, the third a third, so
 /// what comes next leads and thirty films of one anime don't fill the page.
 /// Recap films, specials, OVAs and shorts aren't picked. Nor is any of an
@@ -314,19 +315,19 @@ pub fn rank(owned: &[Owned], listed: &[Listed], sources: &[Source], hidden: &Has
         *show = (show.0 + o.episodes, show.1 + o.watched, show.2.max(o.last_watched), show.3);
     }
     let last_watched: HashMap<i64, i64> = watching.iter().filter_map(|(&id, show)| Some((id, show.2?))).collect();
-    // How much your liking each show counts for, and its title: as your list says, or else by how much of it you've
-    // watched; and less the longer ago you watched it.
-    let mut shows: HashMap<i64, (f64, &str)> = watching
+    // How much your liking each show counts for, how much of that it still says about you (less the longer ago you
+    // watched it), and its title: as your list says, or else by how much of it you've watched.
+    let mut shows: HashMap<i64, (f64, f64, &str)> = watching
         .into_iter()
-        .map(|(id, (episodes, watched, last_watched, title))| (id, (liking(episodes, watched, last_watched, now) * freshness(last_watched.unwrap_or(0), now), title)))
+        .map(|(id, (episodes, watched, last_watched, title))| (id, (liking(episodes, watched, last_watched, now), freshness(last_watched.unwrap_or(0), now), title)))
         .collect();
     let scores: Vec<f64> = listed.iter().map(|l| l.score).filter(|&s| s > 0.0).collect();
     let average_score = scores.iter().sum::<f64>() / scores.len().max(1) as f64;
     for entry in listed {
         if let Some(liking) = list_liking(entry, average_score) {
-            let title = shows.get(&entry.id).map_or(entry.title.as_str(), |s| s.1);
+            let title = shows.get(&entry.id).map_or(entry.title.as_str(), |s| s.2);
             let at = entry.at.max(last_watched.get(&entry.id).copied().unwrap_or(0));
-            shows.insert(entry.id, (liking * freshness(at, now), title));
+            shows.insert(entry.id, (liking, freshness(at, now), title));
         }
     }
     let mut series: HashMap<i64, i64> = shows.keys().map(|&id| (id, id)).collect();
@@ -347,7 +348,8 @@ pub fn rank(owned: &[Owned], listed: &[Listed], sources: &[Source], hidden: &Has
     let mut says: HashMap<i64, (&Like, HashMap<i64, (f64, i64, &str)>)> = HashMap::new();
     for s in &sources {
         let from = series_of(&mut series, s.id);
-        let (liking, title) = shows[&s.id];
+        let (liking, fresh, title) = shows[&s.id];
+        let liking = liking * fresh;
         // Its votes, but for the rest of its own series: those aren't recommendations.
         let mut votes = 0;
         for like in s.likes.iter().filter(|l| l.votes > 0) {
@@ -407,8 +409,9 @@ pub fn rank(owned: &[Owned], listed: &[Listed], sources: &[Source], hidden: &Has
     let holds_more: HashSet<i64> = owned.iter().filter(|o| o.entry_episodes.is_some_and(|e| o.episodes as i64 > e)).filter_map(|o| graph.root(o.anilist_id)).collect();
     for &root in yours.iter().filter(|root| !holds_more.contains(root)) {
         let parts = graph.parts(root);
-        // The part of it you liked most says how much the rest is worth to you.
-        let Some((liking, title)) = parts.iter().filter_map(|e| shows.get(&e.anime.id)).max_by(|a, b| a.0.total_cmp(&b.0)).copied() else { continue };
+        // The part of it you liked most says how much the rest is worth to you, however long ago you watched it:
+        // wanting to see how a story goes on doesn't fade as tastes do.
+        let Some((liking, _, title)) = parts.iter().filter_map(|e| shows.get(&e.anime.id)).max_by(|a, b| a.0.total_cmp(&b.0)).copied() else { continue };
         if liking <= 0.0 {
             continue;
         }
@@ -945,6 +948,11 @@ mod tests {
         // On your list, it's when you finished it, or watched it last in the library if that was later.
         let list = [Listed { at: NOW - 5 * YEAR_MS, ..listed(1, "Old", "COMPLETED", 0.0) }, listed(2, "New", "COMPLETED", 0.0)];
         assert_eq!(ids(&rank(&[], &list, &answers, &HashSet::new(), NOW, &Graph::default())), [200, 100]);
+        // The next season of an anime you finished long ago has the whole say of it all the same.
+        let graph = Graph::new(crate::series::tests::overlord());
+        let long_ago = [Owned { last_watched: Some(NOW - 5 * YEAR_MS), ..owned(20832, "Overlord", 13, 13) }];
+        let picks = rank(&long_ago, &[], &[], &HashSet::new(), NOW, &graph);
+        assert_eq!((picks[0].more_of.as_str(), picks[0].score), ("Overlord", 2.0));
         let rewatched = [owned(1, "Old", 12, 12)];
         assert_eq!(ids(&rank(&rewatched, &list, &answers, &HashSet::new(), NOW, &Graph::default())), [100, 200]);
     }

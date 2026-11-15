@@ -970,7 +970,8 @@
       .map((r) => r.trim().replace(/^([-•・*]|\d+\.)\s+/, ""))
       .filter(Boolean);
     const notes = rows.slice(1).map((r) => {
-      const m = /^(.{1,48}?)\s*[:：]\s+(.+)$/.exec(r);
+      // Japanese puts nothing after its full-width colon: 食べる（たべる）：…
+      const m = /^(.{1,48}?)\s*(?::\s+|：\s*)(.+)$/.exec(r);
       return m ? { term: m[1].trim(), text: m[2].trim() } : { term: "", text: r };
     });
     return { translation: rows[0] ?? "", notes };

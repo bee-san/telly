@@ -1658,9 +1658,10 @@ fn group_files(backend: &Backend, key: &str, show: &Show, group: &str, in_group:
         Some(id) if id != crate::anilist_list::NO_ENTRY_BEFORE => id,
         _ => {
             let title = crate::anilist_list::group_title(show, group);
-            let mut found = anilist::search_loosely(&title).unwrap_or_default();
+            // AniList can't be asked now (busy, away): nothing is kept, and the next episode asks again.
+            let mut found = anilist::search_loosely(&title)?;
             anilist::rank(&mut found, &title, in_group);
-            let _ = anilist::follow_sequels(&mut found, &title);
+            anilist::follow_sequels(&mut found, &title)?;
             let id = match found.first() {
                 Some(a) if Some(a.id) != show.anilist_id && a.score >= 0.5 => {
                     jimaku::find_entries(key, Some(a.id), &a.romaji)?.first().map(|e| e.id).unwrap_or(crate::anilist_list::NO_ENTRY)

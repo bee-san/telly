@@ -200,6 +200,16 @@ fn make_line(start: f64, end: f64, raw: &str, sign: bool) -> Option<Line> {
     let text = re(&TAGS, r"\{[^}]*\}").replace_all(&text, "");
     let text = re(&HTML, r"</?[a-zA-Z][^>]*>").replace_all(&text, "");
     let text = text.replace("\\N", "\n").replace("\\n", "\n").replace("\\h", " ").replace('\u{200B}', "");
+    // WebVTT writes & and < as &amp; and &lt; (&amp; last, so "&amp;lt;" stays "&lt;").
+    let text = text
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&nbsp;", " ")
+        .replace("&lrm;", "")
+        .replace("&rlm;", "")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&");
     let text: String = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n");
     if text.is_empty() || end <= start {
         return None;
@@ -426,6 +436,12 @@ mod tests {
         assert_eq!(lines[0].text, "もしもし\n元気？");
         assert!(!lines[0].sign);
         assert!(lines[1].sign && lines[2].sign);
+    }
+
+    #[test]
+    fn webvtt_s_escapes_are_read() {
+        let vtt = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nQ&amp;A &lt;テスト&gt;&nbsp;だ\n";
+        assert_eq!(parse("ep.vtt", vtt.as_bytes()).unwrap()[0].text, "Q&A <テスト> だ");
     }
 
     #[test]

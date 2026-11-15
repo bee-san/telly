@@ -1,32 +1,36 @@
-//! Your library folders: where a download goes when you've said which show
-//! it is. Settings → Library names a folder for series and one for movies,
-//! and Telly's downloader writes a release straight into its place there, so
-//! nothing is moved once it's down:
+//! Your libraries: where a download goes when you've said which show it is.
+//! Settings → Libraries lists them, each a name, a kind (series or movies)
+//! and its folders, one of which takes downloads. They live only in
+//! Settings: the Library lists every show together whatever folder it's in.
+//! Telly's downloader writes a release straight into its place in the
+//! library you choose, so nothing is moved once it's down:
 //!
-//!   a season  <series folder>\<anime>\Season NN
-//!   a film    <movies folder>\<title> (<year>)
+//!   in a series library  <folder>\<anime>\Season NN
+//!   in a movies library  <folder>\<title> (<year>)
 //!
-//! - The anime's folder is the one its seasons are in already, whatever it's
-//!   called (a release's own name, say); a new anime's is named as its card
-//!   in the Library.
+//! - The library at first is the one of its kind (a film's, or a series')
+//!   that has the anime's other parts in its folders, else the first of its
+//!   kind.
+//! - The anime's folder is the one its seasons are in already, in any of the
+//!   library's folders, whatever it's called (a release's own name, say); a
+//!   new anime's is named as its card in the Library, in the downloads folder.
 //! - NN is the season's place on AniList's line of sequels from the first:
 //!   the line parts.rs follows to read season folders, so what's written
 //!   here is read back the same.
-//! - A part off that line (a spin-off, an OVA) goes by its own name, and so
-//!   does a season whose folder is there already, holding another show's rips.
-//! - A film goes with the movies even when it belongs to an anime with
-//!   seasons: the Library groups by AniList's relations, not by folder.
+//! - A part off that line (a spin-off, an OVA, a film put in a series
+//!   library) goes by its own name, and so does a season whose folder is
+//!   there already, holding another show's rips.
 //! - A release of several parts (a folder for each season) goes in the
 //!   anime's folder as it is.
 //!
-//! Files keep the names they were released with. A folder you haven't chosen
-//! is the one your series or films are kept in already, saved the first time
-//! a download needs it. With no folder for its kind (nothing of that kind in
-//! the library yet, or the folder set empty in Settings), a download goes in
-//! the downloads folder as before (torrents.rs).
+//! Files keep the names they were released with. Until you've changed them,
+//! the libraries are a Series and a Movies library in the folders your series
+//! and films are kept in already, saved the first time they're needed. With
+//! no library, a download goes in the downloads folder as before
+//! (torrents.rs).
 //!
-//! Settings: library.series and library.movies (the two folders; empty for
-//! the downloads folder).
+//! Settings: libraries (the list). library.series and library.movies, the
+//! two folders Telly had before, become the first libraries.
 
 use crate::backend::{shared_setting, Backend};
 use crate::db::Show;
@@ -34,8 +38,20 @@ use crate::relink::{below, folder_of, join};
 use crate::series::Graph;
 use crate::util::safe_file_name;
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashSet;
+
+/// A library: its name, whether it holds series or movies, and its folders.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Library {
+    pub name: String,
+    /// "series" or "movies".
+    pub kind: String,
+    pub folders: Vec<String>,
+    /// The one of `folders` that downloads go in.
+    pub downloads: String,
+}
 
 /// A folder's name from a title: "Kaguya-sama: Love is War" is "Kaguya-sama - Love is War".
 fn folder_name(title: &str) -> String {
@@ -57,23 +73,21 @@ fn anime_folder(series: &str, graph: &Graph, shows: &[Show], root: i64) -> Optio
     tops.iter().find(|(_, count)| *count == most).map(|(top, _)| join(series, &[top]))
 }
 
-/// The folder a download of the AniList entry `id` goes in, or none when no
-/// folder is chosen for its kind. `whole`: the release holds several parts.
-/// `taken` says whether a folder is there already with something in it.
-pub fn place(series: &str, movies: &str, graph: &Graph, shows: &[Show], id: i64, whole: bool, taken: impl Fn(&str) -> bool) -> Option<String> {
+/// The folder a download of the AniList entry `id` goes in, in `library`,
+/// or none when Telly hasn't asked AniList about it. `whole`: the release
+/// holds several parts. `taken` says whether a folder is there already with
+/// something in it.
+pub fn place(library: &Library, graph: &Graph, shows: &[Show], id: i64, whole: bool, taken: impl Fn(&str) -> bool) -> Option<String> {
     let entry = graph.entry(id)?;
     let title = entry.anime.short_title();
-    if entry.anime.format == "MOVIE" && !whole {
+    if library.kind == "movies" && !whole {
         let named = entry.anime.year.map_or(title.clone(), |year| format!("{title} ({year})"));
-        return (!movies.is_empty()).then(|| join(movies, &[&folder_name(&named)]));
-    }
-    if series.is_empty() {
-        return None;
+        return Some(join(&library.downloads, &[&folder_name(&named)]));
     }
     let root = graph.root(id).unwrap_or(id);
-    let anime = anime_folder(series, graph, shows, root).unwrap_or_else(|| {
+    let anime = library.folders.iter().find_map(|folder| anime_folder(folder, graph, shows, root)).unwrap_or_else(|| {
         let named = graph.entry(root).map_or_else(|| title.clone(), |e| e.anime.short_title());
-        join(series, &[&folder_name(&named)])
+        join(&library.downloads, &[&folder_name(&named)])
     });
     if whole {
         return Some(anime);
@@ -122,19 +136,56 @@ pub fn kept_in(graph: &Graph, shows: &[Show], movies: bool) -> Option<String> {
     tally.into_iter().find(|(_, count)| *count == most).map(|(folder, _)| folder)
 }
 
-/// The series and movies folders (settings library.series and
-/// library.movies). One never chosen is the folder your series or films are
-/// kept in already (`kept_in`), saved as if you'd chosen it.
-pub fn folders(backend: &Backend, graph: &Graph, shows: &[Show]) -> Result<(String, String)> {
-    let folder = |key: &str, movies: bool| -> Result<String> {
-        if let Some(chosen) = backend.db.setting(key)? {
-            return Ok(chosen.as_str().unwrap_or_default().trim().to_string());
+/// Your libraries (setting libraries). The first time they're asked for,
+/// they're made, and saved: a Series and a Movies library in the folders
+/// Telly had for them before, else where your series and films are kept
+/// already (`kept_in`).
+pub fn libraries(backend: &Backend) -> Result<Vec<Library>> {
+    if let Some(kept) = backend.db.setting("libraries")? {
+        return Ok(serde_json::from_value(kept)?);
+    }
+    let (graph, shows) = (crate::series::graph(backend), backend.db.shows()?);
+    let mut made = Vec::new();
+    for (key, name, kind) in [("library.series", "Series", "series"), ("library.movies", "Movies", "movies")] {
+        let folder = match backend.db.setting(key)? {
+            Some(chosen) => chosen.as_str().unwrap_or_default().trim().to_string(),
+            None => kept_in(&graph, &shows, kind == "movies").unwrap_or_default(),
+        };
+        if !folder.is_empty() {
+            made.push(Library { name: name.into(), kind: kind.into(), folders: vec![folder.clone()], downloads: folder });
         }
-        let Some(found) = kept_in(graph, shows, movies) else { return Ok(String::new()) };
-        backend.db.set_setting(key, &json!(found))?;
-        Ok(found)
+        backend.db.set_setting(key, &serde_json::Value::Null)?;
+    }
+    backend.db.set_setting("libraries", &json!(made))?;
+    Ok(made)
+}
+
+/// Your libraries, each with how many shows in the library are in its folders, for Settings.
+pub fn view(backend: &Backend) -> Result<serde_json::Value> {
+    let shows = backend.db.shows()?;
+    let listed: Vec<serde_json::Value> = libraries(backend)?
+        .into_iter()
+        .map(|l| {
+            let count = shows.iter().filter(|s| l.folders.iter().any(|f| below(f, &s.folder).is_some())).count();
+            json!({ "name": l.name, "kind": l.kind, "folders": l.folders, "downloads": l.downloads, "shows": count })
+        })
+        .collect();
+    Ok(json!(listed))
+}
+
+/// The library a download of the AniList entry `id` goes in unless you
+/// choose another: of the libraries of its kind (a film's, or a series'),
+/// the one with the anime's other parts in its folders, else the first; of
+/// all of them when none is of its kind.
+pub fn usual(libraries: &[Library], graph: &Graph, shows: &[Show], id: i64) -> Option<usize> {
+    let kind = if graph.entry(id).is_some_and(|e| e.anime.format == "MOVIE") { "movies" } else { "series" };
+    let root = graph.root(id).unwrap_or(id);
+    let holds = |library: &Library| {
+        shows.iter().any(|s| s.anilist_id.map(|a| graph.root(a).unwrap_or(a)) == Some(root) && library.folders.iter().any(|f| below(f, &s.folder).is_some()))
     };
-    Ok((folder("library.series", false)?, folder("library.movies", true)?))
+    let of_kind: Vec<usize> = (0..libraries.len()).filter(|&i| libraries[i].kind == kind).collect();
+    let choices = if of_kind.is_empty() { (0..libraries.len()).collect() } else { of_kind };
+    choices.iter().copied().find(|&i| holds(&libraries[i])).or(choices.first().copied())
 }
 
 /// The folder a show's rips are in: the deepest one below its own folder
@@ -181,16 +232,26 @@ mod tests {
         crate::series::tests::show(id, "", Some(anilist), folder)
     }
 
-    const SERIES: &str = r"D:\Media\Anime\Series";
-    const MOVIES: &str = r"D:\Media\Anime\Movies";
+    /// A library of `kind` whose first folder takes downloads.
+    fn library(kind: &str, folders: &[&str]) -> Library {
+        Library { name: kind.into(), kind: kind.into(), folders: folders.iter().map(|f| f.to_string()).collect(), downloads: folders[0].into() }
+    }
+
+    fn series() -> Library {
+        library("series", &[r"D:\Media\Anime\Series"])
+    }
+
+    fn movies() -> Library {
+        library("movies", &[r"D:\Media\Anime\Movies"])
+    }
 
     #[test]
     fn a_new_anime_gets_a_folder_and_a_season_folder() {
         let graph = Graph::new(overlord());
         let free = |_: &str| false;
-        assert_eq!(place(SERIES, MOVIES, &graph, &[], 20832, false, free).as_deref(), Some(r"D:\Media\Anime\Series\Overlord\Season 01"));
+        assert_eq!(place(&series(), &graph, &[], 20832, false, free).as_deref(), Some(r"D:\Media\Anime\Series\Overlord\Season 01"));
         // The season's number is its place on the line of sequels, past the films between.
-        assert_eq!(place(SERIES, MOVIES, &graph, &[], 133844, false, free).as_deref(), Some(r"D:\Media\Anime\Series\Overlord\Season 04"));
+        assert_eq!(place(&series(), &graph, &[], 133844, false, free).as_deref(), Some(r"D:\Media\Anime\Series\Overlord\Season 04"));
     }
 
     #[test]
@@ -198,40 +259,55 @@ mod tests {
         let graph = Graph::new(overlord());
         let pack = r"D:\Media\Anime\Series\[Judas] Overlord (Seasons 1-3) [BD 1080p]";
         let shows = [show(1, 20832, &format!(r"{pack}\[Judas] Overlord - S1")), show(2, 98437, &format!(r"{pack}\[Judas] Overlord - S2"))];
-        assert_eq!(place(SERIES, MOVIES, &graph, &shows, 133844, false, |_| false), Some(format!(r"{pack}\Season 04")));
+        assert_eq!(place(&series(), &graph, &shows, 133844, false, |_| false), Some(format!(r"{pack}\Season 04")));
         // A show elsewhere says nothing of where the anime is here.
         let elsewhere = [show(1, 20832, r"C:\Videos\Overlord")];
-        assert_eq!(place(SERIES, MOVIES, &graph, &elsewhere, 98437, false, |_| false).as_deref(), Some(r"D:\Media\Anime\Series\Overlord\Season 02"));
+        assert_eq!(place(&series(), &graph, &elsewhere, 98437, false, |_| false).as_deref(), Some(r"D:\Media\Anime\Series\Overlord\Season 02"));
+        // In a library's other folder, it's found there.
+        let two = library("series", &[r"D:\New", r"E:\Old"]);
+        let old = [show(1, 20832, r"E:\Old\Overlord\Season 01")];
+        assert_eq!(place(&two, &graph, &old, 98437, false, |_| false).as_deref(), Some(r"E:\Old\Overlord\Season 02"));
     }
 
     #[test]
-    fn a_film_goes_with_the_movies_and_a_side_story_by_its_own_name() {
+    fn a_film_goes_in_its_own_folder_and_a_side_story_by_its_own_name() {
         let graph = Graph::new(overlord());
         let shows = [show(1, 20832, r"D:\Media\Anime\Series\Overlord\Season 01")];
-        assert_eq!(place(SERIES, MOVIES, &graph, &shows, 133845, false, |_| false).as_deref(), Some(r"D:\Media\Anime\Movies\Overlord - The Sacred Kingdom (2024)"));
-        assert_eq!(place(SERIES, MOVIES, &graph, &shows, 21305, false, |_| false).as_deref(), Some(r"D:\Media\Anime\Series\Overlord\Overlord - Ple Ple Pleiades"));
+        assert_eq!(place(&movies(), &graph, &shows, 133845, false, |_| false).as_deref(), Some(r"D:\Media\Anime\Movies\Overlord - The Sacred Kingdom (2024)"));
+        assert_eq!(place(&series(), &graph, &shows, 21305, false, |_| false).as_deref(), Some(r"D:\Media\Anime\Series\Overlord\Overlord - Ple Ple Pleiades"));
+        // A film put in a series library goes in its anime's folder by its own name.
+        assert_eq!(place(&series(), &graph, &shows, 133845, false, |_| false).as_deref(), Some(r"D:\Media\Anime\Series\Overlord\Overlord - The Sacred Kingdom"));
+        // Nor is an entry Telly hasn't asked AniList about placed.
+        assert_eq!(place(&series(), &Graph::new([entry(1, "Other", "TV", 12, 20200101, &[])]), &[], 2, false, |_| false), None);
     }
 
     #[test]
     fn a_season_folder_that_s_another_show_s_is_left_alone() {
         let graph = Graph::new(overlord());
         let taken = |folder: &str| folder.ends_with("Season 02");
-        assert_eq!(place(SERIES, MOVIES, &graph, &[], 98437, false, taken).as_deref(), Some(r"D:\Media\Anime\Series\Overlord\Overlord II"));
+        assert_eq!(place(&series(), &graph, &[], 98437, false, taken).as_deref(), Some(r"D:\Media\Anime\Series\Overlord\Overlord II"));
     }
 
     #[test]
     fn a_release_of_several_parts_goes_in_the_anime_s_folder() {
         let graph = Graph::new(overlord());
-        assert_eq!(place(SERIES, MOVIES, &graph, &[], 20832, true, |_| false).as_deref(), Some(r"D:\Media\Anime\Series\Overlord"));
+        assert_eq!(place(&series(), &graph, &[], 20832, true, |_| false).as_deref(), Some(r"D:\Media\Anime\Series\Overlord"));
     }
 
     #[test]
-    fn nothing_is_placed_without_a_folder_for_its_kind() {
+    fn a_download_goes_in_the_library_of_its_kind_that_has_the_anime() {
         let graph = Graph::new(overlord());
-        assert_eq!(place("", MOVIES, &graph, &[], 20832, false, |_| false), None);
-        assert_eq!(place(SERIES, "", &graph, &[], 133845, false, |_| false), None);
-        // Nor an entry Telly hasn't asked AniList about.
-        assert_eq!(place(SERIES, MOVIES, &Graph::new([entry(1, "Other", "TV", 12, 20200101, &[])]), &[], 2, false, |_| false), None);
+        let elsewhere = library("series", &[r"E:\Anime"]);
+        let libraries = [series(), movies(), elsewhere];
+        let shows = [show(1, 20832, r"E:\Anime\Overlord\Season 01")];
+        // A film goes with the movies, though its anime's seasons are in a series library.
+        assert_eq!(usual(&libraries, &graph, &shows, 133845), Some(1));
+        // A season goes in the series library its anime is in, else the first.
+        assert_eq!(usual(&libraries, &graph, &shows, 98437), Some(2));
+        assert_eq!(usual(&libraries, &graph, &[], 98437), Some(0));
+        // With none of its kind, any.
+        assert_eq!(usual(&[movies()], &graph, &[], 98437), Some(0));
+        assert_eq!(usual(&[], &graph, &[], 98437), None);
     }
 
     #[test]
@@ -290,17 +366,21 @@ mod tests {
     }
 
     #[test]
-    fn a_folder_never_chosen_is_saved_and_one_cleared_stays_clear() {
+    fn the_first_libraries_are_the_folders_telly_had_else_where_shows_are() {
         use crate::backend::Dirs;
-        let dir = std::env::temp_dir().join(format!("telly-folders-{}", std::process::id()));
+        use crate::db::NewShow;
+        let dir = std::env::temp_dir().join(format!("telly-libraries-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let backend = Backend::open(Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
-        let graph = Graph::new(overlord());
-        let mut film = show(1, 98873, r"D:\Films\Overlord - The Undead King (2017)");
-        film.format = "MOVIE".into();
+        let film = NewShow { folder: r"D:\Films\Paprika".into(), title: "Paprika".into(), anilist_id: Some(1), format: "MOVIE".into(), ..Default::default() };
+        backend.db.add_show(&film).unwrap();
+        // The series folder was set to the downloads folder: there's no series library.
         backend.db.set_setting("library.series", &json!("")).unwrap();
-        assert_eq!(folders(&backend, &graph, &[film]).unwrap(), (String::new(), r"D:\Films".to_string()));
-        assert_eq!(backend.db.setting_str("library.movies"), r"D:\Films");
+        assert_eq!(libraries(&backend).unwrap(), vec![Library { name: "Movies".into(), kind: "movies".into(), folders: vec![r"D:\Films".into()], downloads: r"D:\Films".into() }]);
+        assert_eq!(backend.db.setting("library.series").unwrap(), None);
+        // Once saved, they're yours: none is made again.
+        backend.db.set_setting("libraries", &json!([])).unwrap();
+        assert_eq!(libraries(&backend).unwrap(), vec![]);
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

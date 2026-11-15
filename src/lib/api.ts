@@ -628,6 +628,23 @@ export interface DownloadDestination {
   sorted: boolean;
   /** Whether it joins the library by itself as it finishes. */
   joins: boolean;
+  /** The library it goes in, by its place in `DownloadPlan.libraries`. */
+  library: number | null;
+}
+
+/** A library: where downloads of its kind go, chosen in Settings. */
+export interface DownloadLibrary {
+  name: string;
+  kind: "series" | "movies";
+  folders: string[];
+  /** The one of `folders` that downloads go in. */
+  downloads: string;
+}
+
+/** A library as Settings lists it. */
+export interface LibraryView extends DownloadLibrary {
+  /** How many shows in the library are in its folders. */
+  shows: number;
 }
 
 /** What a release's sheet shows before it downloads. */
@@ -637,6 +654,8 @@ export interface DownloadPlan {
   /** The one it's taken to be. */
   anime: Anime | null;
   to: DownloadDestination;
+  /** The libraries it could go in. */
+  libraries: DownloadLibrary[];
   /** Why AniList couldn't be asked. */
   error: string | null;
 }

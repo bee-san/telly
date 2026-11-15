@@ -22,12 +22,12 @@
   /** The name last searched for, once AniList has answered. */
   let searched = $state("");
 
-  /** Asks where the release goes: as the show its name finds, or as `anime`. */
-  async function place(anime?: Anime) {
-    phase = "finding";
+  /** Asks where the release goes: as the show its name finds, or as `anime`, in its usual library or `library`. */
+  async function place(anime?: Anime, library?: number) {
+    if (library === undefined) phase = "finding";
     error = "";
     try {
-      const answer = await call<DownloadPlan>("placeDownload", { title: release.title, torrent: release.torrent, anilistId: anime?.id ?? null });
+      const answer = await call<DownloadPlan>("placeDownload", { title: release.title, torrent: release.torrent, anilistId: anime?.id ?? null, library: library ?? null });
       if (!anime) matches = answer.matches;
       plan = answer;
       chosen = answer.anime;
@@ -77,7 +77,7 @@
     phase = "starting";
     error = "";
     try {
-      const { folder } = await call<{ folder: string }>("download", { magnet: release.magnet, torrent: release.torrent, title: release.title, show: null, anilistId: chosen?.id ?? null });
+      const { folder } = await call<{ folder: string }>("download", { magnet: release.magnet, torrent: release.torrent, title: release.title, show: null, anilistId: chosen?.id ?? null, library: chosen ? (plan?.to.library ?? null) : null });
       onstarted(folder);
     } catch (e) {
       error = errorText(e);
@@ -100,8 +100,8 @@
     if (!to.joins) return "This release holds several seasons or movies. The Library offers them to add once it’s down.";
     return "Added to the library when its first file finishes.";
   });
-  /** The kind of library folder that would take it, when none is chosen. */
-  const unsorted = $derived(chosen && plan && plan.to.show === null && !plan.to.sorted ? (chosen.format === "MOVIE" && plan.to.joins ? "movies" : "series") : null);
+  /** Whether there's no library for a new show to go in. */
+  const noLibrary = $derived(!!chosen && !!plan && plan.to.show === null && !plan.libraries.length);
 </script>
 
 <div class="modal-bg" role="presentation" onclick={(e) => e.target === e.currentTarget && phase !== "starting" && onclose()}>
@@ -153,11 +153,21 @@
         <button type="button" class="link-btn" onclick={openSearch}>{chosen ? "Choose another show" : "Find it on AniList"}</button>
       </div>
       {#if chosen && plan}
-        <p class="where"><span>Goes in</span> <span class="mono">{plan.to.folder}</span></p>
+        <div class="where">
+          {#if plan.to.show === null && plan.libraries.length}
+            <label class="row">
+              <span>Library</span>
+              <select class="input" value={plan.to.library ?? 0} onchange={(e) => place(chosen ?? undefined, Number(e.currentTarget.value))}>
+                {#each plan.libraries as l, i (i)}<option value={i}>{l.name}</option>{/each}
+              </select>
+            </label>
+          {/if}
+          <p class="row"><span>Goes in</span> <span class="mono">{plan.to.folder}</span></p>
+        </div>
       {/if}
       <p class="sheet-note">
         {after}
-        {#if unsorted}<a href="/settings#library" class="link-btn">Choose a {unsorted} folder</a> to have it sorted into your library.{/if}
+        {#if noLibrary}<a href="/settings#libraries" class="link-btn">Add a library</a> to have it sorted into your library.{/if}
       </p>
       {#if error}<p class="err">{error}</p>{/if}
       <div class="sheet-foot">
@@ -178,7 +188,9 @@
   .sheet-head { display: grid; grid-template-columns: 86px minmax(0, 1fr) auto; gap: 18px; align-items: center; }
   .poster { width: 86px; aspect-ratio: 135 / 190; object-fit: cover; border-radius: 3px; box-shadow: 0 12px 22px -14px rgba(0, 0, 0, .6); background: var(--sunk); }
   .poster.none { display: block; }
-  .where { display: grid; gap: 4px; padding: 12px 0; border-block: 1px solid var(--rule); font-size: 13px; color: var(--ink-2); }
+  .where { display: grid; gap: 12px; padding: 12px 0; border-block: 1px solid var(--rule); font-size: 13px; color: var(--ink-2); }
+  .where .row { display: grid; gap: 4px; }
+  .where select { max-width: 320px; }
   .where .mono { font-size: 12.5px; color: var(--ink); overflow-wrap: anywhere; }
   .searchrow { display: flex; gap: 8px; margin-top: 6px; }
   .results { display: grid; gap: 4px; max-height: 420px; overflow: auto; }

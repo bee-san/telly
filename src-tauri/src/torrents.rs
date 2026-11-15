@@ -5,9 +5,9 @@
 //! Each download's files go straight into a show's folder. For a show in the
 //! library, that's the folder its rips are in. For one that isn't, you say
 //! which show it is before it starts (`plan`: the anime its name finds on
-//! AniList, or another you choose), and it goes to its place in your library
-//! folders (library.rs), or, with none for its kind, a folder named
-//! for it in the downloads folder. A file that isn't finished counts as
+//! AniList, or another you choose), and it goes to its place in the library
+//! you choose (library.rs), or, with none, a folder named for it in the
+//! downloads folder. A file that isn't finished counts as
 //! unreadable when Telly looks in a folder, so no episode is added half
 //! there. When a file finishes in a show's folder, Telly looks in the folder
 //! at once. A new show is added to the library when its first file finishes,
@@ -135,6 +135,8 @@ pub struct Destination {
     pub sorted: bool,
     /// Whether it joins the library by itself as it finishes: a show's episodes, or the one new show you said it is.
     pub joins: bool,
+    /// The library it goes in, by its place in the list.
+    pub library: Option<usize>,
 }
 
 /// How the downloads are going, all together, for the title bar.
@@ -346,10 +348,11 @@ fn in_use(folder: &str) -> bool {
 }
 
 /// Where a release goes: the folder `show`'s rips are in (or those of the
-/// show in the library that is `anilist`), else `anilist`'s place in your
-/// library folders, else a folder named from `title` in the downloads
-/// folder. `files` are the release's, when its .torrent file could be read.
-fn destination(backend: &Backend, title: &str, files: Option<&[String]>, show: Option<i64>, anilist: Option<i64>) -> Result<Destination> {
+/// show in the library that is `anilist`), else `anilist`'s place in the
+/// library `library` (or its usual one), else a folder named from `title`
+/// in the downloads folder. `files` are the release's, when its .torrent
+/// file could be read.
+fn destination(backend: &Backend, title: &str, files: Option<&[String]>, show: Option<i64>, anilist: Option<i64>, library: Option<usize>) -> Result<Destination> {
     let shows = backend.db.shows()?;
     let whole = files.is_some_and(several_parts);
     let show = match show {
@@ -360,17 +363,18 @@ fn destination(backend: &Backend, title: &str, files: Option<&[String]>, show: O
     };
     if let Some(show) = show {
         let rips: Vec<String> = backend.db.episodes(show.id)?.into_iter().map(|e| e.path).collect();
-        return Ok(Destination { folder: library::rips_folder(&show.folder, &rips), show: Some(show.id), sorted: false, joins: true });
+        return Ok(Destination { folder: library::rips_folder(&show.folder, &rips), show: Some(show.id), sorted: false, joins: true, library: None });
     }
     let unsorted = downloads_folder(backend).join(folder_name(title)).to_string_lossy().into_owned();
-    let Some(id) = anilist else { return Ok(Destination { folder: unsorted, show: None, sorted: false, joins: false }) };
+    let Some(id) = anilist else { return Ok(Destination { folder: unsorted, show: None, sorted: false, joins: false, library: None }) };
     let graph = series::around(backend, id)?;
-    let (series, movies) = library::folders(backend, &graph, &shows)?;
+    let libraries = library::libraries(backend)?;
+    let library = library.or_else(|| library::usual(&libraries, &graph, &shows, id));
     // A season's folder with something in it is another show's, unless it's this entry's own download so far.
     let waiting = entries(backend);
     let taken = |folder: &str| in_use(folder) && !waiting.iter().any(|(f, entry)| key(f) == key(folder) && *entry == id);
-    let placed = library::place(&series, &movies, &graph, &shows, id, whole, taken);
-    Ok(Destination { sorted: placed.is_some(), folder: placed.unwrap_or(unsorted), show: None, joins: !whole })
+    let placed = library.and_then(|i| libraries.get(i)).and_then(|chosen| library::place(chosen, &graph, &shows, id, whole, taken));
+    Ok(Destination { sorted: placed.is_some(), folder: placed.unwrap_or(unsorted), show: None, joins: !whole, library })
 }
 
 /// The anime a release's name finds on AniList, the likeliest first. `count`
@@ -391,8 +395,9 @@ fn find(title: &str, count: usize) -> Result<Vec<Anime>> {
 
 /// What a release's sheet shows before it downloads: the anime its name
 /// finds on AniList (`matches`, none when `anilist` says which it is or it's
-/// for `show`), the one it's taken to be, and where that one's download goes.
-pub fn plan(backend: &Backend, title: &str, torrent: &str, show: Option<i64>, anilist: Option<i64>) -> Result<Value> {
+/// for `show`), the one it's taken to be, where that one's download goes (in
+/// `library`, or its usual one) and the libraries it could go in.
+pub fn plan(backend: &Backend, title: &str, torrent: &str, show: Option<i64>, anilist: Option<i64>, library: Option<usize>) -> Result<Value> {
     let files = torrent_bytes(backend, torrent).ok().and_then(|bytes| files_in(&bytes).ok());
     let (matches, error) = match (show, anilist) {
         (None, None) => match find(title, files.as_deref().map_or(0, |f| episodes_in(f).count())) {
@@ -405,22 +410,22 @@ pub fn plan(backend: &Backend, title: &str, torrent: &str, show: Option<i64>, an
         Some(id) => Some(anilist::by_id(id)?),
         None => matches.first().cloned(),
     };
-    let to = destination(backend, title, files.as_deref(), show, anime.as_ref().map(|a| a.id))?;
-    Ok(json!({ "matches": matches, "anime": anime, "to": to, "error": error }))
+    let to = destination(backend, title, files.as_deref(), show, anime.as_ref().map(|a| a.id), library)?;
+    Ok(json!({ "matches": matches, "anime": anime, "to": to, "libraries": library::libraries(backend)?, "error": error }))
 }
 
-/// Hands a release to the client: into `show`'s folder, the place in your
-/// library of the AniList entry `anilist`, or a new show's folder named from
-/// `title` (`destination`). `torrent` is its .torrent file's address.
-/// Returns the folder.
-pub fn add(backend: &Arc<Backend>, magnet: &str, torrent: &str, title: &str, show: Option<i64>, anilist: Option<i64>) -> Result<String> {
+/// Hands a release to the client: into `show`'s folder, the place in
+/// `library` (or its usual one) of the AniList entry `anilist`, or a new
+/// show's folder named from `title` (`destination`). `torrent` is its
+/// .torrent file's address. Returns the folder.
+pub fn add(backend: &Arc<Backend>, magnet: &str, torrent: &str, title: &str, show: Option<i64>, anilist: Option<i64>, library: Option<usize>) -> Result<String> {
     if !magnet.starts_with("magnet:") {
         return Err(anyhow!("That isn’t a magnet link"));
     }
     // Without its .torrent file, the release's list of files comes later, from the people sharing it.
     let fetched = torrent_bytes(backend, torrent);
     let files = fetched.as_ref().ok().and_then(|bytes| files_in(bytes).ok());
-    let to = destination(backend, title, files.as_deref(), show, anilist)?;
+    let to = destination(backend, title, files.as_deref(), show, anilist, library)?;
     let folder = to.folder.clone();
     std::fs::create_dir_all(&folder).with_context(|| format!("Telly couldn’t make the folder {folder}"))?;
     if to.sorted {

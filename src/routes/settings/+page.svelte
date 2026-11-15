@@ -3,6 +3,7 @@
   import { page } from "$app/state";
   import { onMount } from "svelte";
   import Icon from "$lib/Icon.svelte";
+  import LibrarySheet from "$lib/LibrarySheet.svelte";
   import {
     call,
     callKept,
@@ -27,6 +28,8 @@
     type NamesStatus,
     type OwnHachidori,
     type KnownSources, type Settings,
+    type DownloadLibrary,
+    type LibraryView,
     type MissingRips,
     type ShowMove,
     type Status,
@@ -57,6 +60,9 @@
   let movedFrom = $state("");
   let movedTo = $state("");
   let moved = $state<ShowMove[] | null>(null);
+  let libraries = $state<LibraryView[]>(kept<LibraryView[]>("libraries") ?? []);
+  /** The library being added (at: null) or edited in its sheet. */
+  let editing = $state<{ at: number | null } | null>(null);
 
   /** Every part is asked for at once, and shows as it comes. */
   async function load() {
@@ -76,6 +82,7 @@
         callKept<ClaudeStatus>("claudeStatus").then((c) => (claude = c)),
         callKept<KnownSources>("knownSources").then((k) => (sources = k)).catch(() => (sources = null)),
         callKept<DownloadsView>("downloads").then((d) => (downloadsFolder = d.folder)).catch(() => {}),
+        callKept<LibraryView[]>("libraries").then((l) => (libraries = l)),
         loadAway(),
       ]);
     } catch (e) {
@@ -399,10 +406,16 @@
   let showRouterKey = $state(false);
   /** Where new shows are downloaded when no folder is chosen. */
   let downloadsFolder = $state("");
-  /** Chooses the library folder downloads of a kind are sorted into. */
-  async function chooseLibraryFolder(kind: "series" | "movies") {
-    const folder = await pickFolder(kind === "series" ? "Choose the folder for series" : "Choose the folder for movies");
-    if (folder) await set(`library.${kind}`, folder);
+  /** Saves the list of libraries, then lists them again with what's in them. */
+  async function saveLibraries(list: DownloadLibrary[]) {
+    editing = null;
+    await set("libraries", list.map(({ name, kind, folders, downloads }) => ({ name, kind, folders, downloads })));
+    libraries = await call<LibraryView[]>("libraries").catch(() => libraries);
+  }
+  /** Puts the library from its sheet in the list: in its place when edited, else at the end. */
+  function saveLibrary(library: DownloadLibrary) {
+    const at = editing?.at ?? null;
+    saveLibraries(at === null ? [...libraries, library] : libraries.map((l, i) => (i === at ? library : l)));
   }
   async function chooseDownloadsFolder() {
     const folder = await pickFolder("Choose where new shows are downloaded");
@@ -727,24 +740,36 @@
     <p class="muted mono path">{status?.dataDir}</p>
   </section>
 
-  <section id="library">
-    <h2>Library</h2>
-    <p class="lede">Where a download goes once you’ve said which show it is. Telly makes the folders and the release keeps its file names; nothing already there is moved.</p>
-    <div class="rows">
-      <div class="field">
-        <span>Series folder</span>
-        <span class="inline"><input class="input grow mono" value={str("library.series")} readonly placeholder="D:\Anime\Series" aria-label="Series folder" /><button type="button" class="btn quiet" onclick={() => chooseLibraryFolder("series")}>Choose folder…</button></span>
-        <small>A season goes in <span class="mono">Anime\Season 01</span> in here, beside the anime’s other seasons when it has any.</small>
-        {#if str("library.series")}<span><button type="button" class="link-btn" onclick={() => set("library.series", "")}>Use the downloads folder</button></span>{/if}
-      </div>
-      <div class="field">
-        <span>Movies folder</span>
-        <span class="inline"><input class="input grow mono" value={str("library.movies")} readonly placeholder="D:\Anime\Movies" aria-label="Movies folder" /><button type="button" class="btn quiet" onclick={() => chooseLibraryFolder("movies")}>Choose folder…</button></span>
-        <small>A film goes in <span class="mono">Title (year)</span> in here.</small>
-        {#if str("library.movies")}<span><button type="button" class="link-btn" onclick={() => set("library.movies", "")}>Use the downloads folder</button></span>{/if}
-      </div>
+  <section id="libraries">
+    <div class="head-row">
+      <h2>Libraries</h2>
+      <button type="button" class="btn quiet" onclick={() => (editing = { at: null })}><Icon name="plus" /><span>Add library…</span></button>
     </div>
+    <p class="lede">Where a download goes once you’ve said which show it is. Telly makes the folders and the release keeps its file names; nothing already there is moved.</p>
+    {#if libraries.length}
+      <ul class="libraries">
+        {#each libraries as l, i (i)}
+          <li>
+            <div class="library">
+              <span><b>{l.name}</b> <span class="muted">{l.kind === "movies" ? "Movies" : "Series"} · {plural(l.shows, "show")}</span></span>
+              {#each l.folders as folder (folder)}
+                <span class="path"><span class="mono">{folder}</span>{#if l.folders.length > 1 && folder === l.downloads} <span class="muted">Downloads go here</span>{/if}</span>
+              {/each}
+            </div>
+            <span class="actions">
+              <button type="button" class="btn quiet small" onclick={() => (editing = { at: i })}>Edit…</button>
+              <button type="button" class="btn quiet small" onclick={() => saveLibraries(libraries.filter((_, j) => j !== i))}>Remove</button>
+            </span>
+          </li>
+        {/each}
+      </ul>
+    {:else}
+      <p class="muted">No libraries. Downloads go in the folder for new shows.</p>
+    {/if}
   </section>
+  {#if editing}
+    <LibrarySheet library={editing.at === null ? null : libraries[editing.at]} onclose={() => (editing = null)} onsave={saveLibrary} />
+  {/if}
 
   <section id="downloads">
     <h2>Downloads</h2>
@@ -753,7 +778,7 @@
       <div class="field">
         <span>Folder for new shows</span>
         <span class="inline"><input class="input grow mono" value={str("downloads.folder") || downloadsFolder} readonly aria-label="Folder for new shows" /><button type="button" class="btn quiet" onclick={chooseDownloadsFolder}>Choose folder…</button></span>
-        <small>A new show gets a folder of its own in here when no library folder takes it. More episodes of a show in the library go in its folder.</small>
+        <small>A new show gets a folder of its own in here when no library takes it. More episodes of a show in the library go in its folder.</small>
         {#if str("downloads.folder")}<span><button type="button" class="link-btn" onclick={() => set("downloads.folder", null)}>Use Downloads\Telly in your home folder</button></span>{/if}
       </div>
       <label class="field narrow">
@@ -890,4 +915,10 @@
   .moved-list .right { justify-self: end; font-variant-numeric: tabular-nums; }
   .moved-list .muted { grid-column: 1 / -1; }
   code { background: var(--sunk); padding: .1em .36em; border-radius: 4px; overflow-wrap: anywhere; }
+  .head-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .libraries { display: grid; margin: 0; padding: 0; border: 1px solid var(--rule); border-radius: 8px; }
+  .libraries li { list-style: none; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 16px; align-items: start; padding: 14px 16px; }
+  .libraries li + li { border-top: 1px solid var(--rule); }
+  .library { display: grid; gap: 4px; min-width: 0; font-size: 14px; }
+  .library .mono { font-size: 12.5px; }
 </style>

@@ -1936,14 +1936,15 @@ impl Backend {
             )?),
             "placeDownload" => {
                 let torrent = arg::<Option<String>>(&args, "torrent")?.unwrap_or_default();
-                torrents::plan(self, &arg::<String>(&args, "title")?, &torrent, arg(&args, "show")?, arg(&args, "anilistId")?)
+                torrents::plan(self, &arg::<String>(&args, "title")?, &torrent, arg(&args, "show")?, arg(&args, "anilistId")?, arg(&args, "library")?)
             }
             "download" => {
                 let torrent = arg::<Option<String>>(&args, "torrent")?.unwrap_or_default();
-                let folder = torrents::add(self, &arg::<String>(&args, "magnet")?, &torrent, &arg::<String>(&args, "title")?, arg(&args, "show")?, arg(&args, "anilistId")?)?;
+                let folder = torrents::add(self, &arg::<String>(&args, "magnet")?, &torrent, &arg::<String>(&args, "title")?, arg(&args, "show")?, arg(&args, "anilistId")?, arg(&args, "library")?)?;
                 Ok(json!({ "folder": folder }))
             }
             "downloads" => Ok(torrents::view(self)),
+            "libraries" => crate::library::view(self),
             "pauseDownload" => {
                 torrents::pause(self, arg(&args, "id")?, arg(&args, "paused")?)?;
                 Ok(torrents::view(self))

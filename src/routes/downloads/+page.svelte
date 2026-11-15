@@ -17,8 +17,8 @@
   const asked = page.url.searchParams.get("q") ?? "";
   const fromRecommended = page.url.searchParams.get("from") === "recommended";
   let show = $state<{ id: number; title: string; folder: string } | null>(null);
-  /** Where the AniList entry's download goes. */
-  let into = $state("");
+  /** Where the AniList entry's download goes, and the libraries it could go in. */
+  let plan = $state.raw<DownloadPlan | null>(null);
   /** The release whose show is being asked. */
   let asking = $state.raw<Release | null>(null);
 
@@ -73,16 +73,19 @@
       q = asked;
       search();
     }
-    if (anilistId) {
-      call<DownloadPlan>("placeDownload", { title: asked, anilistId })
-        .then((plan) => (into = plan.to.folder))
-        .catch(() => {});
-    }
+    if (anilistId) placeEntry();
     return () => {
       stopped = true;
       clearTimeout(timer);
     };
   });
+
+  /** Asks where the AniList entry's download goes: in its usual library, or `library`. */
+  function placeEntry(library?: number) {
+    call<DownloadPlan>("placeDownload", { title: asked, anilistId, library: library ?? null })
+      .then((p) => (plan = p))
+      .catch(() => {});
+  }
 
   async function search(next = false) {
     const query = q.trim();
@@ -118,7 +121,7 @@
     }
     sent[r.id] = "sending";
     try {
-      const { folder } = await call<{ folder: string }>("download", { magnet: r.magnet, torrent: r.torrent, title: r.title, show: show?.id ?? null, anilistId: entry });
+      const { folder } = await call<{ folder: string }>("download", { magnet: r.magnet, torrent: r.torrent, title: r.title, show: show?.id ?? null, anilistId: entry, library: entry ? (plan?.to.library ?? null) : null });
       started(r, folder);
     } catch (e) {
       delete sent[r.id];
@@ -144,7 +147,12 @@
   </div>
   <div class="dl-head">
     <h2>Download</h2>
-    <span>{show ? `Into ${show.title}’s folder` : entry && into ? `Into ${into}` : "Telly asks which show a release is, and puts it in its place"}</span>
+    <span>{show ? `Into ${show.title}’s folder` : entry && plan ? `Into ${plan.to.folder}` : "Telly asks which show a release is, and puts it in its place"}</span>
+    {#if !show && entry && plan && plan.to.show === null && plan.libraries.length}
+      <select class="input" aria-label="Library" value={plan.to.library ?? 0} onchange={(e) => placeEntry(Number(e.currentTarget.value))}>
+        {#each plan.libraries as l, i (i)}<option value={i}>{l.name}</option>{/each}
+      </select>
+    {/if}
   </div>
 
   {#if view?.error}
@@ -215,6 +223,7 @@
   .dl-head { display: flex; align-items: baseline; gap: 10px; margin: 0 0 6px; }
   .dl-head h2 { font: 600 17px/1.2 var(--font-ui); }
   .dl-head span { font-size: 13px; color: var(--ink-2); }
+  .dl-head select { height: 30px; font-size: 13px; }
   section { max-width: 900px; display: grid; gap: 12px; padding: 18px 0; border-bottom: 1px solid var(--rule); }
   section:last-child { border-bottom: 0; }
   .note { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; max-width: 900px; padding: 10px 14px; margin: 12px 0 0; border: 1px solid var(--rule-2); border-radius: 8px; background: var(--surface); font-size: 13.5px; color: var(--ink-2); }

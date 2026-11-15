@@ -1048,27 +1048,31 @@ impl Backend {
         let moved_to: std::collections::HashSet<&str> = moved.iter().map(|m| m.to.as_str()).collect();
         let mut gone: std::collections::HashMap<i64, i64> =
             gone_episodes.iter().filter(|e| !moved.iter().any(|m| m.id == e.id)).map(|e| (e.number, e.id)).collect();
-        let mut new = Vec::new();
+        let mut new: Vec<crate::db::NewEpisode> = Vec::new();
+        let mut unnumbered = Vec::new();
         let mut replaced = 0;
         for f in scan.files.iter().filter(|f| !shared && f.reason.is_empty() && !known.contains_key(&f.path) && !moved_to.contains(f.path.as_str())) {
-            let number = match f.parsed {
+            match f.parsed {
                 Some(n) if by_names => {
                     if let Some(episode) = gone.remove(&n) {
                         self.replace_rip(id, episode, f)?;
                         replaced += 1;
                         continue;
                     }
-                    if taken.contains(&n) || new.iter().any(|e: &crate::db::NewEpisode| e.number == n) {
+                    if taken.contains(&n) || new.iter().any(|e| e.number == n) {
                         continue; // another copy of an episode Telly has
                     }
-                    n
+                    new.push(crate::db::NewEpisode { number: n, path: f.path.clone(), size: f.size, duration: f.duration });
                 }
-                _ => {
-                    next_number += 1;
-                    next_number - 1
-                }
-            };
-            new.push(crate::db::NewEpisode { number, path: f.path.clone(), size: f.size, duration: f.duration });
+                _ => unnumbered.push(f),
+            }
+        }
+        // Files without a number of their own come after, on numbers no other episode has.
+        for f in unnumbered {
+            while taken.contains(&next_number) || new.iter().any(|e| e.number == next_number) {
+                next_number += 1;
+            }
+            new.push(crate::db::NewEpisode { number: next_number, path: f.path.clone(), size: f.size, duration: f.duration });
         }
         if !new.is_empty() {
             self.db.add_episodes(id, &new)?;
@@ -2200,6 +2204,13 @@ mod tests {
         // A second copy of an episode whose rip is still there is left alone.
         rip("[BD] Show - 01 [1080p].mkv");
         assert_eq!(backend.rescan(show).unwrap(), 0);
+        // A new episode and a file without a number arrive together, the one without sorting first
+        // ("[A]" before "[Sub]"): episode 3 keeps its number, and the other comes after it.
+        rip("[A] Show Recap.mkv");
+        rip("[Sub] Show - 03 [720p].mkv");
+        assert_eq!(backend.rescan(show).unwrap(), 2);
+        let numbers: Vec<(i64, String)> = backend.db.episodes(show).unwrap().into_iter().map(|e| (e.number, e.path)).collect();
+        assert_eq!(numbers[2..], [(3, path("[Sub] Show - 03 [720p].mkv")), (4, path("[A] Show Recap.mkv"))]);
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

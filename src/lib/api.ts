@@ -266,6 +266,8 @@ export interface ShowView {
   ripsMissing: MissingRips | null;
   /** You moved it to the anime it's under (Move to another anime…): AniList has it elsewhere. */
   seriesMoved: boolean;
+  /** Its new episodes download themselves. */
+  following: boolean;
 }
 
 /** A show whose rips aren't all where Telly has them: its folder isn't there (its drive unplugged, or the folder moved), or some of its episodes' files aren't. */

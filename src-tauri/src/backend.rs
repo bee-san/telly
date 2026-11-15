@@ -8,6 +8,7 @@ use crate::ask::{self, Asks};
 use crate::backup;
 use crate::cards::{self, Event};
 use crate::covers;
+use crate::follow;
 use crate::db::{Db, Episode, NewShow, Show};
 use crate::jobs::{self, Jobs, Task};
 use crate::known;
@@ -533,6 +534,7 @@ impl Backend {
             let for_cards = backend.clone();
             std::thread::Builder::new().name("telly-cards".into()).spawn(move || cards::worker(&for_cards)).ok();
             torrents::start(backend.clone());
+            follow::start(backend.clone());
             backend.watch_folders();
             backend.fill_covers();
             series::gather(&backend);
@@ -939,7 +941,7 @@ impl Backend {
             "needsModel": listener.is_none() && tools.whisper.is_some(),
             "maker": listener.map_or("Whisper", |l| l.name()),
         });
-        Ok(json!({ "card": card, "episodes": rows, "activity": self.activity(), "whisper": whisper, "wordsError": words_error, "completion": self.db.show_completion(id)?, "ripsMissing": rips_missing, "seriesMoved": self.db.setting(&format!("series.of.{id}"))?.is_some() }))
+        Ok(json!({ "card": card, "episodes": rows, "activity": self.activity(), "whisper": whisper, "wordsError": words_error, "completion": self.db.show_completion(id)?, "ripsMissing": rips_missing, "seriesMoved": self.db.setting(&format!("series.of.{id}"))?.is_some(), "following": self.db.setting_bool(&follow::setting(id), false) }))
     }
 
     /// Reads a folder for Add media: its files, the anime it is, and, when it
@@ -1955,6 +1957,7 @@ impl Backend {
                 let folder = torrents::add(self, &arg::<String>(&args, "magnet")?, &torrent, &arg::<String>(&args, "title")?, arg(&args, "show")?, arg(&args, "anilistId")?, arg(&args, "library")?)?;
                 Ok(json!({ "folder": folder }))
             }
+            "follow" => follow::set(self, arg(&args, "show")?, arg(&args, "on")?),
             "downloads" => Ok(torrents::view(self)),
             "libraries" => crate::library::view(self),
             "pauseDownload" => {

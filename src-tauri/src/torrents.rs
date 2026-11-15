@@ -480,6 +480,10 @@ pub fn add(backend: &Arc<Backend>, magnet: &str, torrent: &str, title: &str, sho
             });
         }
     }
+    // A show you follow gets its next episodes from this release (follow.rs).
+    if let Some(show) = to.show {
+        backend.db.set_setting(&crate::follow::like_setting(show), &json!(title))?;
+    }
     backend.downloads.poke();
     Ok(folder)
 }

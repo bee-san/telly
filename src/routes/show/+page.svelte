@@ -222,6 +222,25 @@
     load();
   }
 
+  /** Follows the show, so its new episodes download themselves, or stops. */
+  async function follow(on: boolean) {
+    if (!card) return;
+    const show = card;
+    if (on) toast({ key: "follow", state: "working", title: "Looking for new episodes on nyaa.si", text: show.title });
+    try {
+      const r = await call<{ following: boolean; looked?: { like: string | null; started: number[] }; error?: string | null }>("follow", { show: show.id, on });
+      const hourly = "Telly looks every hour, and downloads each new episode into this show’s folder.";
+      if (!r.following) toast({ key: "follow", state: "done", title: "Not following any more", text: "New episodes won’t download themselves." });
+      else if (r.error) toast({ key: "follow", state: "failed", title: "Following, but nyaa.si couldn’t be searched", text: `${r.error} Telly looks again in an hour.` });
+      else if (!r.looked?.like) toast({ key: "follow", state: "info", title: "Nothing to follow yet", text: "None of this show’s rips has its episode number in its name, so Telly can’t tell which release to follow." });
+      else if (r.looked.started.length) toast({ key: "follow", state: "done", title: `Downloading ${r.looked.started.length > 1 ? "episodes" : "Episode"} ${r.looked.started.join(", ")}`, text: `The same release as ${r.looked.like}. ${hourly}` });
+      else toast({ key: "follow", state: "done", title: "Following", text: `Nothing after ${r.looked.like} is out yet. ${hourly}` });
+    } catch (e) {
+      toast({ key: "follow", state: "failed", title: "That didn’t work", text: errorText(e) });
+    }
+    load();
+  }
+
   /** What the page says when a show's rips aren't where Telly has them. */
   function awayText(m: MissingRips): string {
     if (m.folderMissing) return "This folder isn’t there: its drive may be unplugged, or the folder moved.";
@@ -346,6 +365,11 @@
           {/if}
           <button type="button" class="btn quiet" onclick={lookAgain}>Look for new episodes</button>
           <button type="button" class="btn quiet" onclick={() => card && goto(`/downloads?show=${card.id}`)} title="Find more of it on nyaa.si: Telly downloads it into this show’s folder, and each episode joins as it finishes">Download episodes…</button>
+          {#if view?.following}
+            <button type="button" class="btn quiet" onclick={() => follow(false)} title="New episodes stop downloading themselves">Stop following</button>
+          {:else if !card.movie && (!card.anilistEpisodes || card.episodes < card.anilistEpisodes)}
+            <button type="button" class="btn quiet" onclick={() => follow(true)} title="Telly looks on nyaa.si every hour for the episodes after your latest, from the same release, and downloads them into this show’s folder">Follow new episodes</button>
+          {/if}
           <button type="button" class="btn quiet" onclick={() => card && act(() => call("retrySubs", { show: card.id }))}>Find subtitles again</button>
           <button type="button" class="btn quiet" onclick={freeSpace}>Free up space</button>
           <button type="button" class="btn danger" onclick={remove}>Remove…</button>

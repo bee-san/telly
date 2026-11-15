@@ -15,6 +15,7 @@ pub mod clip;
 pub mod covers;
 pub mod db;
 pub mod drives;
+pub mod follow;
 pub mod games;
 mod hachidori;
 pub mod jimaku;

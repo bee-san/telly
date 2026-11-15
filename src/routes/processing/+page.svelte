@@ -175,7 +175,7 @@
           {/each}
         </ul>
       {:else}
-        <p class="hint">Nothing at the moment: every episode is ready.</p>
+        <p class="hint">{queue.waiting.length ? "Nothing at the moment." : "Nothing at the moment: every episode is ready."}</p>
       {/if}
       {#each queue.waiting as w (w.kind)}
         <h4>{w.what} <span class="count">{w.count} waiting</span></h4>

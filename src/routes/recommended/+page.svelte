@@ -4,7 +4,7 @@
   import Cover from "$lib/Cover.svelte";
   import Icon from "$lib/Icon.svelte";
   import PickRow from "$lib/PickRow.svelte";
-  import { call, callKept, errorText, inTauri, kept, setWindowTitle, type Pick, type Recommended } from "$lib/api";
+  import { call, callKept, errorText, inTauri, kept, setWindowTitle, type Pick, type Recommended, type Verdict } from "$lib/api";
   import { plural } from "$lib/format";
   import { downloadLink, pickMeta } from "$lib/search";
   import { app } from "$lib/state.svelte";
@@ -21,6 +21,8 @@
   let open = $state.raw<Pick | null>(null);
   let opener: HTMLElement | null = null;
   let sheet = $state<HTMLElement | null>(null);
+  /** The open pick's sheet is asking whether you liked it, having seen it elsewhere. */
+  let seenIt = $state(false);
   let grid = $state<HTMLElement | null>(null);
   /** Show all is on: every pick is listed, where the rows were. */
   let all = $state(false);
@@ -72,6 +74,7 @@
 
   async function show(p: Pick, card: HTMLElement) {
     open = p;
+    seenIt = false;
     opener = card;
     await tick();
     sheet?.focus();
@@ -85,11 +88,11 @@
     opener?.focus();
   }
 
-  /** Hides a pick; focus goes to the one that takes its place. */
-  async function hide(p: Pick) {
+  /** Leaves a pick out, saying why (it counts for or against what's like it); focus goes to the one that takes its place. */
+  async function hide(p: Pick, verdict: Verdict) {
     const at = rec?.picks.findIndex((pick) => pick.id === p.id) ?? 0;
     try {
-      await call("hideRecommendation", { id: p.id });
+      await call("hideRecommendation", { id: p.id, title: p.title, verdict });
       open = null;
       await load();
       await tick();
@@ -279,14 +282,25 @@
         {/if}
       </div>
       <div class="sheet-foot">
-        {#if suggested(p)}<button type="button" class="btn quiet" onclick={() => hide(p)}>Hide</button>{/if}
-        <span class="grow"></span>
-        <button type="button" class="btn quiet" onclick={close}>Close</button>
-        <button type="button" class="btn quiet" onclick={() => openOnAniList(p)}>Open on AniList</button>
-        {#if p.show !== null}
-          <button type="button" class="btn" onclick={() => goto(`/show?id=${p.show}`)}>Open in library</button>
-        {:else if !p.unreleased}
-          <button type="button" class="btn" onclick={() => download(p)} title="Find it on nyaa.si, most shared first, and pick a release for Telly to download"><Icon name="download" /><span>Download…</span></button>
+        {#if seenIt}
+          <span class="ask">Did you like it?</span>
+          <button type="button" class="btn quiet" onclick={() => hide(p, "liked")} title="Leave it out, and suggest more like it">Liked it</button>
+          <button type="button" class="btn quiet" onclick={() => hide(p, "disliked")} title="Leave it out, and suggest less like it">Didn’t like it</button>
+          <span class="grow"></span>
+          <button type="button" class="btn quiet" onclick={() => (seenIt = false)}>Back</button>
+        {:else}
+          {#if suggested(p)}
+            <button type="button" class="btn quiet" onclick={() => (seenIt = true)} title="You’ve seen it elsewhere: say whether you liked it, and it’s left out">Seen it…</button>
+            <button type="button" class="btn quiet" onclick={() => hide(p, "notForMe")} title="Leave it out, and suggest a little less like it">Not for me</button>
+          {/if}
+          <span class="grow"></span>
+          <button type="button" class="btn quiet" onclick={close}>Close</button>
+          <button type="button" class="btn quiet" onclick={() => openOnAniList(p)}>Open on AniList</button>
+          {#if p.show !== null}
+            <button type="button" class="btn" onclick={() => goto(`/show?id=${p.show}`)}>Open in library</button>
+          {:else if !p.unreleased}
+            <button type="button" class="btn" onclick={() => download(p)} title="Find it on nyaa.si, most shared first, and pick a release for Telly to download"><Icon name="download" /><span>Download…</span></button>
+          {/if}
         {/if}
       </div>
     </div>
@@ -330,6 +344,7 @@
   .p-why.have { color: var(--ok); }
   .more { margin-top: 28px; }
   .sheet:focus { outline: none; }
+  .ask { font-size: 13.5px; color: var(--ink-2); }
   .pk-head { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 20px; align-items: start; }
   .pk-text { display: grid; gap: 4px; min-width: 0; }
   .pk-text h3 { font: 800 24px/1.25 var(--font-jp-title); }

@@ -1909,7 +1909,7 @@ impl Backend {
                 Ok(json!({}))
             }
             "hideRecommendation" => {
-                recommend::hide(self, arg(&args, "id")?)?;
+                recommend::hide(self, recommend::Verdict { id: arg(&args, "id")?, title: arg(&args, "title")?, verdict: arg(&args, "verdict")? })?;
                 Ok(json!({}))
             }
             "ankiFields" => {

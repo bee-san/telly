@@ -27,8 +27,12 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-/// Setting: the AniList IDs of picks hidden from the page.
+/// Setting: the AniList IDs of picks hidden from the page by an older Telly, which didn't ask why.
 const HIDDEN: &str = "recommended.hidden";
+/// Setting: what you said of the picks you left out, each a `Verdict`.
+const VERDICTS: &str = "recommended.verdicts";
+/// The status a pick you said wasn't for you has among the entries of your list (never one AniList has).
+const NOT_FOR_ME: &str = "NOT_FOR_ME";
 /// AniList is asked about a show again after a week.
 const KEPT_MS: i64 = 7 * 24 * 3600 * 1000;
 /// A pick's share of a show's votes is counted as if the show had this many
@@ -44,6 +48,15 @@ const YEAR_MS: i64 = 365 * 24 * 3600 * 1000;
 /// What a kept answer has in it: one kept by an older Telly, which didn't
 /// note sequels and what isn't out yet, is asked for again.
 const KEPT_VERSION: u32 = 1;
+
+/// What you said of a pick when you left it out: you'd seen it elsewhere and
+/// liked it ("liked") or didn't ("disliked"), or it isn't for you ("notForMe").
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Verdict {
+    pub id: i64,
+    pub title: String,
+    pub verdict: String,
+}
 
 /// What AniList says about one show in the library or on your list.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -258,10 +271,11 @@ fn freshness(at: i64, now: i64) -> f64 {
 /// status and your score, or None when the list doesn't say: dropped -1;
 /// scored, 2 for your average score and 1 more or less for each 10 points
 /// above or below it (-2 to 4); else completed 2, watching 1 to 2 by how far
-/// you are, and paused 0.25.
+/// you are, and paused 0.25. A pick you said wasn't for you counts -0.5.
 fn list_liking(entry: &Listed, average_score: f64) -> Option<f64> {
     match entry.status.as_str() {
         "DROPPED" => Some(-1.0),
+        NOT_FOR_ME => Some(-0.5),
         "" => None,
         _ if entry.score > 0.0 => Some((2.0 + (entry.score - average_score) / 10.0).clamp(-2.0, 4.0)),
         "COMPLETED" | "REPEATING" => Some(2.0),
@@ -279,7 +293,8 @@ fn list_liking(entry: &Listed, average_score: f64) -> Option<f64> {
 /// favourite. Each further pick that one series says most for counts three
 /// quarters as much as the one before it, so its recommendations don't fill
 /// the page. A show you dropped or scored low says against its picks, and a
-/// pick it says more against than the rest say for is left out. Also left
+/// pick it says more against than the rest say for is left out. What you said
+/// of the picks you left out is among `listed` (see `said`). Also left
 /// out: what's in the library or on your list, what's hidden, sequels (not
 /// somewhere to start) and what isn't out yet.
 ///
@@ -423,15 +438,43 @@ pub fn rank(owned: &[Owned], listed: &[Listed], sources: &[Source], hidden: &Has
     picks
 }
 
+/// The picks left out from now on: those you said something of, and those hidden before Telly asked why.
 fn hidden(backend: &Backend) -> HashSet<i64> {
-    backend.db.setting(HIDDEN).ok().flatten().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
+    let ids: HashSet<i64> = backend.db.setting(HIDDEN).ok().flatten().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+    ids.into_iter().chain(verdicts(backend).into_iter().map(|v| v.id)).collect()
 }
 
-/// Leaves a pick out from now on (one seen elsewhere, say).
-pub fn hide(backend: &Backend, id: i64) -> Result<()> {
-    let mut ids = hidden(backend);
-    ids.insert(id);
-    backend.db.set_setting(HIDDEN, &json!(ids))
+fn verdicts(backend: &Backend) -> Vec<Verdict> {
+    backend.db.setting(VERDICTS).ok().flatten().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
+}
+
+/// Leaves a pick out from now on, with what you said of it: it then counts as
+/// an anime on your list would, for or against the picks like it.
+pub fn hide(backend: &Backend, verdict: Verdict) -> Result<()> {
+    anyhow::ensure!(matches!(verdict.verdict.as_str(), "liked" | "disliked" | "notForMe"), "No such verdict: {}", verdict.verdict);
+    let mut all = verdicts(backend);
+    all.retain(|v| v.id != verdict.id);
+    all.push(verdict);
+    backend.db.set_setting(VERDICTS, &json!(all))
+}
+
+/// What you said of the picks you left out, as entries of your list: one you
+/// liked as one completed, one you didn't as one dropped, and one that isn't
+/// for you as `NOT_FOR_ME`. Those since in the library or on your list are
+/// left to say for themselves.
+fn said(verdicts: Vec<Verdict>, owned: &[Owned], listed: &[Listed]) -> Vec<Listed> {
+    verdicts
+        .into_iter()
+        .filter(|v| !owned.iter().any(|o| o.anilist_id == v.id) && !listed.iter().any(|l| l.id == v.id))
+        .map(|v| {
+            let status = match v.verdict.as_str() {
+                "liked" => "COMPLETED",
+                "disliked" => "DROPPED",
+                _ => NOT_FOR_ME,
+            };
+            Listed { id: v.id, title: v.title, status: status.into(), ..Default::default() }
+        })
+        .collect()
 }
 
 /// Asks AniList, in the background, about the shows it hasn't been asked about
@@ -731,7 +774,8 @@ pub fn view(backend: &Backend) -> Result<Value> {
             });
         }
     }
-    let listed = crate::anilist_list::listed(backend);
+    let mut listed = crate::anilist_list::listed(backend);
+    listed.extend(said(verdicts(backend), &owned, &listed));
     // A copy of the list kept before Telly read its statuses only leaves its anime out.
     let mut ids: Vec<i64> = owned.iter().map(|o| o.anilist_id).chain(listed.iter().filter(|l| !l.status.is_empty()).map(|l| l.id)).collect();
     ids.sort_unstable();
@@ -958,6 +1002,28 @@ mod tests {
         // Their votes still say how much of Death Note's the rest have.
         let picks = rank(&library, &[], &[answer], &HashSet::new(), NOW, &Graph::default());
         assert!((picks[0].score - 2.0 * (70.0 / (300.0 + FEW_VOTES)).sqrt()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn what_you_say_of_a_pick_you_leave_out_counts_for_or_against_what_s_like_it() {
+        let verdict = |id: i64, verdict: &str| Verdict { id, title: format!("Said {id}"), verdict: verdict.into() };
+        let library = [owned(1, "Watched", 12, 12)];
+        let answers = [
+            source(1, &[], &[(100, 50), (200, 50), (300, 50)]),
+            source(10, &[], &[(200, 100), (400, 100)]),
+            source(11, &[], &[(300, 100), (500, 100)]),
+            source(12, &[], &[(100, 100), (600, 100)]),
+        ];
+        let listed = said(vec![verdict(10, "liked"), verdict(11, "disliked"), verdict(12, "notForMe"), verdict(1, "disliked")], &library, &[]);
+        // The one since in the library says for itself.
+        assert_eq!(listed.iter().map(|l| (l.id, l.status.as_str())).collect::<Vec<_>>(), [(10, "COMPLETED"), (11, "DROPPED"), (12, NOT_FOR_ME)]);
+        let picks = rank(&library, &listed, &answers, &HashSet::from([10, 11, 12]), NOW, &Graph::default());
+        // The pick of the one you liked leads, from both. The one you didn't like says against 300, and
+        // Not for me a little against 100, so they come last; what those two recommend alone is left out.
+        assert_eq!(ids(&picks), [200, 400, 100, 300]);
+        assert_eq!(picks[0].from.iter().map(|f| f.title.as_str()).collect::<Vec<_>>(), ["Said 10", "Watched"]);
+        assert_eq!(picks[3].from.iter().map(|f| f.title.as_str()).collect::<Vec<_>>(), ["Watched"]);
+        assert!(picks[2].score < 2.0 * (50.0 / (150.0 + FEW_VOTES)).sqrt());
     }
 
     #[test]

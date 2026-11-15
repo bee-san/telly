@@ -703,6 +703,9 @@ export interface Pick extends Anime {
   standing: string;
 }
 
+/** Why a pick is left out: seen elsewhere and liked, seen and not liked, or not for you. */
+export type Verdict = "liked" | "disliked" | "notForMe";
+
 /** One row of the Recommended page. */
 export interface PickRowView {
   /** What the row is: "suggested" (its Show all lists every pick), "more", "because", "series", "genre:Romance"… */

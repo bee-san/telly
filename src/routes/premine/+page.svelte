@@ -69,6 +69,8 @@
     error = "";
     try {
       status = await call<PremineStatus>("premine", anime === null ? { show: id } : { anime });
+      // Cards made before this page opened were reported then; ones still being made are, when done.
+      if (!status.working) reported = true;
       follow();
     } catch (e) {
       error = errorText(e);

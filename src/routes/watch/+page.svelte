@@ -1754,7 +1754,8 @@
       <span class="ptime">{clock(now)} / {clock(duration)}</span>
       <button type="button" class="pbtn" aria-label={muted ? "Unmute" : "Mute"} title="{muted ? "Unmute" : "Mute"} (0)" onclick={toggleMute}><Icon name={muted || volume === 0 ? "muted" : "volume"} /></button>
       <input class="vol wide" type="range" min="0" max="1" step="0.05" value={muted ? 0 : volume} aria-label="Volume" title="Volume (- and =)"
-        oninput={(e) => setVolume(Number(e.currentTarget.value))} onchange={(e) => { saveSound(); e.currentTarget.blur(); }} />
+        oninput={(e) => setVolume(Number(e.currentTarget.value))} onchange={(e) => { saveSound(); e.currentTarget.blur(); }}
+        onpointerup={(e) => { const slider = e.currentTarget; setTimeout(() => slider.blur()); }} />
       <button type="button" class="pbtn wide" class:on={boost} aria-label="Boost dialogue" title="Boost dialogue (D)" onclick={toggleBoost}><Icon name="speech" /></button>
       <span class="grow"></span>
       {#if rate !== 1}<button type="button" class="pbtn txt" title="Speed ([ and ])" onclick={() => setRate(1)}>{rate.toFixed(1)}×</button>{/if}

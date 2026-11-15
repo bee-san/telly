@@ -330,6 +330,11 @@ pub(crate) fn shared_setting(show_id: i64) -> String {
     format!("folder.shared.{show_id}")
 }
 
+/// The setting holding the files of a show's folder you left out when you added it.
+fn left_out_setting(show_id: i64) -> String {
+    format!("folder.left.{show_id}")
+}
+
 /// The setting that says a show's cover is a frame from its video.
 fn frame_setting(show_id: i64) -> String {
     format!("cover.frame.{show_id}")
@@ -1056,10 +1061,25 @@ impl Backend {
         let moved_to: std::collections::HashSet<&str> = moved.iter().map(|m| m.to.as_str()).collect();
         let mut gone: std::collections::HashMap<i64, i64> =
             gone_episodes.iter().filter(|e| !moved.iter().any(|m| m.id == e.id)).map(|e| (e.number, e.id)).collect();
+        // Not this show's: another show's episodes, what's in another show's folder
+        // inside this one (a season of its own), and what you left out when adding it.
+        let others: Vec<Show> = self.db.shows()?.into_iter().filter(|s| s.id != id && s.folder != show.folder).collect();
+        let theirs: std::collections::HashSet<String> = self.db.all_episodes()?.into_iter().filter(|e| e.show_id != id).map(|e| e.path).collect();
+        let left_out: std::collections::HashSet<String> =
+            self.db.setting(&left_out_setting(id))?.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+        let not_its_own = |path: &str| {
+            theirs.contains(path)
+                || left_out.contains(path)
+                || others.iter().any(|s| Path::new(&s.folder).starts_with(&show.folder) && Path::new(path).starts_with(&s.folder))
+        };
         let mut new: Vec<crate::db::NewEpisode> = Vec::new();
         let mut unnumbered = Vec::new();
         let mut replaced = 0;
-        for f in scan.files.iter().filter(|f| !shared && f.reason.is_empty() && !known.contains_key(&f.path) && !moved_to.contains(f.path.as_str())) {
+        for f in scan
+            .files
+            .iter()
+            .filter(|f| !shared && f.reason.is_empty() && !known.contains_key(&f.path) && !moved_to.contains(f.path.as_str()) && !not_its_own(&f.path))
+        {
             match f.parsed {
                 Some(n) if by_names => {
                     if let Some(episode) = gone.remove(&n) {
@@ -1176,11 +1196,28 @@ impl Backend {
         }
         let new = Self::new_show_from(anime.as_ref(), new);
         let id = self.db.add_show(&new)?;
+        self.keep_left_out(id, &new);
         self.fetch_cover(id, new.cover_url.clone());
         series::gather(self);
         recommend::gather(self);
         self.jobs.poke();
         Ok(json!({ "id": id }))
+    }
+
+    /// Notes the files Add media listed in a new show's folder that you left
+    /// out, so Look for new episodes doesn't add them after all.
+    fn keep_left_out(&self, id: i64, show: &NewShow) {
+        let Some(scan) = self.scanned.lock().ok().and_then(|s| s.clone()) else { return };
+        let chosen: std::collections::HashSet<&str> = show.episodes.iter().map(|e| e.path.as_str()).collect();
+        let left: Vec<&str> = scan
+            .files
+            .iter()
+            .filter(|f| f.reason.is_empty() && Path::new(&f.path).starts_with(&show.folder) && !chosen.contains(f.path.as_str()))
+            .map(|f| f.path.as_str())
+            .collect();
+        if !left.is_empty() {
+            let _ = self.db.set_setting(&left_out_setting(id), &json!(left));
+        }
     }
 
     /// A new show's download as the show to add: `anime`, with the episodes
@@ -1251,6 +1288,7 @@ impl Backend {
             let entry = part.show.anilist_id.and_then(|id| entries.iter().find(|a| a.id == id));
             let new = Self::new_show_from(entry, part.show);
             let id = self.db.add_show(&new)?;
+            self.keep_left_out(id, &new);
             if part.shared {
                 self.db.set_setting(&shared_setting(id), &json!(true))?;
             }
@@ -2232,6 +2270,33 @@ mod tests {
         assert_eq!(backend.rescan(show).unwrap(), 2);
         let numbers: Vec<(i64, String)> = backend.db.episodes(show).unwrap().into_iter().map(|e| (e.number, e.path)).collect();
         assert_eq!(numbers[2..], [(3, path("[Sub] Show - 03 [720p].mkv")), (4, path("[A] Show Recap.mkv"))]);
+
+        // Another show's folder inside this one (its second season, added on its own) isn't this show's.
+        std::fs::create_dir_all(folder.join("Season 2")).unwrap();
+        rip("Season 2/[Sub] Show S2 - 01 [720p].mkv");
+        let second = vec![crate::db::NewEpisode { number: 1, path: path("Season 2/[Sub] Show S2 - 01 [720p].mkv"), size: 1, duration: 400.0 }];
+        backend.db.add_show(&crate::db::NewShow { folder: path("Season 2"), title: "Show 2".into(), episodes: second, ..Default::default() }).unwrap();
+        rip("Season 2/[Sub] Show S2 - 02 [720p].mkv");
+        assert_eq!(backend.rescan(show).unwrap(), 0, "{:?}", backend.db.episodes(show).unwrap().iter().map(|e| (e.number, e.path.clone())).collect::<Vec<_>>());
+
+        // Nor is a file you left out when adding it.
+        let other = dir.join("Other");
+        std::fs::create_dir_all(&other).unwrap();
+        let in_other = |name: &str| other.join(name).to_string_lossy().into_owned();
+        for name in ["Other - 01.mkv", "Other - 02.mkv"] {
+            std::fs::rename(path("[BD] Show - 01 [1080p].mkv"), in_other(name)).unwrap();
+            rip("[BD] Show - 01 [1080p].mkv");
+        }
+        *backend.scanned.lock().unwrap() = Some(scan::scan(&other, |paths| vec![Some(400.0); paths.len()]).unwrap());
+        let chosen = crate::db::NewShow {
+            folder: other.to_string_lossy().into_owned(),
+            title: "Other".into(),
+            episodes: vec![crate::db::NewEpisode { number: 1, path: in_other("Other - 01.mkv"), size: 1, duration: 400.0 }],
+            ..Default::default()
+        };
+        let other_id = backend.db.add_show(&chosen).unwrap();
+        backend.keep_left_out(other_id, &chosen);
+        assert_eq!(backend.rescan(other_id).unwrap(), 0);
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

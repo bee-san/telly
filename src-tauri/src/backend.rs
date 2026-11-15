@@ -336,9 +336,15 @@ pub(crate) fn shared_setting(show_id: i64) -> String {
     format!("folder.shared.{show_id}")
 }
 
-/// The setting holding the files of a show's folder you left out when you added it.
+/// The setting holding the files of a show's folder you left out when you
+/// added it, by their paths in its folder (so they're the same once it's moved).
 fn left_out_setting(show_id: i64) -> String {
     format!("folder.left.{show_id}")
+}
+
+/// A file's path in a show's folder ("Season 2/03.mkv"), if it's in it.
+fn in_folder(folder: &str, path: &str) -> Option<String> {
+    Path::new(path).strip_prefix(folder).ok().map(|p| p.to_string_lossy().replace('\\', "/"))
 }
 
 /// The setting that says a show's cover is a frame from its video.
@@ -1081,7 +1087,7 @@ impl Backend {
             self.db.setting(&left_out_setting(id))?.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
         let not_its_own = |path: &str| {
             theirs.contains(path)
-                || left_out.contains(path)
+                || in_folder(&show.folder, path).is_some_and(|p| left_out.contains(&p))
                 || others.iter().any(|s| Path::new(&s.folder).starts_with(&show.folder) && Path::new(path).starts_with(&s.folder))
         };
         let mut new: Vec<crate::db::NewEpisode> = Vec::new();
@@ -1221,12 +1227,19 @@ impl Backend {
     fn keep_left_out(&self, id: i64, show: &NewShow) {
         let Some(scan) = self.scanned.lock().ok().and_then(|s| s.clone()) else { return };
         let chosen: std::collections::HashSet<&str> = show.episodes.iter().map(|e| e.path.as_str()).collect();
-        let left: Vec<&str> = scan
-            .files
-            .iter()
-            .filter(|f| f.reason.is_empty() && Path::new(&f.path).starts_with(&show.folder) && !chosen.contains(f.path.as_str()))
-            .map(|f| f.path.as_str())
-            .collect();
+        let left: Vec<String> = scan.files.iter().filter(|f| f.reason.is_empty() && !chosen.contains(f.path.as_str())).map(|f| f.path.clone()).collect();
+        self.leave_out(id, &show.folder, &left);
+    }
+
+    /// Adds `paths` (those in `folder`, the show's) to what Look for new
+    /// episodes leaves out of show `id`.
+    fn leave_out(&self, id: i64, folder: &str, paths: &[String]) {
+        let mut left: Vec<String> = self.db.setting(&left_out_setting(id)).ok().flatten().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+        for p in paths.iter().filter_map(|p| in_folder(folder, p)) {
+            if !left.contains(&p) {
+                left.push(p);
+            }
+        }
         if !left.is_empty() {
             let _ = self.db.set_setting(&left_out_setting(id), &json!(left));
         }
@@ -1355,10 +1368,21 @@ impl Backend {
     fn remove_show(&self, id: i64) -> Result<Value> {
         self.jobs.cancel_show(id);
         let episodes = self.db.episodes(id)?;
-        let kept = match self.db.show(id)? {
+        let removed = self.db.show(id)?;
+        let kept = match removed.clone() {
             Some(show) => self.kept_for_stats(show, &episodes).ok(),
             None => None,
         };
+        // Its rips in another show's folder (a season of its own inside the
+        // first's) don't become that show's episodes once it's gone.
+        if let Some(removed) = &removed {
+            let rips: Vec<String> = episodes.iter().map(|e| e.path.clone()).collect();
+            for other in self.db.shows()?.iter().filter(|s| s.id != id && s.folder != removed.folder) {
+                if rips.iter().any(|p| Path::new(p).starts_with(&other.folder)) {
+                    self.leave_out(other.id, &other.folder, &rips);
+                }
+            }
+        }
         self.db.remove_show(id, kept.as_ref().map(|(card, scores)| (card.as_str(), scores.as_str())))?;
         // Only Telly's own files go; your rips stay where they are.
         let _ = std::fs::remove_dir_all(self.media_dir().join(id.to_string()));
@@ -2376,7 +2400,7 @@ mod tests {
         std::fs::create_dir_all(folder.join("Season 2")).unwrap();
         rip("Season 2/[Sub] Show S2 - 01 [720p].mkv");
         let second = vec![crate::db::NewEpisode { number: 1, path: path("Season 2/[Sub] Show S2 - 01 [720p].mkv"), size: 1, duration: 400.0 }];
-        backend.db.add_show(&crate::db::NewShow { folder: path("Season 2"), title: "Show 2".into(), episodes: second, ..Default::default() }).unwrap();
+        let season_two = backend.db.add_show(&crate::db::NewShow { folder: path("Season 2"), title: "Show 2".into(), episodes: second, ..Default::default() }).unwrap();
         rip("Season 2/[Sub] Show S2 - 02 [720p].mkv");
         assert_eq!(backend.rescan(show).unwrap(), 0, "{:?}", backend.db.episodes(show).unwrap().iter().map(|e| (e.number, e.path.clone())).collect::<Vec<_>>());
 
@@ -2398,6 +2422,12 @@ mod tests {
         let other_id = backend.db.add_show(&chosen).unwrap();
         backend.keep_left_out(other_id, &chosen);
         assert_eq!(backend.rescan(other_id).unwrap(), 0);
+        // Kept by its place in the show's folder, so it's left out wherever the folder goes.
+        assert_eq!(backend.db.setting(&left_out_setting(other_id)).unwrap(), Some(json!(["Other - 02.mkv"])));
+
+        // The second season, removed, doesn't hand its rips to the first.
+        backend.remove_show(season_two).unwrap();
+        assert_eq!(backend.rescan(show).unwrap(), 0);
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

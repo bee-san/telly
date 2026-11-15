@@ -123,9 +123,10 @@
               <span class="row-meta" class:warn={troubled(t)}>{progressText(t)}</span>
             </div>
             <span class="row-acts">
-              {#if t.id !== null && t.state === "paused"}
+              <!-- Stopped on an error (the disk full, say): Carry on starts it again from what it has. -->
+              {#if t.id !== null && (t.state === "paused" || t.state === "error")}
                 <button type="button" class="btn small" onclick={() => act(t, "resume")}>Carry on</button>
-              {:else if t.id !== null && t.state !== "error"}
+              {:else if t.id !== null}
                 <button type="button" class="btn small quiet" onclick={() => act(t, "pause")}>Pause</button>
               {/if}
               {#if t.id !== null}<button type="button" class="btn small quiet" onclick={() => act(t, "remove")} title="Stops the download; what it got stays in its folder">Remove</button>{/if}

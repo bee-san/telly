@@ -7,7 +7,10 @@
 //! of all of them, can still be downloaded whole: `every_episode` reads a few
 //! pages of what nyaa finds and puts together the episodes one group released
 //! at one resolution, named alike (as Follow reads them, follow.rs), one
-//! release for each.
+//! release for each. AniList says which numbers are the anime's episodes:
+//! how many are out, and, for a later season, how many came before it, since
+//! some groups number a second season's first episode 13, under the first
+//! season's name. A release whose name says another season isn't taken.
 //!
 //!   GET /?q=frieren&c=1_0&f=0&s=seeders&o=desc&p=1
 //!   GET /download/2088335.torrent
@@ -19,6 +22,7 @@
 use anyhow::{anyhow, Result};
 use regex::Regex;
 use serde::Serialize;
+use crate::series::{Entry, Graph};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -116,10 +120,50 @@ pub struct EpisodeSet {
     pub batch: bool,
 }
 
-/// The set of single-episode releases nyaa has for `query` that gets the most
-/// of the anime: every one of its `episodes` that are out (or, when AniList
-/// doesn't say, every one up to the last nyaa has), from one group.
-pub fn every_episode(chosen_site: &str, query: &str, category: &str, trusted: bool, episodes: Option<i64>) -> Result<Option<EpisodeSet>> {
+/// What AniList says of the anime whose episodes are wanted, which tells its episodes by their numbers.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Wanted {
+    /// How many of its episodes are out, when AniList says.
+    pub out: Option<i64>,
+    /// What groups that count on from earlier episodes add to its episodes' numbers: the
+    /// episodes of the earlier parts of its own season, and those of every earlier season.
+    pub offsets: Vec<i64>,
+    /// Its season, by its place along the sequels from the first.
+    pub season: i64,
+    /// The first season's title, for a later season: what groups that count on from it call it.
+    pub first: Option<String>,
+}
+
+impl Wanted {
+    /// An anime nothing more is known of than how many of its episodes are out.
+    pub fn alone(out: Option<i64>) -> Wanted {
+        Wanted { out, offsets: Vec::new(), season: 1, first: None }
+    }
+}
+
+/// What's wanted of AniList's entry `id`, of which `out` episodes are out, from the seasons before it in `graph`.
+pub fn wanted(graph: &Graph, id: i64, out: Option<i64>) -> Wanted {
+    let mut earlier: Vec<&Entry> = Vec::new();
+    let mut at = id;
+    while let Some(season) = graph.prequel(at).filter(|e| e.anime.id != id && !earlier.iter().any(|seen| seen.anime.id == e.anime.id)) {
+        earlier.push(season);
+        at = season.anime.id;
+    }
+    let named = graph.entry(id).map_or(1, |e| e.anime.season());
+    let parts = earlier.iter().take_while(|e| e.anime.season() == named).count();
+    let mut offsets = Vec::new();
+    for before in [&earlier[..parts], &earlier[..]] {
+        let episodes: Option<i64> = before.iter().map(|e| e.anime.episodes).sum();
+        if let Some(n) = episodes.filter(|n| *n > 0 && !offsets.contains(n)) {
+            offsets.push(n);
+        }
+    }
+    let first = earlier.last().map(|e| e.anime.romaji.clone()).filter(|t| !t.is_empty());
+    Wanted { out, offsets, season: earlier.len() as i64 + 1, first }
+}
+
+/// Up to `PAGES` of what nyaa finds for `query`, the most shared first.
+fn pages(chosen_site: &str, query: &str, category: &str, trusted: bool) -> Result<Vec<Release>> {
     let mut found = Vec::new();
     for page in 1..=PAGES {
         match search(chosen_site, query, category, trusted, "seeders", page) {
@@ -134,7 +178,45 @@ pub fn every_episode(chosen_site: &str, query: &str, category: &str, trusted: bo
             Err(e) => return Err(e),
         }
     }
-    Ok(episode_set(&found, query, episodes))
+    Ok(found)
+}
+
+/// The set of single-episode releases nyaa has for `query` that gets the most
+/// of the anime: every one of its episodes that are out (or, when AniList
+/// doesn't say, every one up to the last nyaa has), from one group. For a
+/// later season, what nyaa finds for the first season's title is looked
+/// through too, for groups that count on from it.
+pub fn every_episode(chosen_site: &str, query: &str, category: &str, trusted: bool, wanted: &Wanted) -> Result<Option<EpisodeSet>> {
+    let mut found: Vec<(Release, bool)> = pages(chosen_site, query, category, trusted)?.into_iter().map(|r| (r, true)).collect();
+    if let Some(first) = wanted.first.as_deref().filter(|first| words(first) != words(query)) {
+        let more = pages(chosen_site, first, category, trusted).unwrap_or_default();
+        let have: HashSet<i64> = found.iter().map(|(r, _)| r.id).collect();
+        found.extend(more.into_iter().filter(|r| !have.contains(&r.id)).map(|r| (r, false)));
+    }
+    Ok(episode_set(&found, query, wanted))
+}
+
+/// A title's words, in lower case.
+fn words(text: &str) -> Vec<String> {
+    text.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_string).collect()
+}
+
+/// Whether a word of a title only says which season it is: "S2", "2nd", "Season", "II".
+fn season_word(word: &str) -> bool {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| Regex::new(r"^(?:s[0-9]{1,2}|[0-9]{1,2}(?:st|nd|rd|th)?|season|second|third|fourth|fifth|ii|iii|iv|part|cour)$").expect("a valid pattern")).is_match(word)
+}
+
+/// Which of the wanted anime's episodes a release numbered `n` is: that one, when `direct`
+/// (it's named as the anime is), or, counting on from earlier episodes, `n` less an offset.
+fn episode_of(n: i64, direct: bool, wanted: &Wanted) -> Option<i64> {
+    let fits = |n: i64| n >= 1 && wanted.out.is_none_or(|out| n <= out);
+    // Without AniList's count, a number past the earlier episodes is taken to count on from them.
+    let past_earlier = wanted.out.is_none() && wanted.offsets.iter().any(|&o| n > o);
+    if direct && fits(n) && !past_earlier {
+        return Some(n);
+    }
+    wanted.offsets.iter().map(|&o| n - o).find(|&m| fits(m))
 }
 
 /// The resolution a tag or word says, "1080p".
@@ -159,28 +241,35 @@ fn several_episodes(title: &str) -> bool {
     })
 }
 
-/// Of the releases `found` for `query`, the best set of single episodes: each
-/// episode's release from one group, at one resolution, titled alike. The set
-/// with every episode comes first, then the one whose title has the fewest
-/// words `query` hasn't (a sequel's "2nd Season" when the first is asked for),
-/// then the one with the most episodes, then the one most shared.
-fn episode_set(found: &[Release], query: &str, episodes: Option<i64>) -> Option<EpisodeSet> {
-    let asked: HashSet<String> = query.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_string).collect();
+/// Of the releases `found` for `query` (each with whether it was found for
+/// `query` itself, not the first season's title), the best set of single
+/// episodes: each episode's release from one group, at one resolution, titled
+/// alike. A release whose title names another season than the one asked for
+/// is left out. The set with every episode comes first, then the one whose
+/// title has the fewest words the anime's titles haven't (a spin-off's), then
+/// the one with the most episodes, then the one most shared.
+fn episode_set(found: &[(Release, bool)], query: &str, wanted: &Wanted) -> Option<EpisodeSet> {
+    let asked: HashSet<String> = words(query).into_iter().chain(wanted.first.iter().flat_map(|t| words(t))).collect();
+    let asked_season = crate::anilist::season(query);
     let mut sets: HashMap<(String, String, Vec<String>), BTreeMap<i64, &Release>> = HashMap::new();
     let mut batch = false;
-    for release in found {
+    for (release, own) in found {
         let shape = if several_episodes(&release.title) { None } else { crate::follow::shape(&release.title) };
         let Some(shape) = shape else {
-            batch |= release.seeders > 0;
+            batch |= *own && release.seeders > 0;
             continue;
         };
-        if shape.number < 1 || episodes.is_some_and(|out| shape.number > out) {
+        // The season its title names: "Show 2nd Season - 05", "Show S2 - 05", "Show.S02E05".
+        let title: Vec<&str> = shape.words.iter().take_while(|w| !w.ends_with('#')).map(String::as_str).collect();
+        let named = crate::anilist::season(&title.join(" ")).or_else(|| crate::scan::episode_number(&release.title).and_then(|(season, _)| season));
+        if named.is_some_and(|s| Some(s) != asked_season && s != wanted.season) {
             continue;
         }
+        let Some(number) = episode_of(shape.number, *own || named.is_some(), wanted) else { continue };
         let at = shape.tags.iter().chain(&shape.words).find_map(|t| resolution(t)).unwrap_or_default();
         let group = if release.title.trim_start().starts_with('[') { shape.tags.first().cloned().unwrap_or_default() } else { String::new() };
         let words = shape.words.into_iter().filter(|w| resolution(w).is_none()).collect();
-        let picked = sets.entry((group, at, words)).or_default().entry(shape.number).or_insert(release);
+        let picked = sets.entry((group, at, words)).or_default().entry(number).or_insert(release);
         // Of two of an episode, the one people share, then the newer upload (a v2 over the first).
         if (release.seeders > 0, release.id) > (picked.seeders > 0, picked.id) {
             *picked = release;
@@ -190,9 +279,9 @@ fn episode_set(found: &[Release], query: &str, episodes: Option<i64>) -> Option<
         .into_iter()
         .filter(|(_, by_number)| by_number.len() >= 2)
         .map(|((_, _, words), by_number)| {
-            let last = episodes.or_else(|| by_number.keys().next_back().copied()).unwrap_or(0);
+            let last = wanted.out.or_else(|| by_number.keys().next_back().copied()).unwrap_or(0);
             let missing: Vec<i64> = (1..=last).filter(|n| !by_number.contains_key(n)).collect();
-            let extra = words.iter().take_while(|w| !w.ends_with('#')).filter(|w| !asked.contains(*w)).count();
+            let extra = words.iter().take_while(|w| !w.ends_with('#')).filter(|w| !asked.contains(*w) && !season_word(w)).count();
             let releases: Vec<Release> = by_number.into_values().cloned().collect();
             let seeders = releases.iter().map(|r| r.seeders).min().unwrap_or(0);
             let shared: i64 = releases.iter().map(|r| r.seeders).sum();
@@ -489,10 +578,19 @@ mod tests {
         }
     }
 
-    /// The ids of the releases `episode_set` picks from `found` (id, title, seeders), and the episodes it misses.
-    fn picked(found: &[(i64, &str, i64)], query: &str, episodes: Option<i64>) -> Option<(Vec<i64>, Vec<i64>, bool)> {
-        let found: Vec<Release> = found.iter().map(|&(id, title, seeders)| release(id, title, seeders)).collect();
-        episode_set(&found, query, episodes).map(|set| (set.releases.iter().map(|r| r.id).collect(), set.missing, set.batch))
+    /// The ids of the releases `episode_set` picks from `found` (id, title, seeders), and the
+    /// episodes it misses. Each release is found as nyaa finds them: for `query`, when its
+    /// title has every word of it, else for the first season's title.
+    fn picked(found: &[(i64, &str, i64)], query: &str, wanted: &Wanted) -> Option<(Vec<i64>, Vec<i64>, bool)> {
+        let has = |title: &str, q: &str| words(q).iter().all(|w| words(title).contains(w));
+        let found: Vec<(Release, bool)> = found
+            .iter()
+            .filter_map(|&(id, title, seeders)| {
+                let own = has(title, query);
+                (own || wanted.first.as_deref().is_some_and(|first| has(title, first))).then(|| (release(id, title, seeders), own))
+            })
+            .collect();
+        episode_set(&found, query, wanted).map(|set| (set.releases.iter().map(|r| r.id).collect(), set.missing, set.batch))
     }
 
     #[test]
@@ -513,11 +611,12 @@ mod tests {
         ];
         // SubsPlease's 1080p has all three (episode 3's v2); the 720p has two, Erai-raws' episode 3
         // no one shares, and the second season isn't the one asked for.
-        assert_eq!(picked(&found, "Show", Some(3)), Some((vec![11, 12, 14], vec![], false)));
+        assert_eq!(picked(&found, "Show", &Wanted::alone(Some(3))), Some((vec![11, 12, 14], vec![], false)));
         // Asked for, the second season is.
-        assert_eq!(picked(&found, "Show 2nd Season", Some(3)), Some((vec![41, 42, 43], vec![], false)));
+        let second = Wanted { out: Some(3), offsets: vec![3], season: 2, first: Some("Show".into()) };
+        assert_eq!(picked(&found, "Show 2nd Season", &second), Some((vec![41, 42, 43], vec![], false)));
         // Without AniList's count, the set that goes furthest without a gap.
-        assert_eq!(picked(&found, "Show", None), Some((vec![11, 12, 14], vec![], false)));
+        assert_eq!(picked(&found, "Show", &Wanted::alone(None)), Some((vec![11, 12, 14], vec![], false)));
     }
 
     #[test]
@@ -529,8 +628,45 @@ mod tests {
             (5, "[Group] Show (01-12) [1080p] [Batch]", 0),
         ];
         // The batch no one shares doesn't count, Judas' whole season does.
-        assert_eq!(picked(&found, "Show", Some(3)), Some((vec![1, 3], vec![2], true)));
-        assert_eq!(picked(&found[..1], "Show", Some(3)), None);
+        assert_eq!(picked(&found, "Show", &Wanted::alone(Some(3))), Some((vec![1, 3], vec![2], true)));
+        assert_eq!(picked(&found[..1], "Show", &Wanted::alone(Some(3))), None);
+    }
+
+    #[test]
+    fn a_later_season_counted_on_from_the_first_is_found_under_its_name() {
+        let found = [
+            (1, "[SubsPlease] Show - 01 (1080p) [AAAAAAAA].mkv", 900),
+            (2, "[SubsPlease] Show - 02 (1080p) [BBBBBBBB].mkv", 900),
+            (3, "[SubsPlease] Show - 03 (1080p) [CCCCCCCC].mkv", 900),
+            (4, "[SubsPlease] Show - 04 (1080p) [DDDDDDDD].mkv", 50),
+            (5, "[SubsPlease] Show - 05 (1080p) [EEEEEEEE].mkv", 50),
+            (6, "[Erai-raws] Show S2 - 01 [1080p]", 30),
+            (7, "[Erai-raws] Show S2 - 02 [1080p]", 30),
+            (8, "[Group] Show 3rd Season - 01 [1080p]", 999),
+            (9, "[Group] Show 3rd Season - 02 [1080p]", 999),
+        ];
+        // The second season, after three episodes: SubsPlease's 4 and 5, under the first season's name.
+        let second = Wanted { out: Some(2), offsets: vec![3], season: 2, first: Some("Show".into()) };
+        assert_eq!(picked(&found, "Show 2nd Season", &second), Some((vec![4, 5], vec![], false)));
+        // Erai-raws' S2, named as the second season, is too, but SubsPlease's is shared more.
+        assert_eq!(picked(&found[5..], "Show 2nd Season", &second), Some((vec![6, 7], vec![], false)));
+        // The first season isn't the third season's, nor the second's.
+        assert_eq!(picked(&found, "Show", &Wanted::alone(Some(3))), Some((vec![1, 2, 3], vec![], false)));
+    }
+
+    #[test]
+    fn what_comes_before_a_season_is_counted_along_its_prequels() {
+        use crate::series::tests::entry;
+        let graph = Graph::new([
+            entry(1, "Show", "TV", 12, 20200101, &[("SEQUEL", 2)]),
+            entry(2, "Show Movie", "MOVIE", 1, 20210101, &[("PREQUEL", 1), ("SEQUEL", 3)]),
+            entry(3, "Show 2nd Season", "TV", 13, 20220101, &[("PREQUEL", 2), ("SEQUEL", 4)]),
+            entry(4, "Show 2nd Season Part 2", "TV", 11, 20230101, &[("PREQUEL", 3)]),
+        ]);
+        assert_eq!(wanted(&graph, 1, Some(12)), Wanted::alone(Some(12)));
+        assert_eq!(wanted(&graph, 3, Some(13)), Wanted { out: Some(13), offsets: vec![12], season: 2, first: Some("Show".into()) });
+        // Part 2 counts on from Part 1 (13) or from the first episode (25); the film isn't counted.
+        assert_eq!(wanted(&graph, 4, Some(5)), Wanted { out: Some(5), offsets: vec![13, 25], season: 3, first: Some("Show".into()) });
     }
 
     #[test]

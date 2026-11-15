@@ -2093,16 +2093,19 @@ impl Backend {
             )?),
             "everyEpisode" => {
                 // Without AniList's count, the episodes nyaa has from the first on are taken to be all there is.
-                let out = match arg::<Option<i64>>(&args, "anilistId")? {
-                    Some(id) => crate::anilist::episodes_out(id).ok().flatten(),
-                    None => None,
+                let wanted = match arg::<Option<i64>>(&args, "anilistId")? {
+                    Some(id) => {
+                        let out = crate::anilist::episodes_out(id).ok().flatten();
+                        crate::series::around(self, id).map_or_else(|_| nyaa::Wanted::alone(out), |graph| nyaa::wanted(&graph, id, out))
+                    }
+                    None => nyaa::Wanted::alone(None),
                 };
                 to_value(nyaa::every_episode(
                     &self.db.setting_str("nyaa.site"),
                     &arg::<String>(&args, "q")?,
                     &arg::<Option<String>>(&args, "category")?.unwrap_or_default(),
                     arg::<Option<bool>>(&args, "trusted")?.unwrap_or(false),
-                    out,
+                    &wanted,
                 )?)
             }
             "placeDownload" => {

@@ -419,7 +419,9 @@
       if (!video.paused) sat.seconds += d / video.playbackRate;
     }
     lastT = cur;
-    if (skipEndings && !endingFired && endingStart && duration > 0 && endingStart > duration * 0.5 && cur >= endingStart) {
+    // Played into the ending, not taken past its start (a seek, Watch from here).
+    const intoEnding = d > 0 && d < 1.5 && cur - d < (endingStart ?? 0) && cur >= (endingStart ?? 0);
+    if (skipEndings && !endingFired && endingStart && duration > 0 && endingStart > duration * 0.5 && intoEnding) {
       endingFired = true;
       // Skipped: it doesn't play on behind the card.
       video.pause();

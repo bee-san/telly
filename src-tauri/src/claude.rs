@@ -93,13 +93,15 @@ fn kill(pid: u32) {
     let _ = cmd.output();
 }
 
-/// Whether Claude Code is here, and its version. Asked at most once a minute.
+/// Whether Claude Code is here, and its version. Asked at most once a minute
+/// while it's there; when it isn't, every time, so Check again after
+/// installing it finds it at once.
 pub fn status() -> Status {
     static LAST: OnceLock<Mutex<Option<(Instant, Status)>>> = OnceLock::new();
     let last = LAST.get_or_init(|| Mutex::new(None));
     if let Ok(guard) = last.lock() {
         if let Some((at, status)) = guard.as_ref() {
-            if at.elapsed() < Duration::from_secs(60) {
+            if status.available && at.elapsed() < Duration::from_secs(60) {
                 return status.clone();
             }
         }

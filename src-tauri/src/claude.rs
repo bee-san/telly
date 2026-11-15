@@ -166,17 +166,14 @@ pub fn ask(question: &Ask, mut on_text: impl FnMut(&str), stop: &Arc<AtomicBool>
     let exe = find().ok_or_else(|| anyhow!("Claude Code isn’t installed on this computer (no claude command was found)."))?;
     if question.warm {
         let wanted = (model_arg(question.model), question.effort.map(str::to_string));
-        if let Some(session) = take_session(&wanted) {
+        if let Some(session) = take_session(&wanted).or_else(|| session_back(&wanted)) {
             match session.ask(question.prompt, &mut on_text, stop) {
                 Ok((answer, session)) => {
                     put_back(session);
                     return Ok(answer);
                 }
-                // Stopped (another line was asked about): its session ended, so one starts for the next.
-                Err(e) if stop.load(Ordering::SeqCst) => {
-                    warm_up(question.model, question.effort);
-                    return Err(e);
-                }
+                // Stopped (another line was asked about): the session finishes that answer unread and comes back.
+                Err(e) if stop.load(Ordering::SeqCst) => return Err(e),
                 // The session broke before answering: ask in a Claude Code of its own instead.
                 Err(_) => {}
             }
@@ -286,6 +283,12 @@ struct Session {
 
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
 static WARMING: AtomicBool = AtomicBool::new(false);
+/// The warm session is out answering, or finishing an answer that was
+/// stopped: a question asked meanwhile waits a moment for it to come back.
+static OUT: AtomicBool = AtomicBool::new(false);
+/// How long a question waits for the warm session to come back before
+/// starting a Claude Code of its own (which takes 3 to 15 seconds).
+const WAIT_FOR_SESSION: Duration = Duration::from_secs(5);
 
 impl Session {
     fn start(model: Option<String>, effort: Option<String>) -> Result<Session> {
@@ -331,7 +334,9 @@ impl Session {
         let mut text = String::new();
         loop {
             if stop.load(Ordering::SeqCst) {
-                self.end();
+                // The answer finishes unread, and the session comes back for
+                // the next question, rather than one starting from scratch.
+                std::thread::spawn(move || self.finish_unread(started));
                 return Err(anyhow!("Stopped."));
             }
             if started.elapsed() > TIMEOUT {
@@ -361,9 +366,52 @@ impl Session {
         }
     }
 
+    /// Reads the rest of a stopped answer and puts the session back for the next question.
+    fn finish_unread(mut self, started: Instant) {
+        let mut text = String::new();
+        while started.elapsed() < TIMEOUT {
+            match self.lines.recv_timeout(Duration::from_millis(150)) {
+                Ok(line) => match read_line(&line, &mut text, &mut |_| {}) {
+                    Some(Ok(_)) => {
+                        self.asked += 1;
+                        self.last_used = Instant::now();
+                        return put_back(self);
+                    }
+                    Some(Err(_)) => break,
+                    None => {}
+                },
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        self.end();
+    }
+
     fn end(mut self) {
+        OUT.store(false, Ordering::SeqCst);
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+/// The warm session, when it's out finishing another answer: waited for a
+/// moment, as it's back sooner than a Claude Code of its own would start.
+fn session_back(kind: &(Option<String>, Option<String>)) -> Option<Session> {
+    let waited = Instant::now();
+    while OUT.load(Ordering::SeqCst) && waited.elapsed() < WAIT_FOR_SESSION {
+        std::thread::sleep(Duration::from_millis(50));
+        if let Some(session) = take_session(kind) {
+            return Some(session);
+        }
+    }
+    take_session(kind)
+}
+
+/// Ends the warm session, if there is one ready: the player has been closed a while.
+pub fn end_warm() {
+    let session = SESSION.lock().ok().and_then(|mut slot| slot.take());
+    if let Some(session) = session {
+        session.end();
     }
 }
 
@@ -375,10 +423,12 @@ fn take_session(kind: &(Option<String>, Option<String>)) -> Option<Session> {
         session.end();
         return None;
     }
+    OUT.store(true, Ordering::SeqCst);
     Some(session)
 }
 
 fn put_back(session: Session) {
+    OUT.store(false, Ordering::SeqCst);
     if session.asked >= SESSION_QUESTIONS {
         let kind = session.kind.clone();
         session.end();

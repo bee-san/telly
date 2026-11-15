@@ -89,8 +89,11 @@
     if (sort === "released") return list.sort((a, b) => yearOf(b) - yearOf(a) || byName(a, b));
     // Most words known first; an anime with no score yet goes last.
     if (sort === "known") return list.sort((a, b) => (knownOf(b) ?? -1) - (knownOf(a) ?? -1) || byName(a, b));
-    return list;
+    // Recently added: the anime whose newest part was added last first.
+    return list.sort((a, b) => addedOf(b) - addedOf(a) || byName(a, b));
   }
+  /** When an anime's newest part was added. */
+  const addedOf = (a: AnimeCard) => Math.max(...a.parts.map((p) => p.addedAt));
 
   /** Every anime, those in Currently watching too. One that's only movies (ten Pokémon films) is listed under Movies; one with a season under Series. */
   const listed = $derived(sorted(shows.filter((a) => kind === "all" || (kind === "movies") === a.parts.every((p) => p.movie))));

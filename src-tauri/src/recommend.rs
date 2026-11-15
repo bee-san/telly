@@ -285,6 +285,12 @@ fn list_liking(entry: &Listed, average_score: f64) -> Option<f64> {
     }
 }
 
+/// Your average score of the anime you've scored on your list.
+fn average_score(listed: &[Listed]) -> f64 {
+    let scores: Vec<f64> = listed.iter().map(|l| l.score).filter(|&s| s > 0.0).collect();
+    scores.iter().sum::<f64>() / scores.len().max(1) as f64
+}
+
 /// The picks, best first. Each series in the library or on your list has one
 /// say on a pick: the biggest any of its entries gives it, which is the square
 /// root of the pick's share of that entry's votes, times how much your liking
@@ -321,8 +327,7 @@ pub fn rank(owned: &[Owned], listed: &[Listed], sources: &[Source], hidden: &Has
         .into_iter()
         .map(|(id, (episodes, watched, last_watched, title))| (id, (liking(episodes, watched, last_watched, now), freshness(last_watched.unwrap_or(0), now), title)))
         .collect();
-    let scores: Vec<f64> = listed.iter().map(|l| l.score).filter(|&s| s > 0.0).collect();
-    let average_score = scores.iter().sum::<f64>() / scores.len().max(1) as f64;
+    let average_score = average_score(listed);
     for entry in listed {
         if let Some(liking) = list_liking(entry, average_score) {
             let title = shows.get(&entry.id).map_or(entry.title.as_str(), |s| s.2);
@@ -696,9 +701,11 @@ fn genre_name(genre: &str) -> String {
 }
 
 /// The page's rows, in the order they're shown. `picks` are the
-/// recommendations, best first; `left_out` what's on your AniList list or
-/// hidden; `have` the library's shows by their AniList ID.
-fn rows(picks: &[Pick], charts: &Charts, owned: &[Owned], sources: &[Source], graph: &Graph, have: &HashMap<i64, i64>, left_out: &HashSet<i64>) -> Vec<Row> {
+/// recommendations, best first; `listed` your AniList list (with what you said
+/// of picks); `left_out` what's on it or hidden; `have` the library's shows by
+/// their AniList ID.
+#[allow(clippy::too_many_arguments)]
+fn rows(picks: &[Pick], charts: &Charts, owned: &[Owned], listed: &[Listed], sources: &[Source], graph: &Graph, have: &HashMap<i64, i64>, left_out: &HashSet<i64>) -> Vec<Row> {
     let row = |key: &str, title: String, note: &str, ranked: bool, picks: Vec<Pick>| Row { key: key.into(), title, note: note.into(), ranked, picks };
     // A chart's row: what you don't have or have on your list, and that isn't a sequel you can't start with.
     let fresh = |key: &str| -> Vec<Pick> {
@@ -709,8 +716,11 @@ fn rows(picks: &[Pick], charts: &Charts, owned: &[Owned], sources: &[Source], gr
     };
 
     // Because you watched: the shows you watched last, a different anime each, by AniList's users' recommendations for them.
+    // Not one you dropped or scored low on your list: it says against what it's like.
+    let average = average_score(listed);
+    let disliked: HashSet<i64> = listed.iter().filter(|l| list_liking(l, average).is_some_and(|liking| liking <= 0.0)).map(|l| l.id).collect();
     let yours: HashSet<i64> = owned.iter().filter_map(|o| graph.root(o.anilist_id)).collect();
-    let mut watched: Vec<&Owned> = owned.iter().filter(|o| o.last_watched.is_some()).collect();
+    let mut watched: Vec<&Owned> = owned.iter().filter(|o| o.last_watched.is_some() && !disliked.contains(&o.anilist_id)).collect();
     watched.sort_by_key(|o| std::cmp::Reverse(o.last_watched));
     let mut because: Vec<Row> = Vec::new();
     let mut seen_anime: HashSet<i64> = HashSet::new();
@@ -788,7 +798,7 @@ pub fn view(backend: &Backend) -> Result<Value> {
     left_out.extend(listed.iter().map(|l| l.id));
     let graph = crate::series::graph(backend);
     let picks = rank(&owned, &listed, &sources, &left_out, now_ms(), &graph);
-    let rows = rows(&picks, &charts(backend), &owned, &sources, &graph, &in_library(backend)?, &left_out);
+    let rows = rows(&picks, &charts(backend), &owned, &listed, &sources, &graph, &in_library(backend)?, &left_out);
     Ok(json!({ "shows": ids.len(), "picks": picks, "rows": rows }))
 }
 
@@ -831,13 +841,31 @@ mod tests {
         assert_eq!((likes[0].banner.as_str(), likes[2].sequel, likes[0].sequel), ("https://b/1.jpg", true, false));
         let charts = Charts { fetched_at: 0, season: "Autumn 2026".into(), lists: vec![("series".into(), likes.clone()), ("genre:Drama".into(), likes)] };
         let have = HashMap::from([(3, 42)]);
-        let rows = rows(&[], &charts, &[], &[], &Graph::default(), &have, &HashSet::from([5]));
+        let rows = rows(&[], &charts, &[], &[], &[], &Graph::default(), &have, &HashSet::from([5]));
         // The top ten keeps what you have, marked; a genre's row leaves out what you have, the hidden, and the sequel.
         assert_eq!(rows.iter().map(|r| r.key.as_str()).collect::<Vec<_>>(), ["series", "genre:Drama"]);
         assert_eq!(ids(&rows[0].picks), [1, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
         assert_eq!((rows[0].picks[1].show, rows[0].picks[1].standing.as_str()), (Some(42), "No. 2 of the series trending on AniList this week"));
         assert_eq!(ids(&rows[1].picks), [1, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
         assert_eq!((rows[1].title.as_str(), rows[1].note.as_str()), ("Drama", "Most popular on AniList"));
+    }
+
+    #[test]
+    fn because_you_watched_isn_t_of_a_show_you_didn_t_like() {
+        let five = |from: i64| source(from, &[], &[(from * 10, 9), (from * 10 + 1, 8), (from * 10 + 2, 7), (from * 10 + 3, 6), (from * 10 + 4, 5)]);
+        let library = [
+            Owned { last_watched: Some(NOW - 3 * DAY), ..owned(1, "Liked", 12, 12) },
+            Owned { last_watched: Some(NOW - 2 * DAY), ..owned(2, "Fine", 12, 12) },
+            owned(3, "Dropped", 12, 2),
+        ];
+        let answers = [five(1), five(2), five(3)];
+        let titles = |listed: &[Listed]| -> Vec<String> {
+            rows(&[], &Charts::default(), &library, listed, &answers, &Graph::default(), &HashMap::new(), &HashSet::new()).into_iter().map(|r| r.title).collect()
+        };
+        assert_eq!(titles(&[]), ["Because you watched Dropped", "Because you watched Fine"]);
+        let list = [listed(3, "Dropped", "DROPPED", 0.0), listed(2, "Fine", "COMPLETED", 90.0), listed(1, "Liked", "COMPLETED", 60.0)];
+        // Dropped says against, and Liked, at 15 points under your average, counts 0.5: still for.
+        assert_eq!(titles(&list), ["Because you watched Fine", "Because you watched Liked"]);
     }
 
     #[test]

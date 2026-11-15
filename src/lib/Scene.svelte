@@ -95,6 +95,9 @@
     const opener = document.activeElement as HTMLElement | null;
     sheet?.focus();
     const key = (e: KeyboardEvent) => {
+      // What's typed in the title bar's search is the search's.
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       if (e.key === "Escape") onclose();
       else if (e.key === "ArrowLeft") step(-1);

@@ -1327,6 +1327,8 @@ impl Backend {
         recommend::gather(self);
         // Subtitles were found, or found missing and queued to be made, under the old show's name.
         self.db.requeue_subs(Some(id), &["none", "failed", "check", "synced", "nokey", "whisper"])?;
+        // And those being worked on, from the old match.
+        self.jobs.find_again(&self.db, Some(id));
         self.jobs.forget_jimaku();
         self.jobs.poke();
         self.show_view(id)
@@ -1804,6 +1806,8 @@ impl Backend {
             "jimaku.key" => {
                 self.jobs.forget_jimaku();
                 self.db.requeue_subs(None, &["nokey", "none", "failed"])?;
+                // And those being worked on without it.
+                self.jobs.find_again(&self.db, None);
                 self.jobs.poke();
             }
             "names.enabled" | "names.spoilers" => self.names.poke(),

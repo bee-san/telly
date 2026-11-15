@@ -209,6 +209,10 @@ pub struct Jobs {
     /// Episodes you opened or asked to convert while they weren't ready: got
     /// ready first, wherever they are in their show (one you've watched too).
     asked: Mutex<HashSet<i64>>,
+    /// Episodes sent back to waiting for subtitles while a worker was finding
+    /// them (Change match, a Jimaku key): no other worker takes one until
+    /// that worker, whose answer is let go, is done with it.
+    stale: Mutex<HashSet<i64>>,
     /// Episodes given a file from beside their rip, whose words are still to
     /// work out (`words_worker`), first in first.
     words: Mutex<std::collections::VecDeque<i64>>,
@@ -246,6 +250,7 @@ impl Default for Jobs {
             caught_up: Mutex::new(HashSet::new()),
             looked_beside: Mutex::new(HashSet::new()),
             asked: Mutex::new(HashSet::new()),
+            stale: Mutex::new(HashSet::new()),
             words: Mutex::new(std::collections::VecDeque::new()),
             working_out: Mutex::new(None),
             download: Mutex::new(None),
@@ -265,6 +270,18 @@ impl Jobs {
     /// converted): it's got ready next, even if it's one you've watched.
     pub fn ask_for(&self, episode_id: i64) {
         self.asked.lock().unwrap_or_else(|e| e.into_inner()).insert(episode_id);
+        self.poke();
+    }
+
+    /// The episodes of `show` (or every show) a subtitle worker is on are
+    /// looked for again from the start (see `stale`): the match or the key changed.
+    pub fn find_again(&self, db: &crate::db::Db, show: Option<i64>) {
+        // Held across the change, so a worker finishing meanwhile finds its episode marked.
+        let mut stale = self.stale.lock().unwrap_or_else(|e| e.into_inner());
+        if let Ok(ids) = db.requeue_working_subs(show) {
+            stale.extend(ids);
+        }
+        drop(stale);
         self.poke();
     }
 
@@ -449,6 +466,7 @@ pub fn waiting<'a>(backend: &Backend, kind: &str, library: &'a [(Show, Vec<Episo
     let convert_rest = backend.db.setting_bool("convert.rest", false);
     let idle = backend.idle_for().is_none_or(|d| d >= IDLE_AFTER);
     let asked = backend.jobs.asked.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let stale = backend.jobs.stale.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let mut found: Vec<((u8, usize, i64), &Show, &Episode, usize)> = Vec::new();
     for (rank, (show, episodes)) in library.iter().enumerate() {
         let count = episodes.len();
@@ -465,7 +483,7 @@ pub fn waiting<'a>(backend: &Backend, kind: &str, library: &'a [(Show, Vec<Episo
                 "catch up" => e.media_state == "ready" && !matches!(e.subs_state.as_str(), "pending" | "working") && behind(backend, &e),
                 _ => e.subs_state == "pending",
             };
-            if !waiting {
+            if !waiting || (kind == "subs" && stale.contains(&e.id)) {
                 continue;
             }
             // Its rips can't be read: nothing of it is done, failed or forgotten until they can.
@@ -982,6 +1000,10 @@ fn subs_worker(backend: &Backend, n: usize) {
             }
             pictures_after(backend, slot, &ffmpeg, &show, &episode);
             set_task(slot, None);
+            // Sent back meanwhile (Change match): another worker may take it now.
+            if backend.jobs.stale.lock().unwrap_or_else(|e| e.into_inner()).remove(&episode.id) {
+                backend.jobs.poke();
+            }
         }
         // Then episodes you asked to have subtitles made for, one at a time: the first worker makes them.
         if n > 0 {
@@ -1623,7 +1645,9 @@ fn jimaku_files(backend: &Backend, key: &str, show: &Show) -> Result<Vec<jimaku:
         Some(ids) => ids,
         None => match jimaku::find_entries(key, show.anilist_id, &show.title_romaji) {
             Ok(entries) => {
-                if let Some(first) = entries.first().filter(|f| show.jimaku_id != Some(f.id)) {
+                // (Not if you changed the show's match meanwhile: it's another anime's entry.)
+                let same_match = backend.db.show(show.id)?.is_some_and(|s| s.anilist_id == show.anilist_id);
+                if let Some(first) = entries.first().filter(|f| same_match && show.jimaku_id != Some(f.id)) {
                     backend.db.set_jimaku_id(show.id, Some(first.id))?;
                 }
                 let ids: Vec<i64> = entries.into_iter().take(3).map(|e| e.id).collect();
@@ -1670,7 +1694,10 @@ fn group_files(backend: &Backend, key: &str, show: &Show, group: &str, in_group:
                 }
                 _ => crate::anilist_list::NO_ENTRY,
             };
-            backend.db.set_setting(&setting, &serde_json::json!(id))?;
+            // Kept only for the match it was found for: Change match meanwhile clears these.
+            if backend.db.show(show.id)?.is_some_and(|s| s.anilist_id == show.anilist_id) {
+                backend.db.set_setting(&setting, &serde_json::json!(id))?;
+            }
             id
         }
     };
@@ -2542,6 +2569,30 @@ mod tests {
         let e = backend.db.episode(id).unwrap().unwrap();
         assert_eq!((e.subs_state.as_str(), e.subs_file.as_str()), ("synced", "mine.srt"));
         assert_eq!(read_lines(&backend, id)[0].text, "選んだ");
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn what_a_worker_finds_under_the_old_match_is_let_go() {
+        let dir = std::env::temp_dir().join(format!("telly-rematched-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let episodes = vec![crate::db::NewEpisode { number: 1, path: "1.mkv".into(), size: 1, duration: 1400.0 }];
+        let show = backend.db.add_show(&crate::db::NewShow { folder: dir.to_string_lossy().into_owned(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let id = backend.db.episodes(show).unwrap()[0].id;
+        assert_eq!(take(&backend, "subs").map(|(_, e, _)| e.id), Some(id));
+        // Change match while the worker is on it: it waits again, but for no other worker yet.
+        backend.jobs.find_again(&backend.db, Some(show));
+        assert_eq!(backend.db.episode(id).unwrap().unwrap().subs_state, "pending");
+        assert!(take(&backend, "subs").is_none());
+        // What the worker found under the old match is let go.
+        no_subtitles(&backend, id, "None of Jimaku’s 3 files fit this episode", None).unwrap();
+        assert_eq!(backend.db.episode(id).unwrap().unwrap().subs_state, "pending");
+        // Once it's done with it, it's taken again.
+        backend.jobs.stale.lock().unwrap().remove(&id);
+        assert_eq!(take(&backend, "subs").map(|(_, e, _)| e.id), Some(id));
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

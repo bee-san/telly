@@ -859,6 +859,19 @@ impl Db {
     }
 
     /// Queues subtitles again for every episode of a show in one of `states`.
+    /// Sends back to waiting the episodes (of `show_id`, or all) a subtitle
+    /// worker is finding subtitles for now, and returns them: what that worker
+    /// finds is let go, as it can only keep it while they're its own. Whisper's aren't.
+    pub fn requeue_working_subs(&self, show_id: Option<i64>) -> Result<Vec<i64>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare_cached(
+            "UPDATE episodes SET subs_state = 'pending', subs_detail = ''
+             WHERE subs_state = 'working' AND subs_detail NOT LIKE '% is listening' AND (?1 IS NULL OR show_id = ?1) RETURNING id",
+        )?;
+        let ids = stmt.query_map(params![show_id], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
+        Ok(ids)
+    }
+
     pub fn requeue_subs(&self, show_id: Option<i64>, states: &[&str]) -> Result<usize> {
         let list = states.iter().map(|s| format!("'{}'", s.replace('\'', ""))).collect::<Vec<_>>().join(", ");
         let sql = format!(

@@ -37,6 +37,7 @@
 
 - 🎬 **Your rips, as they are:** it plays each episode straight from the rip when WebView2 can (H.264, HEVC and AV1, 8-bit or 10-bit, in MKV or MP4), and converts what it can't (MPEG-2 DVD rips; DTS and TrueHD audio, to lossless FLAC) in the background, next episode first, and first of all one you open that isn't ready (one you've watched, say, whose copy was let go). Picking up part-way through, Telly reads the picture where you left off before reading ahead and getting the seek bar's pictures.
 - 🎧 **The right audio, and no sitting through the opening:** it plays the Japanese audio track unless you pick another for the show (**Audio ▾**, on rips with more than one), offers **Skip opening** and **Skip outro** from the rip's chapters or [AniSkip](https://aniskip.com), and marks the chapters on the seek bar. Skip outro jumps to any preview or scene after the credits. When the credits run to the end, it opens the end card even if you paused.
+- 🗣️ **Dialogue you can hear:** **Boost dialogue** (**D**, or the speech bubble beside the volume) brings quiet speech up and loud music and effects down, so a whisper and a battle are nearer the same loudness, at whatever volume you watch. It stays on until you turn it off, and changes only what you hear: cards keep the rip's own sound.
 - 🪟 **A small player on top:** it shrinks to a small player on top of your other windows (**I**), to watch beside a game: the picture alone, its subtitles sized to the window, and the main controls only while the pointer is over it (the rest are on their keys). Hovering a line still pauses and looks it up, and mining works as before. Drag it by the picture and size it from its corners, and it keeps the picture's shape. It opens where you left it last time (the first time, in the bottom-right corner of the screen); **I** or Esc puts the window back as it was.
 - 🎨 **[Filters](#-filters):** Anime4K's upscalers, FSR, Denoise, Restore and more clean up an old or small rip, and three televisions show it as on a CRT.
 
@@ -110,7 +111,7 @@ In the player (**?** lists them too):
 | <kbd>F</kbd> | Fullscreen | <kbd>Z</kbd> and <kbd>X</kbd> | Subtitles earlier and later |
 | <kbd>I</kbd> | Small player, on top of other windows | <kbd>T</kbd> | Show transcript |
 | <kbd>Esc</kbd> | Close, or leave fullscreen or the small player | <kbd>V</kbd> | Show filters |
-| <kbd>?</kbd> | Show shortcuts | | |
+| <kbd>?</kbd> | Show shortcuts | <kbd>D</kbd> | Boost dialogue |
 
 ## 🧠 Explain and Previously on
 

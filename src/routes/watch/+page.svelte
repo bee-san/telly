@@ -9,7 +9,7 @@
   import { clock, ownFile } from "$lib/format";
   import { app } from "$lib/state.svelte";
   import { toast, toasts } from "$lib/toast-store.svelte";
-  import { pickAudio } from "$lib/video";
+  import { boostDialogue, pickAudio } from "$lib/video";
 
   const epId = $derived(Number(page.url.searchParams.get("ep")));
   /** Where to start: the episode was opened at a scene line search found (/watch?ep=4&at=1060). */
@@ -40,6 +40,7 @@
   let help = $state(false);
   let volume = $state(1);
   let muted = $state(false);
+  let boost = $state(false);
   /** Where the pointer is over the seek bar, in seconds. */
   let hoverAt = $state<number | null>(null);
   /** The seek bar's pictures, once they're loaded; `ratio` is one picture's width over its height. */
@@ -294,6 +295,7 @@
       blur = settings["player.blur"] === true;
       volume = typeof settings["player.volume"] === "number" ? (settings["player.volume"] as number) : 1;
       muted = settings["player.muted"] === true;
+      boost = settings["player.boost"] === true;
       translation = null;
       showTranslation = false;
       call<Line[]>("translation", { id })
@@ -572,6 +574,18 @@
     flash(muted ? "Muted" : `Volume ${Math.round(volume * 100)}%`);
     saveSound();
   }
+
+  function toggleBoost() {
+    boost = !boost;
+    flash(boost ? "Dialogue boosted" : "Dialogue boost off");
+    call("setSetting", { key: "player.boost", value: boost }).catch(() => {});
+  }
+
+  $effect(() => {
+    // Read so this runs again when the episode plays: the sound may not start until then.
+    void paused;
+    if (video) boostDialogue(video, boost, volume);
+  });
 
   async function useAudio(track: number) {
     audioMenu = false;
@@ -1428,6 +1442,10 @@
       case "0":
         toggleMute();
         break;
+      case "d":
+      case "D":
+        toggleBoost();
+        break;
       case "Tab":
         e.preventDefault();
         if (!e.repeat) holdTranslation();
@@ -1502,6 +1520,7 @@
     ["↓", "Replay the line"],
     ["- and =", "Volume down and up"],
     ["0", "Mute"],
+    ["D", "Boost dialogue"],
     ["[ and ]", "Slower and faster"],
     ["S", "Show subtitles"],
     ["B", "Blur subtitles until hovered"],
@@ -1711,6 +1730,7 @@
       <button type="button" class="pbtn" aria-label={muted ? "Unmute" : "Mute"} title="{muted ? "Unmute" : "Mute"} (0)" onclick={toggleMute}><Icon name={muted || volume === 0 ? "muted" : "volume"} /></button>
       <input class="vol wide" type="range" min="0" max="1" step="0.05" value={muted ? 0 : volume} aria-label="Volume" title="Volume (- and =)"
         oninput={(e) => setVolume(Number(e.currentTarget.value))} onchange={(e) => { saveSound(); e.currentTarget.blur(); }} />
+      <button type="button" class="pbtn wide" class:on={boost} aria-label="Boost dialogue" title="Boost dialogue (D)" onclick={toggleBoost}><Icon name="speech" /></button>
       <span class="grow"></span>
       {#if rate !== 1}<button type="button" class="pbtn txt" title="Speed ([ and ])" onclick={() => setRate(1)}>{rate.toFixed(1)}×</button>{/if}
       <button type="button" class="pbtn" class:on={subsOn} aria-label="Subtitles" title="Subtitles (S)" onclick={toggleSubs}><Icon name="subs" /></button>

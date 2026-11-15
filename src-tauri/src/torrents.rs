@@ -317,7 +317,9 @@ fn files_in(torrent: &[u8]) -> Result<Vec<String>> {
 
 /// A release's videos that aren't extras.
 fn episodes_in(files: &[String]) -> impl Iterator<Item = &String> {
-    files.iter().filter(|f| scan::is_video(Path::new(f)) && scan::extra_reason(f).is_none())
+    let videos = || files.iter().filter(|f| scan::is_video(Path::new(f)));
+    let title_words = scan::title_words(videos().map(String::as_str));
+    videos().filter(move |f| scan::extra_reason(f, &title_words).is_none())
 }
 
 /// Whether a release is more than one show: its videos, extras apart, are in

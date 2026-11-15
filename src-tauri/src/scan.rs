@@ -111,17 +111,38 @@ pub fn makemkv_title(stem: &str) -> Option<i64> {
 /// Names that say a file is an extra, not an episode. A file named as a
 /// season's episode (S01E05, as Sonarr names them) is one whatever its title
 /// says ("S01E03 - The Bonus Round"), though its folders can still say it's an
-/// extra; season 0's (S00E01) are specials, which often are extras.
-pub(crate) fn extra_reason(rel: &str) -> Option<&'static str> {
+/// extra; season 0's (S00E01) are specials, which often are extras. Words in
+/// `title_words` (see `title_words`) are the show's name, not an extra's.
+pub(crate) fn extra_reason(rel: &str, title_words: &HashSet<String>) -> Option<&'static str> {
+    let (folders, name) = rel.rsplit_once('/').unwrap_or(("", rel));
+    let stem = Path::new(name).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let named_episode = matches!(episode_number(&stem), Some((Some(season), _)) if season > 0);
+    let says_extra = |text: &str| extra_words(text).any(|w| !title_words.contains(&w));
+    (says_extra(folders) || (!named_episode && says_extra(name))).then_some("Its name says it’s an extra")
+}
+
+/// The words in `text` that can say a file is an extra, in lower case.
+fn extra_words(text: &str) -> impl Iterator<Item = String> + '_ {
     static R: OnceLock<Regex> = OnceLock::new();
     let r = re(
         &R,
         r"(?i)\b(NCOP|NCED|creditless|non[- ]?credit|clean (?:opening|ending)|trailers?|teasers?|previews?|promos?|PV|CM|menus?|extras?|bonus|special features|making of|interviews?)\b",
     );
-    let (folders, name) = rel.rsplit_once('/').unwrap_or(("", rel));
-    let stem = Path::new(name).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let named_episode = matches!(episode_number(&stem), Some((Some(season), _)) if season > 0);
-    (r.is_match(folders) || (!named_episode && r.is_match(name))).then_some("Its name says it’s an extra")
+    r.find_iter(text).map(|m| m.as_str().to_lowercase())
+}
+
+/// The extras' words every one of these videos' names has: they're the
+/// show's name ("Interviews with Monster Girls", "Extra Olympia Kyklos").
+pub(crate) fn title_words<'a>(rels: impl IntoIterator<Item = &'a str>) -> HashSet<String> {
+    let mut shared: Option<HashSet<String>> = None;
+    for rel in rels {
+        let words: HashSet<String> = extra_words(rel).collect();
+        shared = Some(match shared {
+            Some(s) => s.intersection(&words).cloned().collect(),
+            None => words,
+        });
+    }
+    shared.unwrap_or_default()
 }
 
 /// "NARUTO DVD Box 1" becomes "NARUTO"; "[Judas] Fairy Tail (2009)" becomes "Fairy Tail".
@@ -251,6 +272,8 @@ pub fn scan(folder: &Path, durations: impl Fn(&[PathBuf]) -> Vec<Option<f64>>) -
     }
     paths.sort_by(|a, b| path_cmp(&relative(folder, a), &relative(folder, b)));
     let lengths = durations(&paths);
+    let rels: Vec<String> = paths.iter().map(|p| relative(folder, p)).collect();
+    let title_words = title_words(rels.iter().map(String::as_str));
 
     let mut files: Vec<ScannedFile> = paths
         .iter()
@@ -259,7 +282,7 @@ pub fn scan(folder: &Path, durations: impl Fn(&[PathBuf]) -> Vec<Option<f64>>) -
             let rel = relative(folder, path);
             let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
             let duration = duration.unwrap_or(0.0);
-            let reason = if let Some(why) = extra_reason(&rel) {
+            let reason = if let Some(why) = extra_reason(&rel, &title_words) {
                 why.to_string()
             } else if duration <= 0.0 {
                 "Telly couldn’t read it (still downloading?)".to_string()
@@ -369,8 +392,20 @@ mod tests {
 
     #[test]
     fn spots_extras() {
-        assert!(extra_reason("Extras/[Judas] Fairy Tail - NCOP - 14.mkv").is_some());
-        assert!(extra_reason("Fairy Tail - 014.mkv").is_none());
+        let none = HashSet::new();
+        assert!(extra_reason("Extras/[Judas] Fairy Tail - NCOP - 14.mkv", &none).is_some());
+        assert!(extra_reason("Fairy Tail - 014.mkv", &none).is_none());
+        // A show whose name has such a word: every file has it.
+        let shows = [
+            vec!["Interviews with Monster Girls - 01.mkv", "Interviews with Monster Girls - 02.mkv", "Interviews with Monster Girls - NCOP.mkv"],
+            vec!["Extra Olympia Kyklos/Extra Olympia Kyklos - 01.mkv", "Extra Olympia Kyklos/Extras/Extra Olympia Kyklos - PV.mkv"],
+        ];
+        for rels in shows {
+            let title = title_words(rels.iter().copied());
+            let extras: Vec<bool> = rels.iter().map(|r| extra_reason(r, &title).is_some()).collect();
+            assert_eq!(extras.iter().filter(|e| !**e).count(), rels.len() - 1, "{rels:?}");
+            assert!(extras[rels.len() - 1], "{rels:?}");
+        }
     }
 
     #[test]
@@ -389,8 +424,8 @@ mod tests {
         assert_eq!(scan.files.iter().map(|f| f.number).collect::<Vec<_>>(), [Some(1), Some(2), Some(3), Some(4), Some(5)]);
         assert_eq!(scan.numbering, "names");
         // Specials and extras folders are still extras.
-        assert!(extra_reason("Season 0/Spy x Family - S00E01 - Creditless Opening.mkv").is_some());
-        assert!(extra_reason("Extras/Spy x Family - S01E01 - Interview.mkv").is_some());
+        assert!(extra_reason("Season 0/Spy x Family - S00E01 - Creditless Opening.mkv", &HashSet::new()).is_some());
+        assert!(extra_reason("Extras/Spy x Family - S01E01 - Interview.mkv", &HashSet::new()).is_some());
         let _ = std::fs::remove_dir_all(dir);
     }
 

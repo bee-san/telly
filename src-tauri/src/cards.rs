@@ -300,8 +300,14 @@ pub fn worker(backend: &Backend) {
                 seen = *guard;
             }
         }
-        let jobs = backend.db.pending_mine_jobs().unwrap_or_default();
+        // The newest first: a card mined while watching isn't kept waiting behind a batch premined before it.
+        let mut jobs = backend.db.pending_mine_jobs().unwrap_or_default();
+        jobs.reverse();
         for job in jobs {
+            // A card added meanwhile (mined while watching) is taken next.
+            if backend.cards.wake.lock().is_ok_and(|n| *n != seen) {
+                break;
+            }
             let due = backend.cards.not_before.lock().ok().and_then(|nb| nb.get(&job.id).copied()).is_none_or(|t| Instant::now() >= t);
             if !due {
                 continue;

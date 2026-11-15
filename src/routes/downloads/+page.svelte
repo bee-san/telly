@@ -206,6 +206,12 @@
     }
   }
 
+  /** Back where Download was opened from: Recommended as you left it, the show's page, or the Library. */
+  function back() {
+    if (fromRecommended && !show && history.length > 1) history.back();
+    else goto(show ? `/show?id=${show.id}` : fromRecommended ? "/recommended" : "/");
+  }
+
   async function openPage(r: Release) {
     try {
       if (inTauri) {
@@ -220,7 +226,7 @@
 
 <div class="dls scroll">
   <div class="dl-top">
-    <button type="button" class="back" onclick={() => goto(show ? `/show?id=${show.id}` : fromRecommended ? "/recommended" : "/")}><Icon name="back" /><span>{show ? show.title : fromRecommended ? "Recommended" : "Library"}</span></button>
+    <button type="button" class="back" onclick={back}><Icon name="back" /><span>{show ? show.title : fromRecommended ? "Recommended" : "Library"}</span></button>
   </div>
   <div class="dl-head">
     <h2>Download</h2>

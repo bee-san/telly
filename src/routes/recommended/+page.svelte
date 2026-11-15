@@ -1,5 +1,6 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
+  import type { Snapshot } from "./$types";
   import { onMount, tick } from "svelte";
   import Cover from "$lib/Cover.svelte";
   import Icon from "$lib/Icon.svelte";
@@ -71,6 +72,10 @@
     try {
       rec = await callKept<Recommended>("recommendations");
       error = "";
+      // Coming back to the page, the rows it scrolls to may only be here now.
+      await tick();
+      scrollBack();
+      returnTo = null;
     } catch (e) {
       error = errorText(e);
     } finally {
@@ -215,6 +220,50 @@
       fullAsking = false;
     }
   }
+
+  /** Where the page was, kept when it's left (for Download…) and put back when you come back to it. */
+  interface Place {
+    q: string;
+    results: { for: string; picks: Pick[] } | null;
+    all: boolean;
+    shown: number;
+    full: typeof full;
+    rowsAt: number;
+    top: number;
+    /** How far each row (by its name) was scrolled sideways. */
+    rows: [string, number][];
+  }
+  /** Where to scroll back to once the rows are there. */
+  let returnTo: { top: number; rows: [string, number][] } | null = null;
+
+  /** Scrolls the page and its rows back to where they were. */
+  function scrollBack() {
+    if (!returnTo || !box) return;
+    box.scrollTop = returnTo.top;
+    for (const [title, left] of returnTo.rows) {
+      const cards = [...box.querySelectorAll<HTMLElement>(".prow")].find((r) => r.getAttribute("aria-label") === title)?.querySelector<HTMLElement>(".cards");
+      if (cards) cards.scrollLeft = left;
+    }
+  }
+
+  export const snapshot: Snapshot<Place> = {
+    capture: () => ({
+      q,
+      results,
+      all,
+      shown,
+      full,
+      rowsAt,
+      top: box?.scrollTop ?? 0,
+      rows: [...(box?.querySelectorAll<HTMLElement>(".prow") ?? [])].map((r): [string, number] => [r.getAttribute("aria-label") ?? "", r.querySelector<HTMLElement>(".cards")?.scrollLeft ?? 0]),
+    }),
+    restore: async (place) => {
+      ({ q, results, all, shown, full, rowsAt } = place);
+      returnTo = { top: place.top, rows: place.rows };
+      await tick();
+      scrollBack();
+    },
+  };
 
   /** Opens nyaa.si's search for a pick, for Telly to download it. */
   function download(p: Pick) {

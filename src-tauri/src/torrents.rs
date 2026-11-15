@@ -517,15 +517,15 @@ fn torrent_now(id: usize, handle: &ManagedTorrent) -> (Torrent, Vec<String>) {
     let checking = matches!(stats.state, TorrentStatsState::Initializing { .. });
     let have = |i: usize| stats.file_progress.get(i).copied();
     let finished_file = |i: usize, len: u64| stats.finished || have(i).is_some_and(|h| h >= len);
-    // While it checks what's on disk, none of its files counts as finished.
-    let unfinished: Vec<String> = if matches!(stats.state, TorrentStatsState::Error) {
-        Vec::new()
-    } else {
-        real.iter()
-            .filter(|(i, f)| checking || !finished_file(*i, f.1))
-            .map(|(_, f)| key(&Path::new(&folder).join(&f.0).to_string_lossy()))
-            .collect()
-    };
+    // While it checks what's on disk, none of its files counts as finished; nor
+    // while it's stopped on an error (the client then says nothing of each file),
+    // unless it had finished: a half-written episode isn't added.
+    let stopped = matches!(stats.state, TorrentStatsState::Error) && !stats.finished;
+    let unfinished: Vec<String> = real
+        .iter()
+        .filter(|(i, f)| checking || stopped || !finished_file(*i, f.1))
+        .map(|(_, f)| key(&Path::new(&folder).join(&f.0).to_string_lossy()))
+        .collect();
     let files_done = if checking { 0 } else { real.iter().filter(|(i, f)| finished_file(*i, f.1)).count() };
     let speed = stats.live.as_ref().map_or(0, |l| (l.download_speed.mbps * 1024.0 * 1024.0) as u64);
     let peers = stats.live.as_ref().map_or(0, |l| l.snapshot.peer_stats.live);

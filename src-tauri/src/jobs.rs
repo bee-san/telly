@@ -2129,19 +2129,30 @@ fn forget_lines(backend: &Backend, episode_id: i64) {
 /// What a model on OpenRouter hears in a few stretches of an episode (see
 /// heard.rs), timed to the episode. Each stretch is a file in the subtitles
 /// folder for a moment.
-fn listen(backend: &Backend, ffmpeg: &Path, probe: &media::Probe, key: &str, model: &str, episode: &Episode) -> Result<Vec<Vec<Line>>> {
+/// The stretches are cut from the rip holding the drive's turn (`turn`), and
+/// sent to be heard after it's let go, so the drive isn't held while OpenRouter listens.
+fn listen<T>(backend: &Backend, ffmpeg: &Path, probe: &media::Probe, key: &str, model: &str, episode: &Episode, turn: impl FnOnce() -> T) -> Result<Vec<Vec<Line>>> {
     let source = Path::new(&episode.path);
     let track = media::japanese_audio(probe);
     std::fs::create_dir_all(backend.dirs.subs())?;
     let piece = backend.dirs.subs().join(format!("{}.stretch.wav", episode.id));
     let api = openrouter::api_address();
-    heard::stretches(probe.duration)
+    let pieces: Vec<(f64, Vec<u8>)> = {
+        let _turn = turn();
+        heard::stretches(probe.duration)
+            .into_iter()
+            .map(|(start, length)| {
+                media::write_wav(ffmpeg, source, track, start, length, &piece)?;
+                let wav = std::fs::read(&piece);
+                let _ = std::fs::remove_file(&piece);
+                Ok((start, wav.context("reading a piece of the audio")?))
+            })
+            .collect::<Result<_>>()?
+    };
+    pieces
         .into_iter()
-        .map(|(start, length)| {
-            media::write_wav(ffmpeg, source, track, start, length, &piece)?;
-            let wav = std::fs::read(&piece);
-            let _ = std::fs::remove_file(&piece);
-            let mut lines = openrouter::transcribe(&api, key, model, &wav.context("reading a piece of the audio")?)?;
+        .map(|(start, wav)| {
+            let mut lines = openrouter::transcribe(&api, key, model, &wav)?;
             for line in &mut lines {
                 line.start += start;
                 line.end += start;
@@ -2311,11 +2322,11 @@ fn find_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &Path, 
     if best.as_ref().is_none_or(|b| b.synced.score < GOOD_SYNC) {
         if let Some((key, model)) = openrouter::chosen(backend) {
             let maker = openrouter::maker(&model);
-            let heard = {
-                let _turn = reading();
+            let heard = listen(backend, ffmpeg, &probe, &key, &model, episode, || {
+                let turn = reading();
                 update_task(slot, Some(&format!("{maker} is listening to {} {}", show.title, episode.number)), 0.0);
-                listen(backend, ffmpeg, &probe, &key, &model, episode)
-            };
+                turn
+            });
             if let Some((lines, placed, name)) = heard.ok().and_then(|heard| place_by_words(&tried, &heard)) {
                 let detail = format!("shifted {:+.1} s · matched to what {maker} heard", placed.shift);
                 let score = (placed.agreeing as f64 / placed.heard as f64).max(GOOD_SYNC);

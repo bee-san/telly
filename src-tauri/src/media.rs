@@ -296,10 +296,11 @@ pub fn ending(probe: &Probe) -> Option<(f64, f64)> {
 }
 
 /// The opening, as (start, end): a chapter called that, else the chapter in
-/// the first 30% of the episode that's nearest an opening's 90 seconds.
+/// the first 30% of the episode that's nearest an opening's 90 seconds, in a
+/// rip with at least three chapters.
 pub fn opening(probe: &Probe) -> Option<(f64, f64)> {
     let d = probe.duration;
-    if d <= 0.0 || probe.chapters.len() < 3 {
+    if d <= 0.0 {
         return None;
     }
     let named = probe.chapters.iter().find(|c| {
@@ -308,6 +309,9 @@ pub fn opening(probe: &Probe) -> Option<(f64, f64)> {
     });
     named
         .or_else(|| {
+            if probe.chapters.len() < 3 {
+                return None;
+            }
             probe
                 .chapters
                 .iter()
@@ -963,6 +967,14 @@ mod tests {
         assert_eq!(opening(&parse_probe(&j)), Some((130.0, 220.0)));
         j["chapters"][0]["tags"]["title"] = json!("Opening");
         assert_eq!(opening(&parse_probe(&j)), Some((0.0, 130.0)));
+        // Named, it's the opening in a rip of two chapters too; unnamed, it isn't.
+        j["chapters"] = json!([
+            {"start_time": "0.0", "end_time": "90.0", "tags": {"title": "Opening"}},
+            {"start_time": "90.0", "end_time": "1421.5", "tags": {"title": "Episode"}}
+        ]);
+        assert_eq!(opening(&parse_probe(&j)), Some((0.0, 90.0)));
+        j["chapters"][0]["tags"]["title"] = json!("Chapter 01");
+        assert_eq!(opening(&parse_probe(&j)), None);
     }
 
     #[test]

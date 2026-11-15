@@ -139,7 +139,8 @@ pub fn kept_in(graph: &Graph, shows: &[Show], movies: bool) -> Option<String> {
 /// Your libraries (setting libraries). The first time they're asked for,
 /// they're made, and saved: a Series and a Movies library in the folders
 /// Telly had for them before, else where your series and films are kept
-/// already (`kept_in`).
+/// already (`kept_in`). While neither can be told yet (nothing in the
+/// library has a place), nothing is saved, so they're made once it can.
 pub fn libraries(backend: &Backend) -> Result<Vec<Library>> {
     if let Some(kept) = backend.db.setting("libraries")? {
         return Ok(serde_json::from_value(kept)?);
@@ -154,6 +155,11 @@ pub fn libraries(backend: &Backend) -> Result<Vec<Library>> {
         if !folder.is_empty() {
             made.push(Library { name: name.into(), kind: kind.into(), folders: vec![folder.clone()], downloads: folder });
         }
+    }
+    if made.is_empty() {
+        return Ok(made);
+    }
+    for key in ["library.series", "library.movies"] {
         backend.db.set_setting(key, &serde_json::Value::Null)?;
     }
     backend.db.set_setting("libraries", &json!(made))?;
@@ -372,6 +378,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("telly-libraries-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let backend = Backend::open(Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        // Asked before anything in the library has a place (Settings opened first): none yet, and none kept.
+        assert_eq!(libraries(&backend).unwrap(), vec![]);
+        assert_eq!(backend.db.setting("libraries").unwrap(), None);
         let film = NewShow { folder: r"D:\Films\Paprika".into(), title: "Paprika".into(), anilist_id: Some(1), format: "MOVIE".into(), ..Default::default() };
         backend.db.add_show(&film).unwrap();
         // The series folder was set to the downloads folder: there's no series library.

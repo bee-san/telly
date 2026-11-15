@@ -172,7 +172,11 @@ pub fn ask(question: &Ask, mut on_text: impl FnMut(&str), stop: &Arc<AtomicBool>
                     put_back(session);
                     return Ok(answer);
                 }
-                Err(e) if stop.load(Ordering::SeqCst) => return Err(e),
+                // Stopped (another line was asked about): its session ended, so one starts for the next.
+                Err(e) if stop.load(Ordering::SeqCst) => {
+                    warm_up(question.model, question.effort);
+                    return Err(e);
+                }
                 // The session broke before answering: ask in a Claude Code of its own instead.
                 Err(_) => {}
             }

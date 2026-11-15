@@ -3,7 +3,8 @@
 //! on your list there ("liked X, try Y", voted up or down). Telly asks about
 //! each show by its AniList ID, weighs each show's votes by how much you liked
 //! it (your score and status on your list, or else how much of it you've
-//! watched) and adds them up, and leaves out what you have or have started.
+//! watched, and less the longer ago that was) and adds them up, and leaves
+//! out what you have or have started.
 //! The seasons and movies you don't have of an anime you do are picks too,
 //! by how much you liked the parts you have (series.rs has which they are).
 //!
@@ -36,6 +37,8 @@ const KEPT_MS: i64 = 7 * 24 * 3600 * 1000;
 const FEW_VOTES: f64 = 50.0;
 /// A show started and not finished, with nothing of it watched for 30 days, was left.
 const LEFT_MS: i64 = 30 * 24 * 3600 * 1000;
+/// A year (unix ms).
+const YEAR_MS: i64 = 365 * 24 * 3600 * 1000;
 /// What a kept answer has in it: one kept by an older Telly, which didn't
 /// note sequels and what isn't out yet, is asked for again.
 const KEPT_VERSION: u32 = 1;
@@ -238,6 +241,17 @@ fn liking(episodes: usize, watched: usize, last_watched: Option<i64>, now: i64) 
     }
 }
 
+/// Tastes change: how much what you watched at `at` (unix ms, 0 when it isn't
+/// known) still says about you. Whole for the last year, then half as much for
+/// every two years more, down to a quarter.
+fn freshness(at: i64, now: i64) -> f64 {
+    if at <= 0 {
+        return 1.0;
+    }
+    let years = (now - at) as f64 / YEAR_MS as f64;
+    0.5f64.powf((years - 1.0).max(0.0) / 2.0).max(0.25)
+}
+
 /// How much your liking an anime on your AniList list counts for, from its
 /// status and your score, or None when the list doesn't say: dropped -1;
 /// scored, 2 for your average score and 1 more or less for each 10 points
@@ -258,7 +272,7 @@ fn list_liking(entry: &Listed, average_score: f64) -> Option<f64> {
 /// The picks, best first. Each series in the library or on your list has one
 /// say on a pick: the biggest any of its entries gives it, which is the square
 /// root of the pick's share of that entry's votes, times how much your liking
-/// the entry counts. So a little-known show's favourite counts as much as a
+/// the entry counts (less the longer ago you watched it). So a little-known show's favourite counts as much as a
 /// famous show's, and a pick liked from many shows still beats one show's
 /// favourite. A show you dropped or scored low says against its picks, and a
 /// pick it says more against than the rest say for is left out. Also left
@@ -280,15 +294,20 @@ pub fn rank(owned: &[Owned], listed: &[Listed], sources: &[Source], hidden: &Has
         let show = watching.entry(o.anilist_id).or_insert((0, 0, None, o.title.as_str()));
         *show = (show.0 + o.episodes, show.1 + o.watched, show.2.max(o.last_watched), show.3);
     }
-    // How much your liking each show counts for, and its title: as your list says, or else by how much of it you've watched.
-    let mut shows: HashMap<i64, (f64, &str)> =
-        watching.into_iter().map(|(id, (episodes, watched, last_watched, title))| (id, (liking(episodes, watched, last_watched, now), title))).collect();
+    let last_watched: HashMap<i64, i64> = watching.iter().filter_map(|(&id, show)| Some((id, show.2?))).collect();
+    // How much your liking each show counts for, and its title: as your list says, or else by how much of it you've
+    // watched; and less the longer ago you watched it.
+    let mut shows: HashMap<i64, (f64, &str)> = watching
+        .into_iter()
+        .map(|(id, (episodes, watched, last_watched, title))| (id, (liking(episodes, watched, last_watched, now) * freshness(last_watched.unwrap_or(0), now), title)))
+        .collect();
     let scores: Vec<f64> = listed.iter().map(|l| l.score).filter(|&s| s > 0.0).collect();
     let average_score = scores.iter().sum::<f64>() / scores.len().max(1) as f64;
     for entry in listed {
         if let Some(liking) = list_liking(entry, average_score) {
             let title = shows.get(&entry.id).map_or(entry.title.as_str(), |s| s.1);
-            shows.insert(entry.id, (liking, title));
+            let at = entry.at.max(last_watched.get(&entry.id).copied().unwrap_or(0));
+            shows.insert(entry.id, (liking * freshness(at, now), title));
         }
     }
     let mut series: HashMap<i64, i64> = shows.keys().map(|&id| (id, id)).collect();
@@ -782,7 +801,7 @@ mod tests {
         // Two seasons added as one show: the second may be in it, so nothing more of the anime is offered.
         let one_show = [Owned { entry_episodes: Some(13), ..owned(20832, "Overlord", 26, 26) }];
         assert_eq!(ids(&rank(&one_show, &[], &[], &HashSet::new(), NOW, &graph)), [0i64; 0]);
-        let dropped = [Listed { id: 20832, title: "Overlord".into(), status: "DROPPED".into(), score: 0.0, progress: 3, episodes: Some(13) }];
+        let dropped = [Listed { id: 20832, title: "Overlord".into(), status: "DROPPED".into(), score: 0.0, progress: 3, episodes: Some(13), at: 0 }];
         assert_eq!(ids(&rank(&[], &dropped, &[], &HashSet::new(), NOW, &graph)), [0i64; 0]);
     }
 
@@ -837,8 +856,24 @@ mod tests {
         assert_eq!(ids(&rank(&unwatched, &[], &answers, &HashSet::new(), NOW, &Graph::default())), [200, 100]);
     }
 
+    #[test]
+    fn what_you_watched_long_ago_counts_less() {
+        assert_eq!([0, 6, 12, 36, 60, 120].map(|months| freshness(NOW - months * YEAR_MS / 12, NOW)), [1.0, 1.0, 1.0, 0.5, 0.25, 0.25]);
+        assert_eq!(freshness(0, NOW), 1.0);
+        // Two shows finished, one this week and one five years ago: the recent one's favourite leads.
+        let old = Owned { last_watched: Some(NOW - 5 * YEAR_MS), ..owned(1, "Old", 12, 12) };
+        let answers = [source(1, &[], &[(100, 300)]), source(2, &[], &[(200, 100)])];
+        let library = [old, owned(2, "New", 12, 12)];
+        assert_eq!(ids(&rank(&library, &[], &answers, &HashSet::new(), NOW, &Graph::default())), [200, 100]);
+        // On your list, it's when you finished it, or watched it last in the library if that was later.
+        let list = [Listed { at: NOW - 5 * YEAR_MS, ..listed(1, "Old", "COMPLETED", 0.0) }, listed(2, "New", "COMPLETED", 0.0)];
+        assert_eq!(ids(&rank(&[], &list, &answers, &HashSet::new(), NOW, &Graph::default())), [200, 100]);
+        let rewatched = [owned(1, "Old", 12, 12)];
+        assert_eq!(ids(&rank(&rewatched, &list, &answers, &HashSet::new(), NOW, &Graph::default())), [100, 200]);
+    }
+
     fn listed(id: i64, title: &str, status: &str, score: f64) -> Listed {
-        Listed { id, title: title.into(), status: status.into(), score, progress: 0, episodes: Some(12) }
+        Listed { id, title: title.into(), status: status.into(), score, progress: 0, episodes: Some(12), at: 0 }
     }
 
     #[test]

@@ -216,6 +216,11 @@ pub struct Listed {
     pub score: f64,
     pub progress: i64,
     pub episodes: Option<i64>,
+    /// When it was last watched, as near as the list says (unix ms; 0 when it doesn't):
+    /// when the user finished it, or last changed the entry of one they're watching
+    /// or one with no finishing date.
+    #[serde(default)]
+    pub at: i64,
 }
 
 /// The anime on the user's list that they've started (all but those they only
@@ -224,7 +229,7 @@ pub fn list(token: &str) -> Result<Vec<Listed>> {
     let viewer = query_as("query { Viewer { id } }", json!({}), Some(token))?;
     let user = viewer.pointer("/data/Viewer/id").and_then(Value::as_i64).ok_or_else(|| anyhow!("AniList didn’t say who this token is for"))?;
     let q = "query ($user: Int, $chunk: Int) { MediaListCollection(userId: $user, type: ANIME, status_not: PLANNING, chunk: $chunk, perChunk: 500) {
-      hasNextChunk lists { entries { mediaId status score(format: POINT_100) progress media { id episodes title { romaji english native } } } } } }";
+      hasNextChunk lists { entries { mediaId status score(format: POINT_100) progress updatedAt completedAt { year month day } media { id episodes title { romaji english native } } } } } }";
     let mut found = Vec::new();
     for chunk in 1.. {
         let answer = query_as(q, json!({ "user": user, "chunk": chunk }), Some(token))?;
@@ -246,16 +251,34 @@ fn listed_in(answer: &Value) -> Vec<Listed> {
         .flat_map(|list| list.get("entries").and_then(Value::as_array).into_iter().flatten())
         .filter_map(|e| {
             let anime = e.get("media").and_then(Anime::from_api);
+            let status = e.get("status").and_then(Value::as_str).unwrap_or("").to_string();
+            let updated = e.get("updatedAt").and_then(Value::as_i64).map_or(0, |s| s * 1000);
+            let date = |part: &str| e.pointer(&format!("/completedAt/{part}")).and_then(Value::as_i64);
+            let completed = date("year").map(|year| day_ms(year, date("month").unwrap_or(1), date("day").unwrap_or(1)));
             Some(Listed {
                 id: e.get("mediaId")?.as_i64()?,
                 title: anime.as_ref().map(Anime::short_title).unwrap_or_default(),
-                status: e.get("status").and_then(Value::as_str).unwrap_or("").to_string(),
+                // One being watched (again) is as recent as its last change; a list moved from elsewhere
+                // was changed all at once, so the date it was finished says more when there is one.
+                at: if matches!(status.as_str(), "CURRENT" | "REPEATING") { updated } else { completed.unwrap_or(updated) },
+                status,
                 score: e.get("score").and_then(Value::as_f64).unwrap_or(0.0),
                 progress: e.get("progress").and_then(Value::as_i64).unwrap_or(0),
                 episodes: anime.and_then(|a| a.episodes),
             })
         })
         .collect()
+}
+
+/// Midnight at the start of a day, in UTC (unix ms).
+fn day_ms(year: i64, month: i64, day: i64) -> i64 {
+    // Howard Hinnant's days-from-civil.
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    (era * 146_097 + doe - 719_468) * 86_400_000
 }
 
 /// An anime on the user's list: its episode count (if AniList knows it),
@@ -618,15 +641,17 @@ mod tests {
     fn reads_the_users_list() {
         let answer = json!({ "data": { "MediaListCollection": { "hasNextChunk": false, "lists": [
             { "entries": [
-                { "mediaId": 154587, "status": "COMPLETED", "score": 90, "progress": 28,
+                { "mediaId": 154587, "status": "COMPLETED", "score": 90, "progress": 28, "updatedAt": 1_790_000_000, "completedAt": { "year": 2024, "month": 3, "day": 22 },
                   "media": { "id": 154587, "episodes": 28, "title": { "romaji": "Sousou no Frieren", "english": "Frieren: Beyond Journey’s End", "native": "葬送のフリーレン" } } },
-                { "mediaId": 21, "status": "CURRENT", "score": 0, "progress": 400, "media": { "id": 21, "episodes": null, "title": { "romaji": "ONE PIECE" } } },
+                { "mediaId": 21, "status": "CURRENT", "score": 0, "progress": 400, "updatedAt": 1_790_000_000, "completedAt": { "year": 2020, "month": null, "day": null }, "media": { "id": 21, "episodes": null, "title": { "romaji": "ONE PIECE" } } },
             ] },
             { "entries": [{ "mediaId": 30, "status": "DROPPED", "score": 35.5, "progress": 3, "media": null }] },
         ] } } });
-        let frieren = Listed { id: 154587, title: "Sousou no Frieren".into(), status: "COMPLETED".into(), score: 90.0, progress: 28, episodes: Some(28) };
-        let one_piece = Listed { id: 21, title: "ONE PIECE".into(), status: "CURRENT".into(), score: 0.0, progress: 400, episodes: None };
-        let dropped = Listed { id: 30, title: "".into(), status: "DROPPED".into(), score: 35.5, progress: 3, episodes: None };
+        let frieren = Listed { id: 154587, title: "Sousou no Frieren".into(), status: "COMPLETED".into(), score: 90.0, progress: 28, episodes: Some(28), at: 1_711_065_600_000 };
+        let one_piece = Listed { id: 21, title: "ONE PIECE".into(), status: "CURRENT".into(), score: 0.0, progress: 400, episodes: None, at: 1_790_000_000_000 };
+        let dropped = Listed { id: 30, title: "".into(), status: "DROPPED".into(), score: 35.5, progress: 3, episodes: None, at: 0 };
         assert_eq!(listed_in(&answer), [frieren, one_piece, dropped]);
+        // Finished in a year AniList knows only the year of.
+        assert_eq!(day_ms(2020, 1, 1), 1_577_836_800_000);
     }
 }

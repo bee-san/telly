@@ -19,7 +19,7 @@
 //! logs nothing either: better nothing than the wrong show.
 //!
 //! A copy of the anime on your list (all but those you only plan to watch),
-//! with each one's status and your score, is kept in anilist-list.json for
+//! with each one's status, your score and when you finished it, is kept in anilist-list.json for
 //! Recommended to go on and to leave out. It's fetched again at start-up, on
 //! signing in, and after Telly updates the list.
 //!
@@ -439,7 +439,7 @@ mod tests {
         // An older Telly kept only the anime's IDs.
         std::fs::write(list_path(&backend), b"[21, 30]").unwrap();
         assert_eq!(listed(&backend), [Listed { id: 21, ..Default::default() }, Listed { id: 30, ..Default::default() }]);
-        let kept = [Listed { id: 21, title: "ONE PIECE".into(), status: "CURRENT".into(), score: 80.0, progress: 400, episodes: None }];
+        let kept = [Listed { id: 21, title: "ONE PIECE".into(), status: "CURRENT".into(), score: 80.0, progress: 400, episodes: None, at: 0 }];
         std::fs::write(list_path(&backend), serde_json::to_vec(&kept).unwrap()).unwrap();
         assert_eq!(listed(&backend), kept);
         let _ = std::fs::remove_dir_all(&dir);

@@ -220,7 +220,8 @@ pub fn show(backend: &Backend, id: i64, folder: &str, apply: bool) -> Result<Sho
 /// Finds the rips of every show whose folder is below `from` below `to`
 /// instead ("everything in D:\Anime is now in E:\Anime", in Settings). With
 /// `apply`, each show any of whose episodes were found is pointed there, all
-/// in one go; without, nothing changes.
+/// in one go, and so are your libraries' folders and the downloads folder
+/// that were below `from`; without, nothing changes.
 pub fn library(backend: &Backend, from: &str, to: &str, apply: bool) -> Result<Vec<ShowMove>> {
     let (from, to) = (from.trim(), a_folder(to)?);
     if from.is_empty() {
@@ -238,8 +239,34 @@ pub fn library(backend: &Backend, from: &str, to: &str, apply: bool) -> Result<V
     moves.sort_by(|a, b| a.from.cmp(&b.from));
     if apply {
         relink(backend, &moves)?;
+        move_folders(backend, from, &to)?;
     }
     Ok(moves)
+}
+
+/// Your libraries' folders, and the folder new shows are downloaded to,
+/// that were below `from`: below `to` now, as the rips there are.
+fn move_folders(backend: &Backend, from: &str, to: &str) -> Result<()> {
+    let moved = |folder: &str| below(from, folder).map(|rest| join(to, &rest));
+    if backend.db.setting("libraries")?.is_some() {
+        let mut libraries = crate::library::libraries(backend)?;
+        let mut changed = false;
+        for l in &mut libraries {
+            for f in l.folders.iter_mut().chain(std::iter::once(&mut l.downloads)) {
+                if let Some(now) = moved(f) {
+                    *f = now;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            backend.db.set_setting("libraries", &serde_json::to_value(&libraries)?)?;
+        }
+    }
+    if let Some(now) = moved(&backend.db.setting_str("downloads.folder")) {
+        backend.db.set_setting("downloads.folder", &serde_json::json!(now))?;
+    }
+    Ok(())
 }
 
 /// Points shows at the folders they're in now and their episodes at where
@@ -451,7 +478,15 @@ mod tests {
         assert_eq!(shows, [(a, 2, 0), (b, 1, 0)]);
         assert_eq!(looked[0].to, text(&dir.join("E").join("Anime").join("A")));
         assert_eq!(backend.db.show(a).unwrap().unwrap().folder, text(&dir.join("D").join("Anime").join("A")));
+        // A library and the downloads folder in there go with them.
+        let series = text(&dir.join("D").join("Anime").join("Series"));
+        let lib = crate::library::Library { name: "Series".into(), kind: "series".into(), folders: vec![series.clone()], downloads: series };
+        backend.db.set_setting("libraries", &serde_json::json!([lib])).unwrap();
+        backend.db.set_setting("downloads.folder", &serde_json::json!(text(&dir.join("D").join("Anime").join("New")))).unwrap();
         library(&backend, &from, &to, true).unwrap();
+        let moved = crate::library::libraries(&backend).unwrap();
+        assert_eq!((moved[0].folders[0].as_str(), moved[0].downloads.as_str()), (text(&dir.join("E").join("Anime").join("Series")).as_str(), text(&dir.join("E").join("Anime").join("Series")).as_str()));
+        assert_eq!(backend.db.setting_str("downloads.folder"), text(&dir.join("E").join("Anime").join("New")));
         assert_eq!(backend.db.show(a).unwrap().unwrap().folder, looked[0].to);
         assert_eq!(backend.db.episodes(b).unwrap()[0].path, text(&dir.join("E").join("Anime").join("B").join("Show - 01.mkv")));
         assert_eq!(backend.db.show(c).unwrap().unwrap().folder, text(&dir.join("D").join("Anime2").join("C")));

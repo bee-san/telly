@@ -1718,6 +1718,8 @@ impl Backend {
                 p.from = Some(a.position);
             }
             p.position = a.position;
+            // Played up to here (it was playing, or it is): how far you've got in the episode.
+            let played_to = a.playing || p.playing;
             p.playing = a.playing;
             p.at = now;
             if a.playing {
@@ -1730,6 +1732,9 @@ impl Backend {
             }
             if now.duration_since(p.saved_at) >= Duration::from_secs(5) || !a.playing {
                 self.db.save_position(a.id, a.position)?;
+                if played_to {
+                    self.db.reach(a.id, a.position)?;
+                }
                 p.saved_at = now;
             }
             if at_end && (!p.reached_end || episode.watched_at.is_none()) {

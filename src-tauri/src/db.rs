@@ -181,6 +181,11 @@ CREATE TABLE removed_shows (
   card    TEXT NOT NULL, -- its card as it was (JSON), for the shows finished
   scores  TEXT NOT NULL  -- [[episode number, uses, known]], for the share known in what you watched
 );
+", "
+-- How far into an episode you've ever played it (seconds), so Previously on
+-- tells what's after its ending (an after-credits scene, the next episode's
+-- preview) only once you've played that far.
+ALTER TABLE episodes ADD COLUMN reached REAL NOT NULL DEFAULT 0;
 "];
 
 /// How many migrations this Telly has: a library of a higher version is from a newer Telly.
@@ -865,6 +870,17 @@ impl Db {
     pub fn set_nudge(&self, id: i64, nudge_ms: i64) -> Result<()> {
         self.conn()?.execute("UPDATE episodes SET subs_nudge_ms = ?2 WHERE id = ?1", params![id, nudge_ms])?;
         Ok(())
+    }
+
+    /// You played an episode to `position`: how far you've ever got in it goes up to there.
+    pub fn reach(&self, id: i64, position: f64) -> Result<()> {
+        self.conn()?.execute("UPDATE episodes SET reached = MAX(reached, ?2) WHERE id = ?1", params![id, position])?;
+        Ok(())
+    }
+
+    /// How far into an episode you've ever played it, in seconds.
+    pub fn reached(&self, id: i64) -> Result<f64> {
+        Ok(self.conn()?.query_row("SELECT reached FROM episodes WHERE id = ?1", params![id], |r| r.get(0)).optional()?.unwrap_or(0.0))
     }
 
     pub fn save_position(&self, id: i64, position: f64) -> Result<()> {

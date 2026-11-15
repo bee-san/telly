@@ -751,7 +751,7 @@ fn source(backend: &Backend, episode: &Episode, at: Option<f64>) -> Result<Sourc
         if source.earlier.is_some() || source.episodes.len() >= RECAP_EPISODES {
             break;
         }
-        let lines = jobs::read_lines(backend, e.id);
+        let lines = seen_lines(backend, e);
         if tells(&lines) {
             source.episodes.push((e.clone(), lines));
             source.earlier = kept(e.id);
@@ -778,7 +778,7 @@ fn season_before(backend: &Backend, episode: &Episode) -> Result<Source> {
         if source.earlier.is_some() || source.episodes.len() >= RECAP_EPISODES {
             break;
         }
-        let lines = jobs::read_lines(backend, e.id);
+        let lines = seen_lines(backend, e);
         if tells(&lines) {
             source.episodes.push((e.clone(), lines));
             source.earlier = if Some(e.id) == first { None } else { kept(backend, e.id) };
@@ -791,6 +791,27 @@ fn season_before(backend: &Backend, episode: &Episode) -> Result<Source> {
         source.of = Some(before);
     }
     Ok(source)
+}
+
+/// An earlier episode's lines, as far as you've seen it: up to where its
+/// ending starts, unless you've played on past the ending's end. What comes
+/// after the credits (a last scene, the next episode's preview) is told only
+/// once you've played it, so an ending skipped or closed on spoils nothing.
+fn seen_lines(backend: &Backend, episode: &Episode) -> Vec<Line> {
+    let mut lines = jobs::read_lines(backend, episode.id);
+    let duration = episode.duration;
+    let aniskip = backend.db.ending(episode.id).ok().flatten();
+    let Some(start) = episode.ending_at.or(aniskip.map(|e| e.0)).filter(|s| duration > 0.0 && *s > duration * 0.5 && *s < duration) else {
+        return lines;
+    };
+    let end = aniskip.map(|e| e.1).filter(|e| *e > start && *e <= duration).unwrap_or(duration);
+    if backend.db.reached(episode.id).unwrap_or(0.0) >= end - 3.0 {
+        return lines;
+    }
+    let nudge = episode.subs_nudge_ms as f64 / 1000.0;
+    // Cut where the ending starts, as a recap up to where you stopped is: line numbers stay as they were.
+    lines.truncate(lines.iter().take_while(|l| l.start + nudge < start).count());
+    lines
 }
 
 /// How `about` starts for a recap that tells the whole story so far.
@@ -1308,6 +1329,27 @@ mod tests {
             jobs::write_lines(&backend, e.id, lines).unwrap();
         }
         (backend, episodes, dir)
+    }
+
+    #[test]
+    fn what_comes_after_the_ending_is_told_only_once_you_ve_played_past_it() {
+        // Lines all through a 1400 s episode, the last ones after the credits (1260–1350 s).
+        let lines: Vec<Line> = (0..46).map(|i| line(i as f64 * 30.0, i as f64 * 30.0 + 2.0, &format!("台詞{i}"))).collect();
+        let (backend, episodes, dir) = library("after-credits", 2, &lines);
+        let told = |backend: &Backend| source(backend, &episodes[1], None).unwrap().episodes[0].1.len();
+        // No ending known: every line.
+        assert_eq!(told(&backend), 46);
+        // AniSkip's ending at 1260–1350: closed at the end card, the scene after it isn't told.
+        let skips = crate::aniskip::Skips { opening: None, ending: Some((1260.0, 1350.0)) };
+        backend.db.set_show_anilist(episodes[0].show_id, &crate::db::NewShow { title: "Show".into(), anilist_id: Some(5), ..Default::default() }).unwrap();
+        assert!(backend.db.set_opening_if(episodes[0].id, 1, 5, skips).unwrap());
+        backend.db.reach(episodes[0].id, 1261.0).unwrap();
+        assert_eq!(told(&backend), 42);
+        // Played on past the credits: it is.
+        backend.db.reach(episodes[0].id, 1380.0).unwrap();
+        assert_eq!(told(&backend), 46);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

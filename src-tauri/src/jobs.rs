@@ -551,7 +551,9 @@ fn take(backend: &Backend, kind: &str) -> Option<(Show, Episode, usize)> {
             continue;
         }
         let claimed = if kind == "subs" { backend.db.claim_subs(episode.id) } else { backend.db.claim_media(episode.id) };
-        if claimed.unwrap_or(false) {
+        // The library can't be written (the disk is full): looked at again later, not over and over now.
+        let Ok(claimed) = claimed else { return None };
+        if claimed {
             if kind == "media" {
                 backend.jobs.asked.lock().unwrap_or_else(|e| e.into_inner()).remove(&episode.id);
             }

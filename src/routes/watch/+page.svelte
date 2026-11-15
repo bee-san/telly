@@ -1946,7 +1946,7 @@
   {#if ended && view}
     <div class="endov">
       <div class="end-card">
-        <span class="small">Episode {view.episode.number} done{sat.seconds > 30 ? ` · logged to Tidepool` : ""}</span>
+        <span class="small">{view.movie ? view.show.title : `Episode ${view.episode.number}`} done{sat.seconds > 30 ? ` · logged to Tidepool` : ""}</span>
         <h3>{view.next ? `Next: ${nextName(view.next)}` : `That’s the last episode here`}</h3>
         <div class="end-stats">
           <div><b>{Math.round(sat.seconds / 60)}</b><span>minutes</span></div>

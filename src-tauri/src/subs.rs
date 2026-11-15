@@ -210,7 +210,8 @@ fn parse_srt_like(text: &str) -> Vec<Line> {
             if let (Some(s), Some(e)) = (timestamp(&c[1]), timestamp(&c[2])) {
                 current = Some((s, e, Vec::new()));
             }
-        } else if raw.trim().is_empty() {
+        } else if raw.trim_matches(|c: char| c.is_ascii_whitespace()).is_empty() {
+            // (A line of a full-width space, "　", is part of the cue.)
             if let Some((s, e, body)) = current.take() {
                 lines.extend(make_line(s, e, &body.join("\n"), false));
             }
@@ -276,7 +277,7 @@ fn sign_style(style: &str) -> bool {
 
 fn parse_ass(text: &str) -> Vec<Line> {
     // (start, end, text, a sign by its style or effect, placed with \pos or \move)
-    let mut events: Vec<(f64, f64, &str, bool, bool)> = Vec::new();
+    let mut events: Vec<(f64, f64, std::borrow::Cow<str>, bool, bool)> = Vec::new();
     let mut in_events = false;
     let mut format: Vec<String> = Vec::new();
     for raw in text.lines() {
@@ -303,6 +304,9 @@ fn parse_ass(text: &str) -> Vec<Line> {
         let get = |name: &str| format.iter().position(|f| f == name).and_then(|i| fields.get(i)).map(|s| s.trim()).unwrap_or("");
         let (Some(start), Some(end)) = (timestamp(get("start")), timestamp(get("end"))) else { continue };
         let body = format.iter().position(|f| f == "text").and_then(|i| fields.get(i)).copied().unwrap_or("");
+        // A drawing ({\p1}m 0 0 l 100 0 …) is a shape on screen, not words.
+        static DRAWING: OnceLock<Regex> = OnceLock::new();
+        let body = re(&DRAWING, r"\{[^}]*\\p[1-9][^}]*\}[^{]*").replace_all(body, "");
         let named = sign_style(get("style")) || sign_style(get("effect"));
         let placed = body.contains("\\pos(") || body.contains("\\move(");
         events.push((start, end, body, named, placed));
@@ -316,7 +320,7 @@ fn parse_ass(text: &str) -> Vec<Line> {
     let placing_marks_signs = placed * 2 <= unnamed;
     events
         .into_iter()
-        .filter_map(|(start, end, body, named, placed)| make_line(start, end, body, named || (placed && placing_marks_signs)))
+        .filter_map(|(start, end, body, named, placed)| make_line(start, end, &body, named || (placed && placing_marks_signs)))
         .collect()
 }
 
@@ -407,6 +411,20 @@ mod tests {
         assert_eq!(lines[0].text, "もしもし\n元気？");
         assert!(!lines[0].sign);
         assert!(lines[1].sign && lines[2].sign);
+    }
+
+    #[test]
+    fn a_line_of_a_full_width_space_doesn_t_end_a_cue() {
+        let srt = "1\n00:00:01,000 --> 00:00:02,000\n\u{3000}\nこんにちは\n  \n2\n00:00:03,000 --> 00:00:04,000\nえっ？\n";
+        let lines = parse("ep.srt", srt.as_bytes()).unwrap();
+        assert_eq!(lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(), ["こんにちは", "えっ？"]);
+    }
+
+    #[test]
+    fn a_drawing_isn_t_read_as_words() {
+        let ass = "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\\p1}m 0 0 l 100 0 100 100 0 100{\\p0}\nDialogue: 0,0:00:04.00,0:00:06.00,Default,,0,0,0,,{\\c&H000000&\\p2}m 0 0 l 10 0{\\p0}元気？\nDialogue: 0,0:00:07.00,0:00:08.00,Default,,0,0,0,,{\\pos(10,10)\\pbo0}もしもし\n";
+        let lines = parse("ep.ass", ass.as_bytes()).unwrap();
+        assert_eq!(lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(), ["元気？", "もしもし"]);
     }
 
     #[test]

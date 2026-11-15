@@ -966,6 +966,16 @@ fn convert_video(backend: &Backend, ffmpeg: &Path, encoder: &str, show: &Show, e
         return Err(e);
     }
     std::fs::rename(&partial, &output).context("saving the converted video")?;
+    // Another copies folder was chosen while it converted (and the copies moved
+    // there): this one goes there too, rather than staying where Telly won't look.
+    let mut output = output;
+    let now = copy_path(backend, show.id, episode.id);
+    if now != output {
+        std::fs::create_dir_all(now.parent().expect("a folder"))?;
+        if std::fs::rename(&output, &now).is_ok() || (std::fs::copy(&output, &now).is_ok() && std::fs::remove_file(&output).is_ok()) {
+            output = now;
+        }
+    }
     // The seek bar's pictures of the copy, so the player needn't make them when it first plays.
     let _ = media::make_sheet(ffmpeg, &output, probe.duration, &sheet_path(backend, show.id, episode.id));
     backend.db.media_ready(episode.id, &output.to_string_lossy(), 0, audio as i64)?;

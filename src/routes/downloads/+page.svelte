@@ -1,7 +1,7 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import DownloadSheet from "$lib/DownloadSheet.svelte";
   import Icon from "$lib/Icon.svelte";
   import { call, callKept, errorText, inTauri, kept, setWindowTitle, type DownloadPlan, type DownloadsView, type NyaaFound, type Release, type ShowView } from "$lib/api";
@@ -12,10 +12,10 @@
   /** /downloads?show=<id> downloads into that show's folder; ?anilist=<id> downloads as
    *  that AniList entry, into its place in the library; ?q=<title> searches for it at
    *  once, and ?from=recommended goes back to Recommended. */
-  const showId = Number(page.url.searchParams.get("show")) || null;
-  const anilistId = Number(page.url.searchParams.get("anilist")) || null;
-  const asked = page.url.searchParams.get("q") ?? "";
-  const fromRecommended = page.url.searchParams.get("from") === "recommended";
+  const showId = $derived(Number(page.url.searchParams.get("show")) || null);
+  const anilistId = $derived(Number(page.url.searchParams.get("anilist")) || null);
+  const asked = $derived(page.url.searchParams.get("q") ?? "");
+  const fromRecommended = $derived(page.url.searchParams.get("from") === "recommended");
   let show = $state<{ id: number; title: string; folder: string } | null>(null);
   /** Where the AniList entry's download goes, and the libraries it could go in. */
   let plan = $state.raw<DownloadPlan | null>(null);
@@ -32,6 +32,8 @@
   let searching = $state(false);
   /** The search the results are for. */
   let searched = $state("");
+  /** Which search is the latest: an older one's answer, coming back after it, is let go. */
+  let searchRun = 0;
   /** The AniList entry the releases listed are: the one asked for, until something else is searched for. */
   const entry = $derived(anilistId && searched === asked.trim() ? anilistId : null);
   let searchError = $state("");
@@ -61,48 +63,69 @@
       timer = setTimeout(loop, busy ? 2500 : 8000);
     };
     loop();
-    if (showId) {
-      callKept<ShowView>("show", { id: showId })
-        .then((v) => {
-          show = { id: v.card.id, title: v.card.title, folder: v.card.folder };
-          q = v.card.titleRomaji || v.card.title;
-          search();
-        })
-        .catch((e) => (searchError = errorText(e)));
-    } else if (asked) {
-      q = asked;
-      search();
-    }
-    if (anilistId) placeEntry();
     return () => {
       stopped = true;
       clearTimeout(timer);
     };
   });
 
+  // Another anime searched for from the title bar keeps this page: what was
+  // found for the last one goes, and the new one is searched for.
+  $effect.pre(() => {
+    const [forShow, forEntry, words] = [showId, anilistId, asked];
+    untrack(() => {
+      show = null;
+      plan = null;
+      asking = null;
+      releases = [];
+      more = false;
+      searched = "";
+      searchError = "";
+      if (forShow) {
+        callKept<ShowView>("show", { id: forShow })
+          .then((v) => {
+            if (showId !== forShow) return;
+            show = { id: v.card.id, title: v.card.title, folder: v.card.folder };
+            q = v.card.titleRomaji || v.card.title;
+            search();
+          })
+          .catch((e) => (searchError = errorText(e)));
+      } else if (words) {
+        q = words;
+        search();
+      }
+      if (forEntry) placeEntry();
+    });
+  });
+
   /** Asks where the AniList entry's download goes: in its usual library, or `library`. */
   function placeEntry(library?: number) {
-    call<DownloadPlan>("placeDownload", { title: asked, anilistId, library: library ?? null })
-      .then((p) => (plan = p))
+    const [title, forEntry] = [asked, anilistId];
+    call<DownloadPlan>("placeDownload", { title, anilistId: forEntry, library: library ?? null })
+      .then((p) => {
+        if (anilistId === forEntry) plan = p;
+      })
       .catch(() => {});
   }
 
   async function search(next = false) {
     const query = q.trim();
     if (!query) return;
+    const run = ++searchRun;
     searching = true;
     searchError = "";
     const at = next ? pageNo + 1 : 1;
     try {
       const found = await call<NyaaFound>("searchNyaa", { q: query, category, trusted, sort, page: at });
+      if (run !== searchRun) return;
       releases = next ? [...releases, ...found.releases] : found.releases;
       more = found.more;
       pageNo = at;
       searched = query;
     } catch (e) {
-      searchError = errorText(e);
+      if (run === searchRun) searchError = errorText(e);
     } finally {
-      searching = false;
+      if (run === searchRun) searching = false;
     }
   }
 

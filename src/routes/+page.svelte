@@ -98,25 +98,43 @@
   /** Every anime, those in Currently watching too. One that's only movies (ten Pokémon films) is listed under Movies; one with a season under Series. */
   const listed = $derived(sorted(shows.filter((a) => kind === "all" || (kind === "movies") === a.parts.every((p) => p.movie))));
 
+  /** How long an anime stays in Recently added after its newest part was added. */
+  const RECENT_MS = 30 * 24 * 3600 * 1000;
+  /** How many anime Recently added holds at most. */
+  const RECENT_COUNT = 20;
+  /** The anime added in the last 30 days, the newest first. */
+  const recent = $derived(
+    shows
+      .filter((a) => addedOf(a) > Date.now() - RECENT_MS)
+      .sort((a, b) => addedOf(b) - addedOf(a))
+      .slice(0, RECENT_COUNT),
+  );
+
   /** Where an anime's name leads: its one show's page, or its own page of seasons and movies. */
   const pageOf = (a: AnimeCard) => (a.parts.length === 1 ? `/show?id=${a.parts[0].id}` : `/anime?id=${a.id}`);
 
-  // The shows being watched sit in one row that scrolls sideways.
+  // The shows being watched, and those added lately, each sit in one row that scrolls sideways.
   let row = $state<HTMLElement | null>(null);
   let edges = $state({ start: true, end: true });
+  let recentRow = $state<HTMLElement | null>(null);
+  let recentEdges = $state({ start: true, end: true });
 
-  /** Whether the row has more to its left and to its right. */
+  /** Whether each row has more to its left and to its right. */
   function measure() {
-    if (row) edges = { start: row.scrollLeft <= 1, end: row.scrollLeft + row.clientWidth >= row.scrollWidth - 1 };
+    const of = (r: HTMLElement) => ({ start: r.scrollLeft <= 1, end: r.scrollLeft + r.clientWidth >= r.scrollWidth - 1 });
+    if (row) edges = of(row);
+    if (recentRow) recentEdges = of(recentRow);
   }
 
-  function slide(by: number) {
-    row?.scrollBy({ left: by * row.clientWidth, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  function slide(r: HTMLElement | null, by: number) {
+    r?.scrollBy({ left: by * r.clientWidth, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
   }
 
   $effect(() => {
     void watching.length;
+    void recent.length;
     void row;
+    void recentRow;
     measure();
   });
 
@@ -187,8 +205,8 @@
       <h2>Currently watching</h2><span>{count(watching.length)}</span>
       {#if !(edges.start && edges.end)}
         <span class="grow"></span>
-        <button type="button" class="pager" aria-label="Show previous" title="Show previous" disabled={edges.start} onclick={() => slide(-1)}><Icon name="back" /></button>
-        <button type="button" class="pager next" aria-label="Show next" title="Show next" disabled={edges.end} onclick={() => slide(1)}><Icon name="back" /></button>
+        <button type="button" class="pager" aria-label="Show previous" title="Show previous" disabled={edges.start} onclick={() => slide(row, -1)}><Icon name="back" /></button>
+        <button type="button" class="pager next" aria-label="Show next" title="Show next" disabled={edges.end} onclick={() => slide(row, 1)}><Icon name="back" /></button>
       {/if}
     </div>
     {#if watching.length}
@@ -218,6 +236,20 @@
       <p class="empty">Nothing in progress. Pick something from the library.</p>
     {/if}
 
+    {#if recent.length}
+      <div class="shelf-head">
+        <h2>Recently added</h2><span>In the last 30 days</span>
+        {#if !(recentEdges.start && recentEdges.end)}
+          <span class="grow"></span>
+          <button type="button" class="pager" aria-label="Show previous" title="Show previous" disabled={recentEdges.start} onclick={() => slide(recentRow, -1)}><Icon name="back" /></button>
+          <button type="button" class="pager next" aria-label="Show next" title="Show next" disabled={recentEdges.end} onclick={() => slide(recentRow, 1)}><Icon name="back" /></button>
+        {/if}
+      </div>
+      <div class="recent" bind:this={recentRow} onscroll={measure}>
+        {#each recent as a (a.id)}{@render libraryCard(a)}{/each}
+      </div>
+    {/if}
+
     <div class="shelf-head">
       <h2>Library</h2><span>{count(listed.length, kind)}</span>
       <span class="grow"></span>
@@ -238,29 +270,31 @@
     </div>
     {#if listed.length}
       <div class="libgrid">
-        {#each listed as a (a.id)}
-          {@const st = animeStatus(a)}
-          {@const s = a.parts[0]}
-          {@const known = knownOf(a)}
-          <div class="lcard card" role="presentation" onpointerenter={() => ahead(a)} oncontextmenu={(e) => context(e, a)}>
-            <button type="button" class="hit" onclick={() => open(a)} aria-label="{a.title}. {st.text}. {st.sub}"></button>
-            <Cover cover={s.cover} color={s.coverColor} native={a.native} title={a.title} caption={s.coverCaption} />
-            <a class="l-title title" href={pageOf(a)} title={a.title}>{a.title}</a>
-            <span class="l-status" class:ok={st.ok}>{st.text}</span>
-            <span class="l-sub" title={st.sub}>{st.sub}</span>
-            {#if a.parts.length > 1 && !st.ok}<span class="l-sub">{partsText(a.parts)}</span>{/if}
-            {#if known !== null}<span class="l-known">{Math.round(known)}% known</span>{/if}
-            {#if a.current.status === "getting" && a.current.next}
-              <span class="bar"><i style:width="{Math.round(a.current.next.mediaProgress * 100)}%"></i></span>
-            {/if}
-          </div>
-        {/each}
+        {#each listed as a (a.id)}{@render libraryCard(a)}{/each}
       </div>
     {:else}
       <p class="empty">{kind === "movies" ? "No movies here." : "No series here."}</p>
     {/if}
   {/if}
 </div>
+
+{#snippet libraryCard(a: AnimeCard)}
+  {@const st = animeStatus(a)}
+  {@const s = a.parts[0]}
+  {@const known = knownOf(a)}
+  <div class="lcard card" role="presentation" onpointerenter={() => ahead(a)} oncontextmenu={(e) => context(e, a)}>
+    <button type="button" class="hit" onclick={() => open(a)} aria-label="{a.title}. {st.text}. {st.sub}"></button>
+    <Cover cover={s.cover} color={s.coverColor} native={a.native} title={a.title} caption={s.coverCaption} />
+    <a class="l-title title" href={pageOf(a)} title={a.title}>{a.title}</a>
+    <span class="l-status" class:ok={st.ok}>{st.text}</span>
+    <span class="l-sub" title={st.sub}>{st.sub}</span>
+    {#if a.parts.length > 1 && !st.ok}<span class="l-sub">{partsText(a.parts)}</span>{/if}
+    {#if known !== null}<span class="l-known">{Math.round(known)}% known</span>{/if}
+    {#if a.current.status === "getting" && a.current.next}
+      <span class="bar"><i style:width="{Math.round(a.current.next.mediaProgress * 100)}%"></i></span>
+    {/if}
+  </div>
+{/snippet}
 
 {#if menu}
   {@const one = menu.anime.parts.length === 1}
@@ -319,6 +353,9 @@
   .w-next { font: 600 15.5px/1.3 var(--font-ui); margin-top: 8px; }
   .w-sub { font-size: 12.5px; color: var(--ink-2); }
   .w-body .bar { margin-top: 8px; }
+  /* One row of the Library's cards that scrolls sideways; the padding keeps a card's focus ring whole. */
+  .recent { display: grid; grid-auto-flow: column; grid-auto-columns: 150px; gap: 22px 20px; margin: -6px -6px 28px; padding: 6px; overflow-x: auto; scroll-snap-type: x proximity; scroll-padding-inline: 6px; scrollbar-width: none; }
+  .recent > :global(*) { scroll-snap-align: start; }
   .libgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 22px 20px; }
   .lcard { box-sizing: border-box; display: grid; gap: 3px; align-content: start; cursor: pointer; min-width: 0; }
   .lcard :global(.cv) { transition: transform .15s; }

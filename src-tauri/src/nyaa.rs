@@ -207,7 +207,7 @@ fn unescape(text: &str) -> String {
     while let Some(at) = rest.find('&') {
         out.push_str(&rest[..at]);
         rest = &rest[at..];
-        let Some(end) = rest[..rest.len().min(12)].find(';') else {
+        let Some(end) = rest.char_indices().take(12).find(|&(_, c)| c == ';').map(|(i, _)| i) else {
             out.push('&');
             rest = &rest[1..];
             continue;
@@ -351,5 +351,8 @@ mod tests {
         assert_eq!(size_bytes("980 KiB"), 1_003_520);
         assert_eq!(size_bytes("123 Bytes"), 123);
         assert_eq!(unescape("a &amp; b &#x27;c&#x27; &#34;d&#34; & e &unknown;"), "a & b 'c' \"d\" & e &unknown;");
+        // Chinese fansub groups joined by "&" right beside wide characters.
+        assert_eq!(unescape("[千夏字幕组&amp;喵萌奶茶屋] 葬送的芙莉莲"), "[千夏字幕组&喵萌奶茶屋] 葬送的芙莉莲");
+        assert_eq!(unescape("[豌豆字幕组&风之圣殿字幕组]"), "[豌豆字幕组&风之圣殿字幕组]");
     }
 }

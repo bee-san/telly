@@ -37,6 +37,8 @@ const KEPT_MS: i64 = 7 * 24 * 3600 * 1000;
 const FEW_VOTES: f64 = 50.0;
 /// A show started and not finished, with nothing of it watched for 30 days, was left.
 const LEFT_MS: i64 = 30 * 24 * 3600 * 1000;
+/// How much each further pick that one series says most for counts, of the one before it.
+const SPREAD: f64 = 0.75;
 /// A year (unix ms).
 const YEAR_MS: i64 = 365 * 24 * 3600 * 1000;
 /// What a kept answer has in it: one kept by an older Telly, which didn't
@@ -274,7 +276,9 @@ fn list_liking(entry: &Listed, average_score: f64) -> Option<f64> {
 /// root of the pick's share of that entry's votes, times how much your liking
 /// the entry counts (less the longer ago you watched it). So a little-known show's favourite counts as much as a
 /// famous show's, and a pick liked from many shows still beats one show's
-/// favourite. A show you dropped or scored low says against its picks, and a
+/// favourite. Each further pick that one series says most for counts three
+/// quarters as much as the one before it, so its recommendations don't fill
+/// the page. A show you dropped or scored low says against its picks, and a
 /// pick it says more against than the rest say for is left out. Also left
 /// out: what's in the library or on your list, what's hidden, sequels (not
 /// somewhere to start) and what isn't out yet.
@@ -345,27 +349,44 @@ pub fn rank(owned: &[Owned], listed: &[Listed], sources: &[Source], hidden: &Has
             }
         }
     }
-    let mut picks: Vec<Pick> = says
+    // Each pick, and the series that says most for it.
+    let mut led: Vec<(Pick, i64)> = says
         .into_values()
         .map(|(like, by_series)| {
-            let mut from: Vec<(f64, From)> = by_series.into_values().map(|(say, votes, title)| (say, From { title: title.to_string(), votes })).collect();
-            from.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.title.cmp(&b.1.title)));
-            Pick {
+            let mut from: Vec<(f64, i64, From)> =
+                by_series.into_iter().map(|(series, (say, votes, title))| (say, series, From { title: title.to_string(), votes })).collect();
+            from.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.2.title.cmp(&b.2.title)));
+            let lead = from.first().map_or(0, |f| f.1);
+            let pick = Pick {
                 title: like.anime.short_title(),
                 anime: like.anime.clone(),
                 genres: like.genres.clone(),
                 description: like.description.clone(),
                 score: from.iter().map(|f| f.0).sum(),
                 // Only the shows that say for it: it isn't recommended from one you dropped.
-                from: from.into_iter().filter(|f| f.0 > 0.0).map(|f| f.1).collect(),
+                from: from.into_iter().filter(|f| f.0 > 0.0).map(|f| f.2).collect(),
                 more_of: String::new(),
                 show: None,
                 unreleased: false,
                 banner: like.banner.clone(),
                 standing: String::new(),
-            }
+            };
+            (pick, lead)
         })
-        .filter(|p| p.score > 0.0)
+        .filter(|(p, _)| p.score > 0.0)
+        .collect();
+    // So one show's recommendations don't fill the page, each pick a series says most for counts
+    // three quarters as much as the one before it.
+    led.sort_by(|a, b| b.0.score.total_cmp(&a.0.score).then_with(|| a.0.anime.id.cmp(&b.0.anime.id)));
+    let mut before: HashMap<i64, i32> = HashMap::new();
+    let mut picks: Vec<Pick> = led
+        .into_iter()
+        .map(|(mut pick, lead)| {
+            let n = before.entry(lead).or_default();
+            pick.score *= SPREAD.powi(*n);
+            *n += 1;
+            pick
+        })
         .collect();
     // The seasons and movies you don't have of each anime you do.
     let holds_more: HashSet<i64> = owned.iter().filter(|o| o.entry_episodes.is_some_and(|e| o.episodes as i64 > e)).filter_map(|o| graph.root(o.anilist_id)).collect();
@@ -821,7 +842,19 @@ mod tests {
         let library = [owned(1, "Famous", 12, 0), owned(2, "Little known", 12, 0)];
         let answers = [source(1, &[], &[(100, 6000), (102, 5000), (101, 4000)]), source(2, &[], &[(200, 40), (201, 20)])];
         // 40 of 60 votes is about as big a share as 6,000 of 15,000, and a bigger one than 5,000 of them.
-        assert_eq!(ids(&rank(&library, &[], &answers, &HashSet::new(), NOW, &Graph::default())), [100, 200, 102, 101, 201]);
+        // Famous's third pick, at a little over half its say, falls behind Little known's second.
+        assert_eq!(ids(&rank(&library, &[], &answers, &HashSet::new(), NOW, &Graph::default())), [100, 200, 102, 201, 101]);
+    }
+
+    #[test]
+    fn one_show_s_recommendations_don_t_fill_the_page() {
+        // Seen to the end, Loved has ten picks of about 0.62 each; Curious, not started, two of about 0.3.
+        let loved: Vec<(i64, i64)> = (100..110).map(|id| (id, 100)).collect();
+        let answers = [source(1, &[], &loved), source(2, &[], &[(200, 60), (201, 60)])];
+        let library = [owned(1, "Loved", 12, 12), owned(2, "Curious", 12, 0)];
+        let picks = rank(&library, &[], &answers, &HashSet::new(), NOW, &Graph::default());
+        // Loved's fourth pick counts 0.26, behind Curious's first.
+        assert_eq!(ids(&picks)[..6], [100, 101, 102, 200, 103, 201]);
     }
 
     #[test]

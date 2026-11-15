@@ -50,7 +50,7 @@ pub fn wikipedia_poster(title: &str) -> Result<Option<String>> {
 pub fn frame_args(video: &Path, at: f64, output: &Path) -> Vec<String> {
     [
         "-nostdin", "-hide_banner", "-v", "error", "-y", "-ss", &format!("{at:.1}"), "-i", &video.to_string_lossy(),
-        "-map", "0:v:0", "-an", "-sn", "-vf", "thumbnail,crop=ih*135/190:ih,scale=-2:600", "-frames:v", "1", "-q:v", "4", "-f", "mjpeg", &output.to_string_lossy(),
+        "-map", "0:v:0", "-an", "-sn", "-vf", "thumbnail,scale=trunc(iw*sar/2)*2:ih,setsar=1,crop=ih*135/190:ih,scale=-2:600", "-frames:v", "1", "-q:v", "4", "-f", "mjpeg", &output.to_string_lossy(),
     ]
     .iter()
     .map(|s| s.to_string())
@@ -137,6 +137,6 @@ mod tests {
     #[test]
     fn cuts_a_frame_to_a_cover_s_shape() {
         let args = frame_args(Path::new("film.mkv"), 1234.56, Path::new("7.jpg.part")).join(" ");
-        assert!(args.contains("-ss 1234.6 -i film.mkv") && args.contains("thumbnail,crop=ih*135/190:ih,scale=-2:600") && args.ends_with("-f mjpeg 7.jpg.part"), "{args}");
+        assert!(args.contains("-ss 1234.6 -i film.mkv") && args.contains("thumbnail,scale=trunc(iw*sar/2)*2:ih,setsar=1,crop=ih*135/190:ih,scale=-2:600") && args.ends_with("-f mjpeg 7.jpg.part"), "{args}");
     }
 }

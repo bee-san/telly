@@ -2,7 +2,7 @@
 //! keeps. Time, lines and characters come from the watching log (log.rs),
 //! by the day each sitting ended, and cards from the cards Telly finished.
 //! Episodes are those played to their end, and finished shows the library's
-//! finishes and rewatches (db.rs). Words come from Telly's copy of your
+//! finishes and rewatches (db.rs), shows you've removed from it included. Words come from Telly's copy of your
 //! known words (known.rs). A day is a day in local time, and the page adds
 //! days up into its periods.
 
@@ -42,8 +42,15 @@ pub fn overview(backend: &Backend) -> Result<Value> {
     }
     let scores = backend.db.word_scores().unwrap_or_default();
     // The log names an episode by its show and number.
-    let score: HashMap<(i64, i64), (i64, i64)> =
+    let mut score: HashMap<(i64, i64), (i64, i64)> =
         by_show.values().flatten().filter_map(|e| scores.get(&e.id).map(|s| ((e.show_id, e.number), (s.0, s.1)))).collect();
+    // A show you removed counts as it did (db removed_shows).
+    let removed = backend.db.removed_shows()?;
+    for (show, _, kept) in &removed {
+        for (number, uses, known) in serde_json::from_str::<Vec<(i64, i64, i64)>>(kept).unwrap_or_default() {
+            score.insert((*show, number), (uses, known));
+        }
+    }
 
     let mut days: BTreeMap<String, Day> = BTreeMap::new();
     for p in backend.log.played(None)? {
@@ -77,6 +84,14 @@ pub fn overview(backend: &Backend) -> Result<Value> {
             let episodes = by_show.remove(&show.id).unwrap_or_default();
             let id = show.id;
             shows.insert(id.to_string(), serde_json::to_value(backend.card(show, &episodes, &cards_by_show, &scores)?)?);
+        }
+    }
+    for (show, card, _) in removed {
+        if completions.iter().any(|c| c.0 == show) && !shows.contains_key(&show.to_string()) {
+            if let Ok(mut card) = serde_json::from_str::<Value>(&card) {
+                card["removed"] = json!(true);
+                shows.insert(show.to_string(), card);
+            }
         }
     }
     let finished: Vec<Value> = completions.into_iter().map(|(show, at, rewatch)| json!({ "show": show, "at": at, "rewatch": rewatch })).collect();

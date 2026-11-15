@@ -231,8 +231,8 @@ export interface Stats {
   words: { day: string; n: number }[];
   /** Uses of words in the whole library, and how many are of known words. */
   library: { uses: number; known: number };
-  /** The finished shows' cards, by show ID. */
-  shows: Record<string, ShowCard>;
+  /** The finished shows' cards, by show ID: one you've removed from the library as it was, marked `removed`. */
+  shows: Record<string, ShowCard & { removed?: boolean }>;
   /** Each finish and full rewatch, oldest first, in Unix milliseconds. */
   finished: { show: number; at: number; rewatch: boolean }[];
 }

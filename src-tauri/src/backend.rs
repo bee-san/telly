@@ -1343,7 +1343,11 @@ impl Backend {
     fn remove_show(&self, id: i64) -> Result<Value> {
         self.jobs.cancel_show(id);
         let episodes = self.db.episodes(id)?;
-        self.db.remove_show(id)?;
+        let kept = match self.db.show(id)? {
+            Some(show) => self.kept_for_stats(show, &episodes).ok(),
+            None => None,
+        };
+        self.db.remove_show(id, kept.as_ref().map(|(card, scores)| (card.as_str(), scores.as_str())))?;
         // Only Telly's own files go; your rips stay where they are.
         let _ = std::fs::remove_dir_all(self.media_dir().join(id.to_string()));
         self.forget_episode_files(&episodes.iter().map(|e| e.id).collect::<Vec<_>>());
@@ -1352,6 +1356,31 @@ impl Backend {
         }
         self.remove_cover(id);
         Ok(json!({}))
+    }
+
+    /// What Stats keeps of a show being removed, so removing it changes nothing
+    /// there: its card (with its cover, kept apart, when it's among the shows
+    /// finished) and its episodes' shares of known words, by number.
+    fn kept_for_stats(&self, show: Show, episodes: &[Episode]) -> Result<(String, String)> {
+        let id = show.id;
+        let scores = self.db.word_scores().unwrap_or_default();
+        let mut card = self.card(show, episodes, &self.db.cards_per_show().unwrap_or_default(), &scores)?;
+        card.cover = String::new();
+        if self.db.show_completion(id)?.finished_at.is_some() {
+            if let Some(cover) = [self.small_cover_path(id), self.cover_path(id)].into_iter().find(|p| p.is_file()) {
+                std::fs::create_dir_all(self.removed_cover_path(id).parent().unwrap_or(Path::new(".")))?;
+                if std::fs::copy(&cover, self.removed_cover_path(id)).is_ok() {
+                    card.cover = format!("/removed-cover/{id}");
+                }
+            }
+        }
+        let by_number: Vec<(i64, i64, i64)> = episodes.iter().filter_map(|e| scores.get(&e.id).map(|s| (e.number, s.0, s.1))).collect();
+        Ok((serde_json::to_string(&card)?, serde_json::to_string(&by_number)?))
+    }
+
+    /// The cover Stats keeps of a show that was removed.
+    fn removed_cover_path(&self, show_id: i64) -> PathBuf {
+        self.dirs.covers().join("removed").join(format!("{show_id}.jpg"))
     }
 
     /// Removes Telly's copies of episodes you've watched (or of a whole finished show).
@@ -2089,6 +2118,7 @@ impl Backend {
                 // The cover as fetched, for the moments before its small copy is made.
                 Some(self.small_cover_path(id)).filter(|small| small.is_file()).unwrap_or_else(|| self.cover_path(id))
             }
+            ["removed-cover", id] => self.removed_cover_path(id.parse().map_err(|_| anyhow!("bad show"))?),
             // A clip's file name alone: on Windows "C:\…" joined to the folder would be anywhere.
             ["clip", name] if !name.contains("..") && !name.contains(['/', '\\', ':']) => self.dirs.clips().join(name),
             ["names", "telly-characters.zip"] => names::zip_path(self),
@@ -2208,6 +2238,39 @@ mod tests {
         assert!(settings.contains_key(&format!("audio.track.{kept_show}")));
         let left: Vec<String> = std::fs::read_dir(&subs).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
         assert_eq!(left, vec![format!("{kept_episode}.json")]);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn removing_a_show_leaves_stats_as_they_were() {
+        let dir = std::env::temp_dir().join(format!("telly-remove-stats-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let episodes = (1..=2).map(|n| crate::db::NewEpisode { number: n, path: format!("{n}.mkv"), size: 1, duration: 1400.0 }).collect();
+        let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Finished Show".into(), episodes, ..Default::default() }).unwrap();
+        for e in backend.db.episodes(show).unwrap() {
+            let sitting = crate::log::Sitting { show_id: show, title: "Finished Show", native: "", anilist_id: None, episode: e.number, episode_id: e.id, subs_file: "", subs_detail: "" };
+            let session = backend.log.start(&sitting, crate::util::now_ms(), true).unwrap();
+            backend.log.extend(session, crate::util::now_ms(), 1300.0, &[], true).unwrap();
+            backend.db.finish_episode(e.id, true).unwrap();
+            backend.db.set_word_score(e.id, 100, 80, "").unwrap();
+        }
+        std::fs::create_dir_all(backend.dirs.covers()).unwrap();
+        std::fs::write(backend.cover_path(show), b"cover").unwrap();
+        let before = crate::stats::overview(&backend).unwrap();
+        assert_eq!((before["days"][0]["uses"].as_i64(), before["days"][0]["episodes"].as_i64()), (Some(200), Some(2)));
+
+        backend.remove_show(show).unwrap();
+        let after = crate::stats::overview(&backend).unwrap();
+        assert_eq!(after["days"], before["days"]);
+        assert_eq!(after["finished"], before["finished"]);
+        let card = &after["shows"][show.to_string()];
+        assert_eq!((card["title"].as_str(), card["removed"].as_bool()), (Some("Finished Show"), Some(true)));
+        // Its cover is kept apart for Stats; the show's own is gone.
+        assert_eq!(card["cover"], format!("/removed-cover/{show}"));
+        assert_eq!(backend.serve(&format!("/removed-cover/{show}"), None).unwrap().bytes, b"cover");
+        assert!(!backend.cover_path(show).exists());
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

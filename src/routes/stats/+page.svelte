@@ -340,7 +340,8 @@
         {#if view.finished.length}
           <div class="shelf">
             {#each view.finished as f (f.card.id)}
-              <button type="button" class="fin" onclick={() => goto(`/stats/show?id=${f.card.id}`)}>
+              <!-- A show removed from the library has no page of its own any more. -->
+              <button type="button" class="fin" disabled={f.card.removed} onclick={() => goto(`/stats/show?id=${f.card.id}`)}>
                 <span aria-hidden="true"><Cover cover={f.card.cover} color={f.card.coverColor} native={f.card.titleNative} title={f.card.title} caption={f.card.coverCaption} /></span>
                 <span class="f-title" title={f.card.title}>{f.card.title}</span>
                 <span class="f-what">{f.what}</span>
@@ -414,7 +415,8 @@
   .shelf-empty { padding-top: 14px; border-top: 1px solid var(--rule); }
   .fin { all: unset; box-sizing: border-box; display: flex; flex-direction: column; gap: 3px; min-width: 0; cursor: pointer; }
   .fin :global(.cv) { transition: transform .15s; }
-  .fin:hover :global(.cv) { transform: translateY(-2px); }
+  .fin:not(:disabled):hover :global(.cv) { transform: translateY(-2px); }
+  .fin:disabled { cursor: default; }
   .fin:focus-visible { outline: 2px solid var(--ink); outline-offset: 4px; border-radius: 4px; }
   .f-title { margin-top: 9px; font: 600 13.5px/1.3 var(--font-ui); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .f-what { font-size: 12.5px; line-height: 1.3; color: var(--ink-2); }

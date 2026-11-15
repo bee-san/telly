@@ -320,6 +320,7 @@ Telly fetches a release's `.torrent` file from nyaa, asking again when the conne
 - **Each day** (or **Each month**) charts the time watched. Hover over a bar for that day's episodes and cards.
 - **Words** are the words you know, as Settings → Known words counts them, charted by the day each word's first card was made in Anki. That's when its card was made, not when you learnt it. **In what you watched** is the share of the period's episodes' words that you know now, and **In your library** the same for every episode.
 - **Finished** has the shows finished or fully rewatched in the period. Press one for its own page: its time, lines and cards, each episode's cards and share of known words, the days you watched it (a row for each time through), and the words you mined from it, each in its line. A card's word shows once you've studied the card; until then, its line shows alone.
+- **A show you remove** from the library stays in Stats as it was: its time, episodes, lines, cards and share of known words, and its place among the shows finished, with its cover. Its own page goes with it.
 
 ## 📋 Your AniList list
 

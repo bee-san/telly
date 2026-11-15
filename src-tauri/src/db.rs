@@ -153,6 +153,34 @@ CREATE TABLE show_completions (
   at        INTEGER NOT NULL,
   PRIMARY KEY (show_id, watch_id)
 );
+", "
+-- Removing a show leaves Stats as it was: its episodes played to their end
+-- and its finishes stay (ids aren't given out again), and so does the show
+-- as Stats shows it: its card, and its episodes' shares of known words.
+ALTER TABLE rewatches RENAME TO old_rewatches;
+CREATE TABLE rewatches (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  episode_id   INTEGER NOT NULL,
+  at           INTEGER NOT NULL,
+  first_watch  INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO rewatches (id, episode_id, at, first_watch) SELECT id, episode_id, at, first_watch FROM old_rewatches ORDER BY id;
+DROP TABLE old_rewatches;
+CREATE INDEX rewatches_by_episode ON rewatches (episode_id);
+ALTER TABLE show_completions RENAME TO old_show_completions;
+CREATE TABLE show_completions (
+  show_id   INTEGER NOT NULL,
+  watch_id  INTEGER NOT NULL,
+  at        INTEGER NOT NULL,
+  PRIMARY KEY (show_id, watch_id)
+);
+INSERT INTO show_completions SELECT show_id, watch_id, at FROM old_show_completions;
+DROP TABLE old_show_completions;
+CREATE TABLE removed_shows (
+  id      INTEGER PRIMARY KEY,
+  card    TEXT NOT NULL, -- its card as it was (JSON), for the shows finished
+  scores  TEXT NOT NULL  -- [[episode number, uses, known]], for the share known in what you watched
+);
 "];
 
 /// How many migrations this Telly has: a library of a higher version is from a newer Telly.
@@ -502,9 +530,15 @@ impl Db {
         Ok(rows)
     }
 
-    pub fn remove_show(&self, id: i64) -> Result<()> {
+    /// Removes a show and what Telly kept for it, but what Stats counts (see
+    /// the migration that made removed_shows): `kept` is the show as Stats
+    /// shows it from now on, its card and its episodes' shares of known words.
+    pub fn remove_show(&self, id: i64, kept: Option<(&str, &str)>) -> Result<()> {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
+        if let Some((card, scores)) = kept {
+            tx.execute("INSERT OR REPLACE INTO removed_shows (id, card, scores) VALUES (?1, ?2, ?3)", params![id, card, scores])?;
+        }
         // Settings kept by the show's id, and by its episodes' (backend.rs,
         // jobs.rs, anilist_list.rs, the player's picture filter).
         for key in ["audio.track.{id}", "cover.frame.{id}", "player.filter.{id}", "player.filters.{id}", "series.of.{id}", "folder.shared.{id}", "folder.left.{id}", "follow.{id}", "follow.got.{id}", "follow.like.{id}"] {
@@ -904,6 +938,14 @@ impl Db {
         Ok(ShowCompletion { finished_at, rewatches })
     }
 
+    /// The shows removed, as Stats shows them: id, card (JSON) and episodes' shares of known words (JSON).
+    pub fn removed_shows(&self) -> Result<Vec<(i64, String, String)>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare_cached("SELECT id, card, scores FROM removed_shows")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// Every show's finishes and full rewatches, as (show, when, whether it's a rewatch). For Stats.
     pub fn all_show_completions(&self) -> Result<Vec<(i64, i64, bool)>> {
         let conn = self.conn()?;
@@ -1209,8 +1251,12 @@ mod tests {
 
         let db = Db::open(&dir.join("telly.sqlite")).unwrap();
         assert_eq!(db.show_completion(show).unwrap(), history);
-        db.remove_show(show).unwrap();
-        assert_eq!(db.show_completion(show).unwrap(), ShowCompletion::default());
+        // Removed, the show's finishes and its episodes played to their end stay, for Stats.
+        let days = db.episodes_finished_by_day().unwrap();
+        db.remove_show(show, Some(("{}", "[]"))).unwrap();
+        assert_eq!(db.show_completion(show).unwrap(), history);
+        assert_eq!(db.episodes_finished_by_day().unwrap(), days);
+        assert_eq!(db.removed_shows().unwrap(), [(show, "{}".to_string(), "[]".to_string())]);
         drop(db);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -1371,7 +1417,7 @@ mod tests {
         assert!(eps[1].watched_at.is_some());
         db.set_setting("jimaku.key", &Value::String("k".into())).unwrap();
         assert_eq!(db.setting_str("jimaku.key"), "k");
-        db.remove_show(id).unwrap();
+        db.remove_show(id, None).unwrap();
         assert!(db.episodes(id).unwrap().is_empty());
         drop(db);
         let _ = std::fs::remove_dir_all(dir);

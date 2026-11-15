@@ -1349,7 +1349,7 @@
     idle = false;
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
-      if (video && !video.paused && !subMenu && !audioMenu && !help) idle = true;
+      if (video && !video.paused && !subMenu && !audioMenu && !help && !document.querySelector(".ptop:hover, .pctl:hover")) idle = true;
     }, 2500);
   }
 
@@ -1975,7 +1975,7 @@
 
 <style>
   .player { position: absolute; inset: 0; background: var(--vid); color: var(--vid-ink); overflow: hidden; user-select: none; -webkit-user-select: none; }
-  .player.idle { cursor: none; }
+  .player.idle .pic { cursor: none; }
   .pic { position: absolute; inset: 0; display: grid; place-items: center; cursor: pointer; }
   .pic video { width: 100%; height: 100%; object-fit: contain; display: block; background: var(--vid); }
   .pic video.filtered { opacity: 0; }

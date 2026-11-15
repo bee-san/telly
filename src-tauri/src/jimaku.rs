@@ -265,6 +265,16 @@ pub fn unzip_subtitles(bytes: &[u8], dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// A file's name in a zip as it was written: UTF-8, or Shift_JIS, as a zip
+/// made on Japanese Windows has it ("第05話" rather than CP437's garble).
+fn entry_name(raw: &[u8]) -> Option<String> {
+    if let Ok(name) = std::str::from_utf8(raw) {
+        return Some(name.to_string());
+    }
+    let (name, _, bad) = encoding_rs::SHIFT_JIS.decode(raw);
+    (!bad).then(|| name.into_owned())
+}
+
 fn unzip_into(bytes: &[u8], staging: &Path) -> Result<()> {
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
     for i in 0..archive.len() {
@@ -272,7 +282,7 @@ fn unzip_into(bytes: &[u8], staging: &Path) -> Result<()> {
         if entry.is_dir() {
             continue;
         }
-        let name = entry.name()?.replace('\\', "/");
+        let name = entry_name(entry.name_raw()).unwrap_or(entry.name()?.to_string()).replace('\\', "/");
         let base = name.rsplit('/').next().unwrap_or(&name).to_string();
         // A Mac's zip carries "__MACOSX/._name.srt" beside each file: not subtitles.
         if name.starts_with("__MACOSX/") || base.starts_with("._") {
@@ -349,6 +359,15 @@ mod tests {
         assert!(check_key_at(&api, " good ").is_ok());
         assert!(format!("{:#}", check_key_at(&api, "bad").unwrap_err()).contains("didn’t accept the API key"));
         assert!(format!("{:#}", check_key_at(&api, " ").unwrap_err()).contains("no Jimaku API key"));
+    }
+
+    #[test]
+    fn reads_a_name_a_japanese_windows_zip_wrote() {
+        let (sjis, _, _) = encoding_rs::SHIFT_JIS.encode("葬送のフリーレン 第05話.srt");
+        let name = entry_name(&sjis).unwrap();
+        assert_eq!(name, "葬送のフリーレン 第05話.srt");
+        assert_eq!(episode_of(&name), Some(5));
+        assert_eq!(entry_name("Show - 01.srt".as_bytes()).as_deref(), Some("Show - 01.srt"));
     }
 
     #[test]

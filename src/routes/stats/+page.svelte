@@ -203,7 +203,8 @@
       .map((m) => ({ label: m.label, pct: Math.round((100 * m.known) / m.uses) }));
 
     // Shows finished or rewatched in the period, newest first, each once.
-    const startMs = start.getTime();
+    // All time: every show finished, those marked as watched before anything was played too.
+    const startMs = period === "all" ? 0 : start.getTime();
     const latest = new Map<number, { at: number; rewatch: boolean }>();
     for (const f of stats.finished) if (f.at >= startMs && stats.shows[f.show]) latest.set(f.show, { at: f.at, rewatch: f.rewatch });
     const finished = [...latest.entries()]

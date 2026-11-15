@@ -1118,9 +1118,11 @@ fn openrouter_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &
     let maker = openrouter::maker(model);
     // Repeating itself over music is Whisper's habit.
     let lines = if maker == "Whisper" { without_repeats(lines) } else { lines };
-    write_lines(backend, episode.id, &lines)?;
-    backend.db.set_subs(episode.id, "synced", &format!("Made by {maker} (machine-made)"), maker, None, None)?;
-    crate::premine::prepare(backend, episode.id);
+    // Kept unless you picked a file meanwhile.
+    if backend.db.settle_subs(episode.id, "synced", &format!("Made by {maker} (machine-made)"), maker, None, None)? {
+        write_lines(backend, episode.id, &lines)?;
+        crate::premine::prepare(backend, episode.id);
+    }
     Ok(())
 }
 
@@ -1203,9 +1205,11 @@ fn whisper_subtitles(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, whisper: 
     }
     let bytes = std::fs::read(&srt).context("reading what Whisper wrote")?;
     let lines = without_repeats(subs::parse("whisper.srt", &bytes)?);
-    write_lines(backend, episode.id, &lines)?;
-    backend.db.set_subs(episode.id, "synced", "Made by Whisper (machine-made)", "Whisper", None, None)?;
-    crate::premine::prepare(backend, episode.id);
+    // Kept unless you picked a file meanwhile.
+    if backend.db.settle_subs(episode.id, "synced", "Made by Whisper (machine-made)", "Whisper", None, None)? {
+        write_lines(backend, episode.id, &lines)?;
+        crate::premine::prepare(backend, episode.id);
+    }
     Ok(())
 }
 
@@ -1929,11 +1933,14 @@ fn keep_own(backend: &Backend, episode: &Episode, own: &[jimaku::Local], timing:
         }
     }
     let Some((file, synced, _)) = best else { return Ok(false) };
-    write_lines(backend, episode.id, &japanese_lines(&file.path, &file.name)?)?;
+    let lines = japanese_lines(&file.path, &file.name)?;
     crate::util::write_whole(&tried_path(backend, episode.id), serde_json::to_vec(&tried)?)?;
     let detail = format!("in sync {AS_IT_IS} · matched to {}", timing.against);
-    backend.db.set_subs(episode.id, "synced", &detail, &file.name, Some(synced.score), Some(0))?;
-    crate::premine::prepare(backend, episode.id);
+    // Kept unless you picked a file meanwhile.
+    if backend.db.settle_subs(episode.id, "synced", &detail, &file.name, Some(synced.score), Some(0))? {
+        write_lines(backend, episode.id, &lines)?;
+        crate::premine::prepare(backend, episode.id);
+    }
     Ok(true)
 }
 

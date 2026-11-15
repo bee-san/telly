@@ -7,8 +7,9 @@
 //! - Season folders are parts when their episode numbers start again in each;
 //!   folders that carry on from each other (discs, or a long run kept in
 //!   season folders) are one part, as before.
-//! - A folder of movies is a part for each file. A folder or loose file
-//!   named OVA, OAD or Specials (or Season 00) is a part. A loose file as
+//! - A folder of movies is a part for each file. A folder named OVA, OAD or
+//!   Specials (or Season 00) is a part, and so are the loose files so named
+//!   (the OVAs together, the specials together). A loose file as
 //!   long as a film, beside season folders, is a movie whatever it's called.
 //! - A season folder named for a series off the line of sequels (a spin-off)
 //!   is that series.
@@ -192,8 +193,10 @@ pub fn split(scan: &Scan) -> Vec<Part> {
             kind => others.push(part(name, folder, kind, files, false)),
         }
     }
-    // Loose files: one named as a movie, an OVA or specials is a part of its own; the rest are episodes together.
+    // Loose files: one named as a movie is a part of its own, the OVAs are one
+    // part and the specials another (as a folder of them is); the rest are episodes together.
     let mut plain: Vec<ScannedFile> = Vec::new();
+    let mut grouped: Vec<(Kind, Vec<ScannedFile>)> = Vec::new();
     for f in loose {
         let kind = match kind_of(&stem(&f.path)) {
             // Beside season folders, a file as long as a film is one, whatever it's called ("Jujutsu Kaisen 0").
@@ -206,8 +209,17 @@ pub fn split(scan: &Scan) -> Vec<Part> {
         } else if kind == Kind::Movie {
             movies("", scan.folder.clone(), vec![f], &mut others);
         } else {
-            others.push(part(file_name(&f.path), scan.folder.clone(), kind, vec![f], true));
+            match grouped.iter_mut().find(|(k, _)| *k == kind) {
+                Some((_, files)) => files.push(f),
+                None => grouped.push((kind, vec![f])),
+            }
         }
+    }
+    // The folder holds nothing else (it's a folder of OVAs): the part's rips are all its own.
+    let alone = grouped.len() == 1 && scan.files.iter().all(|f| !f.rel.contains('/')) && !plain.iter().any(|f| f.reason.is_empty());
+    for (kind, files) in grouped {
+        let name = if files.len() == 1 { file_name(&files[0].path) } else { root_name.clone() };
+        others.push(part(name, scan.folder.clone(), kind, files, !alone));
     }
     // Season folders whose numbers start again are a part each; ones that carry on from each other are one.
     let numbers = |files: &[ScannedFile]| files.iter().filter(|f| f.reason.is_empty()).filter_map(|f| f.parsed).collect::<HashSet<i64>>();
@@ -594,6 +606,15 @@ mod tests {
         assert_eq!(parts.iter().map(|p| p.shared).collect::<Vec<_>>(), [false, true, true, true, false, false]);
         // What was left out stays with its season.
         assert_eq!(parts[0].files.len(), 14);
+    }
+
+    #[test]
+    fn a_folder_of_ovas_is_one_part() {
+        let mut files: Vec<ScannedFile> = (1..=3).map(|n| file(&format!("[Judas] Shingeki no Kyojin - OVA {n:02}.mkv"), 24.0)).collect();
+        let mut scan = scanned(std::mem::take(&mut files));
+        scan.folder = "/anime/[Judas] Shingeki no Kyojin OVA".into();
+        let parts = split(&scan);
+        assert_eq!(parts.iter().map(|p| (p.kind, episodes(p), p.shared)).collect::<Vec<_>>(), [(Kind::Ova, 3, false)]);
     }
 
     #[test]

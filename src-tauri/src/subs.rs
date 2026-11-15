@@ -153,9 +153,11 @@ fn split_ruby(text: &str) -> (String, Vec<(usize, usize, String)>) {
             let close = if c == '(' { ')' } else { '）' };
             if let Some(len) = chars[i + 1..].iter().position(|&x| x == close) {
                 let inner: String = chars[i + 1..i + 1 + len].iter().collect();
-                if !inner.is_empty() && len <= 12 && inner.chars().all(is_kana) {
-                    // The base is the run of kanji just before the bracket.
-                    let base_len = out.iter().rev().take_while(|&&p| is_kanji(p)).count();
+                // The base is the run of kanji just before the bracket, after
+                // any that have a reading already (魔導士(まどうし)達(たち): 達).
+                let floor = ruby.last().map_or(0, |r: &(usize, usize, String)| r.0 + r.1).min(out.len());
+                let base_len = out[floor..].iter().rev().take_while(|&&p| is_kanji(p)).count();
+                if !inner.is_empty() && len <= 12 && inner.chars().all(is_kana) && base_len > 0 {
                     ruby.push((out.len() - base_len, base_len, inner));
                     i += len + 2;
                     continue;
@@ -192,9 +194,12 @@ fn make_line(start: f64, end: f64, raw: &str, sign: bool) -> Option<Line> {
     if text.is_empty() || end <= start {
         return None;
     }
-    let (speaker, text) = split_speaker(&text);
+    // Readings first, so a speaker's name with one, （炭治郎(たんじろう)）, comes off whole.
     let (text, ruby) = split_ruby(&text);
-    Some(Line { start, end, text, ruby, speaker, sign })
+    let (speaker, rest) = split_speaker(&text);
+    let cut = text.chars().count() - rest.chars().count();
+    let ruby = ruby.into_iter().filter(|r| r.0 >= cut).map(|(at, len, reading)| (at - cut, len, reading)).collect();
+    Some(Line { start, end, text: rest, ruby, speaker, sign })
 }
 
 fn parse_srt_like(text: &str) -> Vec<Line> {
@@ -411,6 +416,15 @@ mod tests {
         assert_eq!(lines[0].text, "もしもし\n元気？");
         assert!(!lines[0].sign);
         assert!(lines[1].sign && lines[2].sign);
+    }
+
+    #[test]
+    fn readings_side_by_side_and_on_a_speaker_s_name() {
+        let srt = "1\n00:00:01,000 --> 00:00:02,000\n鬼殺隊(きさつたい)隊士(たいし)だ\n\n2\n00:00:03,000 --> 00:00:04,000\n（炭治郎(たんじろう)）禰豆子(ねずこ)！\n\n3\n00:00:05,000 --> 00:00:06,000\n（<ruby>男<rt>おとこ</rt></ruby>）どうした？\n";
+        let lines = parse("ep.vtt", format!("WEBVTT\n\n{srt}").as_bytes()).unwrap();
+        assert_eq!((lines[0].text.as_str(), &lines[0].ruby), ("鬼殺隊隊士だ", &vec![(0, 3, "きさつたい".into()), (3, 2, "たいし".into())]));
+        assert_eq!((lines[1].speaker.as_str(), lines[1].text.as_str(), &lines[1].ruby), ("炭治郎", "禰豆子！", &vec![(0, 3, "ねずこ".into())]));
+        assert_eq!((lines[2].speaker.as_str(), lines[2].text.as_str()), ("男", "どうした？"));
     }
 
     #[test]

@@ -842,7 +842,8 @@
     if (index < 0) return flash("No line here to explain");
     if (explaining?.index === index) return closeExplain();
     stopExplain();
-    if (!explaining && video && !video.paused) {
+    // Paused for reading a line (hovering it) counts as playing: it carries on after.
+    if (!explaining && video && (!video.paused || pausedByHover)) {
       explainResume = true;
       video.pause();
     }

@@ -1912,6 +1912,10 @@ impl Backend {
                 recommend::hide(self, recommend::Verdict { id: arg(&args, "id")?, title: arg(&args, "title")?, verdict: arg(&args, "verdict")? })?;
                 Ok(json!({}))
             }
+            "unhideRecommendation" => {
+                recommend::unhide(self, arg(&args, "id")?)?;
+                Ok(json!({}))
+            }
             "ankiFields" => {
                 let url = cards::anki_url(self);
                 let model: String = arg(&args, "model")?;

@@ -725,6 +725,8 @@ export interface Recommended {
   picks: Pick[];
   /** The page's rows, in the order they're shown: suggestions, AniList's charts, genres. */
   rows: PickRowView[];
+  /** The picks you left out, the one you said something of last first ("hidden" by an older Telly, which didn't ask why). */
+  leftOut?: { id: number; title: string; verdict: Verdict | "hidden" }[];
 }
 
 export interface Tools {

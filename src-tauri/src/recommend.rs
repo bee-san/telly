@@ -466,6 +466,32 @@ pub fn hide(backend: &Backend, verdict: Verdict) -> Result<()> {
     backend.db.set_setting(VERDICTS, &json!(all))
 }
 
+/// Brings a pick you left out back, forgetting what you said of it.
+pub fn unhide(backend: &Backend, id: i64) -> Result<()> {
+    let mut all = verdicts(backend);
+    all.retain(|v| v.id != id);
+    backend.db.set_setting(VERDICTS, &json!(all))?;
+    let old: HashSet<i64> = backend.db.setting(HIDDEN).ok().flatten().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+    if old.contains(&id) {
+        backend.db.set_setting(HIDDEN, &json!(old.into_iter().filter(|&h| h != id).collect::<Vec<_>>()))?;
+    }
+    Ok(())
+}
+
+/// The picks you left out, those you said something of last first, and then
+/// those an older Telly hid ("hidden"), named as AniList's recommendations
+/// name them ("" when none of them does now).
+fn left_out_list(backend: &Backend, sources: &[Source]) -> Vec<Verdict> {
+    let mut out: Vec<Verdict> = verdicts(backend).into_iter().rev().collect();
+    let old: Vec<i64> = backend.db.setting(HIDDEN).ok().flatten().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+    let said: HashSet<i64> = out.iter().map(|v| v.id).collect();
+    for id in old.into_iter().filter(|id| !said.contains(id)) {
+        let title = sources.iter().flat_map(|s| &s.likes).find(|l| l.anime.id == id).map(|l| l.anime.short_title()).unwrap_or_default();
+        out.push(Verdict { id, title, verdict: "hidden".into() });
+    }
+    out
+}
+
 /// What you said of the picks you left out, as entries of your list: one you
 /// liked as one completed, one you didn't as one dropped, and one that isn't
 /// for you as `NOT_FOR_ME`. Those since in the library or on your list are
@@ -771,7 +797,7 @@ fn rows(picks: &[Pick], charts: &Charts, owned: &[Owned], listed: &[Listed], sou
 }
 
 /// The Recommended page: the picks, how many shows (in the library or on
-/// your list) they come from, and the page's rows.
+/// your list) they come from, the page's rows, and the picks you left out.
 pub fn view(backend: &Backend) -> Result<Value> {
     let mut owned = Vec::new();
     for show in backend.db.shows()? {
@@ -799,7 +825,7 @@ pub fn view(backend: &Backend) -> Result<Value> {
     let graph = crate::series::graph(backend);
     let picks = rank(&owned, &listed, &sources, &left_out, now_ms(), &graph);
     let rows = rows(&picks, &charts(backend), &owned, &listed, &sources, &graph, &in_library(backend)?, &left_out);
-    Ok(json!({ "shows": ids.len(), "picks": picks, "rows": rows }))
+    Ok(json!({ "shows": ids.len(), "picks": picks, "rows": rows, "leftOut": left_out_list(backend, &sources) }))
 }
 
 #[cfg(test)]
@@ -1060,6 +1086,31 @@ mod tests {
         assert_eq!(picks[0].from.iter().map(|f| f.title.as_str()).collect::<Vec<_>>(), ["Said 10", "Watched"]);
         assert_eq!(picks[3].from.iter().map(|f| f.title.as_str()).collect::<Vec<_>>(), ["Watched"]);
         assert!(picks[2].score < 2.0 * (50.0 / (150.0 + FEW_VOTES)).sqrt());
+    }
+
+    #[test]
+    fn a_pick_you_left_out_can_be_brought_back() {
+        let dir = std::env::temp_dir().join(format!("telly-left-out-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        // Two hidden by an older Telly, one of them recommended from a show you have, and two you said something of.
+        backend.db.set_setting(HIDDEN, &json!([7, 8])).unwrap();
+        let verdict = |id: i64, verdict: &str| Verdict { id, title: format!("Said {id}"), verdict: verdict.into() };
+        hide(&backend, verdict(10, "liked")).unwrap();
+        hide(&backend, verdict(11, "notForMe")).unwrap();
+        assert!(hide(&backend, verdict(12, "meh")).is_err());
+        let answers = [source(1, &[], &[(7, 50)])];
+        let said = |list: Vec<Verdict>| list.into_iter().map(|v| (v.id, v.title, v.verdict)).collect::<Vec<_>>();
+        assert_eq!(
+            said(left_out_list(&backend, &answers)),
+            [(11, "Said 11".into(), "notForMe".into()), (10, "Said 10".into(), "liked".into()), (7, "Anime 7".into(), "hidden".into()), (8, String::new(), "hidden".into())]
+        );
+        assert_eq!(hidden(&backend), HashSet::from([7, 8, 10, 11]));
+        unhide(&backend, 10).unwrap();
+        unhide(&backend, 7).unwrap();
+        assert_eq!(hidden(&backend), HashSet::from([8, 11]));
+        assert_eq!(said(left_out_list(&backend, &answers)), [(11, "Said 11".into(), "notForMe".into()), (8, String::new(), "hidden".into())]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

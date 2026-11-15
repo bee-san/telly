@@ -93,10 +93,26 @@
     const at = rec?.picks.findIndex((pick) => pick.id === p.id) ?? 0;
     try {
       await call("hideRecommendation", { id: p.id, title: p.title, verdict });
+      toast({ key: "left-out", state: "info", title: `Left out ${p.title}`, text: `${suggests[verdict]}.`, action: { label: "Undo", run: () => bringBack(p.id) } });
       open = null;
       await load();
       await tick();
       (grid ?? document).querySelectorAll<HTMLElement>(".pick")[at]?.focus();
+    } catch (e) {
+      error = errorText(e);
+    }
+  }
+
+  /** What leaving a pick out does to what's suggested, by what you said of it. */
+  const suggests: Record<Verdict, string> = { liked: "More like it will be suggested", disliked: "Less like it will be suggested", notForMe: "A little less like it will be suggested" };
+  /** What you said of a pick you left out, as the list of them says it. */
+  const saidOf = { liked: "Seen it, liked it", disliked: "Seen it, didn’t like it", notForMe: "Not for me", hidden: "Hidden" };
+
+  /** Brings a pick you left out back, forgetting what you said of it. */
+  async function bringBack(id: number) {
+    try {
+      await call("unhideRecommendation", { id });
+      await load();
     } catch (e) {
       error = errorText(e);
     }
@@ -249,6 +265,20 @@
         onall={row.key === "suggested" && rec.picks.length > row.picks.length ? () => (all = true) : undefined}
       />
     {/each}
+    {#if rec.leftOut?.length}
+      <details class="left-out">
+        <summary>Left out of your suggestions <span>{rec.leftOut.length}</span></summary>
+        <ul>
+          {#each rec.leftOut as l (l.id)}
+            <li>
+              <span class="lo-title" title={l.title}>{l.title || `AniList entry ${l.id}`}</span>
+              <span class="lo-said">{saidOf[l.verdict]}</span>
+              <button type="button" class="btn small quiet" onclick={() => bringBack(l.id)} title="Suggest it again, and forget what you said of it">Bring back</button>
+            </li>
+          {/each}
+        </ul>
+      </details>
+    {/if}
   {/if}
 </div>
 
@@ -345,6 +375,13 @@
   .more { margin-top: 28px; }
   .sheet:focus { outline: none; }
   .ask { font-size: 13.5px; color: var(--ink-2); }
+  .left-out { margin-top: 34px; max-width: 640px; }
+  .left-out summary { cursor: pointer; font: 600 14px/1.3 var(--font-ui); color: var(--ink-2); }
+  .left-out summary span { margin-left: 4px; font-weight: 500; color: var(--ink-3); }
+  .left-out ul { list-style: none; padding: 0; margin-top: 10px; font-size: 13.5px; }
+  .left-out li { display: flex; align-items: center; gap: 14px; padding: 6px 0; border-top: 1px solid var(--rule); }
+  .lo-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lo-said { flex: none; color: var(--ink-2); }
   .pk-head { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 20px; align-items: start; }
   .pk-text { display: grid; gap: 4px; min-width: 0; }
   .pk-text h3 { font: 800 24px/1.25 var(--font-jp-title); }

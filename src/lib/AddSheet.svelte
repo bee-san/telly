@@ -83,7 +83,7 @@
 
   onMount(() => {
     scan(folder, scanned);
-    const key = (e: KeyboardEvent) => e.key === "Escape" && onclose();
+    const key = (e: KeyboardEvent) => e.key === "Escape" && phase !== "adding" && onclose();
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
   });

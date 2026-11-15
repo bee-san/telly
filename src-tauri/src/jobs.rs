@@ -1214,8 +1214,10 @@ fn whisper_subtitles(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, whisper: 
 }
 
 /// Whisper sometimes repeats a sentence over music ("彼らは「魔道士」と呼ばれる。"
-/// again and again): a line saying the same thing as the one before is dropped,
-/// and a line that's one sentence over and over keeps it once.
+/// again and again): a line saying the same thing as the one before (or a
+/// sentence of it) is dropped, and a line that's one sentence over and over
+/// keeps it once. A short reply after a line that starts with it ("はい" after
+/// "はい、わかりました") is someone speaking, and stays.
 pub fn without_repeats(lines: Vec<Line>) -> Vec<Line> {
     let mut out: Vec<Line> = Vec::with_capacity(lines.len());
     for mut line in lines {
@@ -1226,7 +1228,7 @@ pub fn without_repeats(lines: Vec<Line>) -> Vec<Line> {
         let same = out.last().is_some_and(|last: &Line| {
             let a: String = last.text.chars().filter(|c| c.is_alphanumeric()).collect();
             let b: String = line.text.chars().filter(|c| c.is_alphanumeric()).collect();
-            !b.is_empty() && (a == b || a.contains(&b))
+            !b.is_empty() && (a == b || (b.chars().count() >= 6 && a.contains(&b)))
         });
         if !same {
             out.push(line);
@@ -3058,9 +3060,13 @@ mod tests {
             line(2.0, "彼らは「魔道士」と呼ばれる。 彼らは「魔道士」と呼ばれる。"),
             line(4.0, "彼らは「魔道士」と呼ばれる。"),
             line(6.0, "ギルドだ。"),
+            line(8.0, "はい、わかりました。"),
+            line(10.0, "はい。"),
+            line(12.0, "そうなんだ。"),
+            line(14.0, "そう。"),
         ];
         let kept: Vec<String> = without_repeats(lines).into_iter().map(|l| l.text).collect();
-        assert_eq!(kept, ["そこは魔法の世界。", "彼らは「魔道士」と呼ばれる。", "ギルドだ。"]);
+        assert_eq!(kept, ["そこは魔法の世界。", "彼らは「魔道士」と呼ばれる。", "ギルドだ。", "はい、わかりました。", "はい。", "そうなんだ。", "そう。"]);
     }
 
     #[test]

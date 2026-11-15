@@ -193,7 +193,7 @@
   async function freeAll() {
     try {
       const r = await call<{ episodes: number; bytes: number }>("freeSpace", { show: null });
-      toast({ key: "free", state: "done", title: r.episodes ? `Freed ${bytes(r.bytes)}` : "Nothing to free", text: r.episodes ? `Removed Telly’s copies of ${r.episodes} watched episodes.` : "Only copies of watched episodes are removed." });
+      toast({ key: "free", state: "done", title: r.episodes ? `Freed ${bytes(r.bytes)}` : "Nothing to free", text: r.episodes ? `Removed Telly’s copies of ${plural(r.episodes, "watched episode")}.` : "Only copies of watched episodes are removed." });
     } catch (e) {
       toast({ key: "free", state: "failed", title: "Couldn’t free up space", text: errorText(e) });
     }
@@ -773,7 +773,7 @@
 
   <section id="downloads">
     <h2>Downloads</h2>
-    <p class="lede">Find a show on nyaa.si with <b>Download…</b> in the Library, on a show’s page or in Recommended, and Telly downloads it itself, picking up where it was whenever the connection drops and when Telly opens again. Each episode joins the library as it finishes. Processing shows how they’re going.</p>
+    <p class="lede">Find a show on nyaa.si with <b>Download…</b> in Recommended, the title bar’s search or Processing, or <b>Download episodes…</b> on a show’s page, and Telly downloads it itself, picking up where it was whenever the connection drops and when Telly opens again. Each episode joins the library as it finishes. Processing shows how they’re going.</p>
     <div class="rows">
       <div class="field">
         <span>Folder for new shows</span>

@@ -315,6 +315,13 @@ fn files_in(torrent: &[u8]) -> Result<Vec<String>> {
     Ok(info.iter_file_details().filter(|f| !f.attrs().padding).map(|f| f.filename.to_vec().join("/")).collect())
 }
 
+/// The first of a release's `files` that, downloaded into `folder`, would be
+/// written over the rip of an episode in Telly.
+fn over_a_rip<'a>(backend: &Backend, folder: &str, files: &'a [String]) -> Option<&'a String> {
+    let rips: HashSet<String> = backend.db.all_episodes().ok()?.iter().map(|e| key(&e.path)).collect();
+    files.iter().find(|f| rips.contains(&key(&format!("{folder}/{f}"))))
+}
+
 /// A release's videos that aren't extras.
 fn episodes_in(files: &[String]) -> impl Iterator<Item = &String> {
     let videos = || files.iter().filter(|f| scan::is_video(Path::new(f)));
@@ -429,6 +436,10 @@ pub fn add(backend: &Arc<Backend>, magnet: &str, torrent: &str, title: &str, sho
     let files = fetched.as_ref().ok().and_then(|bytes| files_in(bytes).ok());
     let to = destination(backend, title, files.as_deref(), show, anilist, library)?;
     let folder = to.folder.clone();
+    // The client writes a release's files over any of the same name there: never over your rips.
+    if let Some(rip) = files.as_deref().and_then(|files| over_a_rip(backend, &folder, files)) {
+        return Err(anyhow!("{rip} is in {folder} already, as one of your episodes, and downloading this would write over it"));
+    }
     std::fs::create_dir_all(&folder).with_context(|| format!("Telly couldn’t make the folder {folder}"))?;
     if to.sorted {
         library::make_room(backend, &folder)?;
@@ -741,6 +752,22 @@ mod tests {
         assert!(!several_parts(&files(&["Film.mkv", "Film - NCOP.mkv", "Extras/Interview.mkv", "Scans/cover.jpg"])));
         assert!(!several_parts(&files(&["Show - 01.mkv", "Show - 02.mkv"])));
         assert!(!several_parts(&files(&["season 1/01.mkv", "Season 1/02.mkv"])));
+    }
+
+    #[test]
+    fn a_release_isn_t_downloaded_over_your_rips() {
+        let dir = std::env::temp_dir().join(format!("telly-over-rips-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let folder = dir.join("Show").to_string_lossy().into_owned();
+        let episodes = vec![crate::db::NewEpisode { number: 1, path: format!("{folder}/[Judas] Show - S01E01.mkv"), size: 1, duration: 1400.0 }];
+        backend.db.add_show(&crate::db::NewShow { folder: folder.clone(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let files = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        // Their BD batch, named as the WEB one you have.
+        assert_eq!(over_a_rip(&backend, &folder, &files(&["[Judas] Show - S01E02.mkv", "[Judas] Show - S01E01.mkv"])).map(String::as_str), Some("[Judas] Show - S01E01.mkv"));
+        assert_eq!(over_a_rip(&backend, &folder, &files(&["[Judas] Show - S01E02.mkv"])), None);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

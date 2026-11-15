@@ -157,8 +157,9 @@ pub struct Premining {
     /// What the list in `status` was made from (list_inputs): it's made again
     /// when they change.
     list_from: Mutex<String>,
-    /// The words premined while Telly is open. Their cards are new, so Anki
-    /// doesn't count them yet, but they aren't listed again.
+    /// The words premined (kept in setting premine.made too, for after Telly
+    /// restarts). Their cards are new, so Anki doesn't count them yet, but
+    /// they aren't listed again.
     made: Mutex<HashSet<(String, String)>>,
     shares: Mutex<Shares>,
     /// Hachidori's answers, by the text asked, for as long as Telly is open.
@@ -759,7 +760,8 @@ fn make_list(backend: &Backend, shows: &[Show], step: &dyn Fn(&str, f64)) -> Res
 
     let mut known_uses = 0;
     let mut words: Vec<(usize, Word)> = Vec::new();
-    let made = backend.premining.made.lock().map(|m| m.clone()).unwrap_or_default();
+    let mut made = backend.premining.made.lock().map(|m| m.clone()).unwrap_or_default();
+    made.extend(made_before(backend));
     for term in &order {
         // A word just premined isn't listed again; its card counts as known, as it did in the list it was made from.
         if made.contains(&(term.headword.clone(), term.reading.clone())) {
@@ -1263,6 +1265,11 @@ fn start(backend: &Arc<Backend>, shows: Vec<Show>, show_id: i64, anime: i64) -> 
     Ok(status(backend))
 }
 
+/// The words premined before, as Telly kept them (setting premine.made).
+fn made_before(backend: &Backend) -> HashSet<(String, String)> {
+    backend.db.setting("premine.made").ok().flatten().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
+}
+
 /// Starts making cards for `words`. When it's done, those that got one drop
 /// out of the list and count as known.
 pub fn start_cards(backend: &Arc<Backend>, words: Vec<Word>) -> Result<Status> {
@@ -1286,6 +1293,10 @@ pub fn start_cards(backend: &Arc<Backend>, words: Vec<Word>) -> Result<Status> {
         // Only the words that got a card: one skipped stays on the list.
         if let (Ok(mut all), Ok((made, _))) = (worker.premining.made.lock(), result.as_ref()) {
             all.extend(made.iter().cloned());
+            // Kept, so a restart doesn't list them again (and make them twice).
+            let mut kept = made_before(&worker);
+            kept.extend(all.iter().cloned());
+            let _ = worker.db.set_setting("premine.made", &serde_json::to_value(kept.into_iter().collect::<Vec<_>>()).unwrap_or_default());
         }
         set(&worker, |s| {
             s.working = false;

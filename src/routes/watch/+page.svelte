@@ -695,6 +695,8 @@
       const v = await call<PlayerView>("useSubtitle", { id, path, name });
       // Another episode is open now (the next started meanwhile): the file is that one's all the same.
       if (view?.episode.id !== id) return toast({ key: "resync", state: "done", title: "Subtitles changed", text: name });
+      // An explanation is of a line by its place, which another file gives to another line.
+      if (explaining) closeExplain(false);
       view.lines = v.lines;
       view.episode = v.episode;
       // Lines are counted for the log by their place, which the new file changes.

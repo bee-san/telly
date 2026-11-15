@@ -1005,12 +1005,13 @@ fn subs_worker(backend: &Backend, n: usize) {
                     match result {
                         // Back in the queue as it was, and asked again in a minute, then 2, 4… up to 30.
                         Err(e) if e.downcast_ref::<openrouter::RateLimited>().is_some() => {
-                            let _ = backend.db.set_subs_state(episode.id, "whisper", "OpenRouter is busy: asked again soon");
+                            let _ = backend.db.listen_later(episode.id, "OpenRouter is busy: asked again soon");
                             listen_after = Some(Instant::now() + wait);
                             wait = (wait * 2).min(LISTEN_WAIT_MAX);
                         }
                         Err(e) => {
-                            let _ = backend.db.set_subs_state(episode.id, "failed", &format!("{name}: {e:#}"));
+                            // Unless you picked a file meanwhile.
+                            let _ = backend.db.fail_subs(episode.id, &format!("{name}: {e:#}"));
                         }
                         Ok(()) => wait = LISTEN_WAIT,
                     }

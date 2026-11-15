@@ -801,6 +801,16 @@ impl Db {
         Ok(())
     }
 
+    /// Whisper couldn't listen to an episode it took now (OpenRouter is busy):
+    /// it waits for Whisper again, unless you picked a file for it meanwhile.
+    pub fn listen_later(&self, id: i64, detail: &str) -> Result<()> {
+        self.conn()?.execute(
+            "UPDATE episodes SET subs_state = 'whisper', subs_detail = ?2 WHERE id = ?1 AND subs_state = 'working'",
+            params![id, detail],
+        )?;
+        Ok(())
+    }
+
     pub fn set_subs_state(&self, id: i64, state: &str, detail: &str) -> Result<()> {
         self.conn()?.execute(
             "UPDATE episodes SET subs_state = ?2, subs_detail = ?3 WHERE id = ?1",
@@ -1219,6 +1229,13 @@ mod tests {
         let db = Db::open(&dir.join("telly.sqlite")).unwrap();
         let states: Vec<String> = db.episodes(show).unwrap().into_iter().map(|e| e.subs_state).collect();
         assert_eq!(states, ["whisper", "pending"]);
+        // A file you pick while Whisper listens stays, whether Whisper is turned away or fails.
+        assert!(db.claim_whisper(ids[0], "Whisper is listening").unwrap());
+        db.set_subs(ids[0], "synced", "chosen by hand", "mine.srt", None, Some(0)).unwrap();
+        db.listen_later(ids[0], "OpenRouter is busy").unwrap();
+        db.fail_subs(ids[0], "Whisper: stopped").unwrap();
+        let e = db.episodes(show).unwrap().remove(0);
+        assert_eq!((e.subs_state.as_str(), e.subs_detail.as_str()), ("synced", "chosen by hand"));
         drop(db);
         let _ = std::fs::remove_dir_all(dir);
     }

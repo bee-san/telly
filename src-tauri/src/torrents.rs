@@ -6,7 +6,7 @@
 //! library, that's the folder its rips are in. For one that isn't, you say
 //! which show it is before it starts (`plan`: the anime its name finds on
 //! AniList, or another you choose), and it goes to its place in your library
-//! folders (library.rs), or, with none chosen for its kind, a folder named
+//! folders (library.rs), or, with none for its kind, a folder named
 //! for it in the downloads folder. A file that isn't finished counts as
 //! unreadable when Telly looks in a folder, so no episode is added half
 //! there. When a file finishes in a show's folder, Telly looks in the folder
@@ -365,11 +365,11 @@ fn destination(backend: &Backend, title: &str, files: Option<&[String]>, show: O
     let unsorted = downloads_folder(backend).join(folder_name(title)).to_string_lossy().into_owned();
     let Some(id) = anilist else { return Ok(Destination { folder: unsorted, show: None, sorted: false, joins: false }) };
     let graph = series::around(backend, id)?;
-    let (series, movies) = (backend.db.setting_str("library.series"), backend.db.setting_str("library.movies"));
+    let (series, movies) = library::folders(backend, &graph, &shows)?;
     // A season's folder with something in it is another show's, unless it's this entry's own download so far.
     let waiting = entries(backend);
     let taken = |folder: &str| in_use(folder) && !waiting.iter().any(|(f, entry)| key(f) == key(folder) && *entry == id);
-    let placed = library::place(series.trim(), movies.trim(), &graph, &shows, id, whole, taken);
+    let placed = library::place(&series, &movies, &graph, &shows, id, whole, taken);
     Ok(Destination { sorted: placed.is_some(), folder: placed.unwrap_or(unsorted), show: None, joins: !whole })
 }
 

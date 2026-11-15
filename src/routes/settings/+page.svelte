@@ -735,13 +735,13 @@
         <span>Series folder</span>
         <span class="inline"><input class="input grow mono" value={str("library.series")} readonly placeholder="D:\Anime\Series" aria-label="Series folder" /><button type="button" class="btn quiet" onclick={() => chooseLibraryFolder("series")}>Choose folder…</button></span>
         <small>A season goes in <span class="mono">Anime\Season 01</span> in here, beside the anime’s other seasons when it has any.</small>
-        {#if str("library.series")}<span><button type="button" class="link-btn" onclick={() => set("library.series", null)}>Use the downloads folder</button></span>{/if}
+        {#if str("library.series")}<span><button type="button" class="link-btn" onclick={() => set("library.series", "")}>Use the downloads folder</button></span>{/if}
       </div>
       <div class="field">
         <span>Movies folder</span>
         <span class="inline"><input class="input grow mono" value={str("library.movies")} readonly placeholder="D:\Anime\Movies" aria-label="Movies folder" /><button type="button" class="btn quiet" onclick={() => chooseLibraryFolder("movies")}>Choose folder…</button></span>
         <small>A film goes in <span class="mono">Title (year)</span> in here.</small>
-        {#if str("library.movies")}<span><button type="button" class="link-btn" onclick={() => set("library.movies", null)}>Use the downloads folder</button></span>{/if}
+        {#if str("library.movies")}<span><button type="button" class="link-btn" onclick={() => set("library.movies", "")}>Use the downloads folder</button></span>{/if}
       </div>
     </div>
   </section>

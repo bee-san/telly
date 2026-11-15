@@ -462,6 +462,9 @@ fn refresh(backend: &Backend) -> Result<()> {
     }
     let img = dir(backend).join("img");
     let mut casts = Vec::new();
+    // A show whose cast can't be had (AniList has no such entry any more) is
+    // left out, and the dictionary is made of the others'.
+    let mut missing = None;
     for show in &shows {
         let Some(anilist_id) = show.anilist_id else { continue };
         let task = |label: String, progress: f64| {
@@ -479,10 +482,13 @@ fn refresh(backend: &Backend) -> Result<()> {
             _ => {
                 task(format!("Getting {}'s characters", show.title), 0.0);
                 let fetched = fetch_cast(anilist_id, |page| task(format!("Getting {}'s characters · page {page}", show.title), 0.0));
-                match fetched {
+                // An old copy beats none while AniList is away.
+                match fetched.map_err(|e| e.context(format!("getting {}'s characters", show.title))).or_else(|e| cached_cast(backend, anilist_id).ok_or(e)) {
                     Ok(c) => c,
-                    // An old copy beats none while AniList is away.
-                    Err(e) => cached_cast(backend, anilist_id).ok_or(e)?,
+                    Err(e) => {
+                        missing.get_or_insert(e);
+                        continue;
+                    }
                 }
             }
         };
@@ -493,6 +499,9 @@ fn refresh(backend: &Backend) -> Result<()> {
         }
         casts.push(cast);
     }
+    if let (true, Some(e)) = (casts.is_empty(), missing.take()) {
+        return Err(e);
+    }
     let spoilers = backend.db.setting_bool("names.spoilers", false);
     // A portrait got since the last copy (one AniList's image server didn't send then) makes a new one.
     let key: Vec<String> = casts
@@ -502,7 +511,7 @@ fn refresh(backend: &Backend) -> Result<()> {
     let key = format!("{}|spoilers={spoilers}|v1", key.join(","));
     let zip = dir(backend).join(ZIP);
     if backend.db.setting_str("names.built") == key && zip.is_file() {
-        return Ok(());
+        return missing.map_or(Ok(()), Err);
     }
     backend.names.set_task(Some(Task {
         show_id: shows[0].id,
@@ -519,7 +528,8 @@ fn refresh(backend: &Backend) -> Result<()> {
     backend.db.set_setting("names.built", &json!(key))?;
     backend.db.set_setting("names.revision", &json!(now_ms().to_string()))?;
     backend.db.set_setting("names.summary", &serde_json::to_value(&summary)?)?;
-    Ok(())
+    // Made, and what was left out is said.
+    missing.map_or(Ok(()), Err)
 }
 
 /// Keeps the dictionary up to date in the background: when a show starts,

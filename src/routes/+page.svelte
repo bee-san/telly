@@ -60,7 +60,6 @@
   /** The anime being watched among `list`, the last one watched first. */
   const beingWatched = (list: AnimeCard[]) => list.filter(isWatching).sort((a, b) => lastWatched(b) - lastWatched(a));
   const watching = $derived(beingWatched(shows));
-  const rest = $derived(shows.filter((a) => !watching.includes(a)));
 
   // Which of the Library's shows are listed, and in what order. Kept in Settings.
   type Kind = "all" | "series" | "movies";
@@ -93,8 +92,8 @@
     return list;
   }
 
-  /** An anime that's only movies (ten Pokémon films) is listed under Movies; one with a season under Series. */
-  const listed = $derived(sorted(rest.filter((a) => kind === "all" || (kind === "movies") === a.parts.every((p) => p.movie))));
+  /** Every anime, those in Currently watching too. One that's only movies (ten Pokémon films) is listed under Movies; one with a season under Series. */
+  const listed = $derived(sorted(shows.filter((a) => kind === "all" || (kind === "movies") === a.parts.every((p) => p.movie))));
 
   /** Where an anime's name leads: its one show's page, or its own page of seasons and movies. */
   const pageOf = (a: AnimeCard) => (a.parts.length === 1 ? `/show?id=${a.parts[0].id}` : `/anime?id=${a.id}`);
@@ -255,7 +254,7 @@
         {/each}
       </div>
     {:else}
-      <p class="empty">{kind === "movies" ? "No movies here." : kind === "series" ? "No series here." : "Every show in the library is in progress."}</p>
+      <p class="empty">{kind === "movies" ? "No movies here." : "No series here."}</p>
     {/if}
   {/if}
 </div>

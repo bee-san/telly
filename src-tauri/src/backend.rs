@@ -1035,7 +1035,8 @@ impl Backend {
         // repeat, but its own number is still in its name).
         let parsed: std::collections::HashMap<&str, Option<i64>> = scan.files.iter().map(|f| (f.path.as_str(), f.parsed)).collect();
         let by_names = scan.numbering == "names" || {
-            let mut named = existing.iter().filter_map(|e| parsed.get(e.path.as_str()).map(|p| *p == Some(e.number))).peekable();
+            // (One without a number in its name, a recap say, says nothing either way.)
+            let mut named = existing.iter().filter_map(|e| parsed.get(e.path.as_str()).copied().flatten().map(|p| p == e.number)).peekable();
             named.peek().is_some() && named.all(|by_name| by_name)
         };
         // Episodes whose rip isn't there any more. A file of its name and size

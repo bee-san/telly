@@ -182,7 +182,8 @@ pub fn fetch_all(key: &str, entry_id: i64, dir: &Path) -> Result<Vec<Local>> {
             let path = dir.join(safe_file_name(&file.name));
             if !path.is_file() {
                 match download(key, &file.url, 16 * 1024 * 1024) {
-                    Ok(bytes) => std::fs::write(&path, bytes)?,
+                    // Written whole or not at all: a half file would count as had for good.
+                    Ok(bytes) => crate::util::write_whole(&path, bytes)?,
                     Err(e) => {
                         eprintln!("Jimaku: leaving out {}: {e:#}", file.name);
                         failed = Some(e);

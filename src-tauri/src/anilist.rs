@@ -526,7 +526,8 @@ pub fn download_cover(url: &str, path: &Path) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, bytes)?;
+    // Written whole or not at all: a half cover would count as had for good.
+    crate::util::write_whole(path, bytes)?;
     Ok(())
 }
 

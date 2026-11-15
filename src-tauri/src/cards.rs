@@ -314,8 +314,10 @@ pub fn worker(backend: &Backend) {
                 Err(e) => {
                     let tries = job.tries + 1;
                     let text = format!("{e:#}");
-                    let waiting = text.contains("open in Anki") || text.contains("isn’t reachable");
-                    if waiting && tries < MAX_TRIES {
+                    // Anki is closed: the card waits for it however long that is, looked at every 30 seconds.
+                    let closed = text.contains("isn’t reachable");
+                    let waiting = text.contains("open in Anki") || closed;
+                    if waiting && (closed || tries < MAX_TRIES) {
                         let _ = backend.db.update_mine_job(job.id, "pending", &text, tries);
                         if let Ok(mut nb) = backend.cards.not_before.lock() {
                             nb.insert(job.id, Instant::now() + Duration::from_secs((3 * tries as u64).min(30)));

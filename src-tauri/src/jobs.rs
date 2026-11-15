@@ -1649,7 +1649,8 @@ fn jimaku_files(backend: &Backend, key: &str, show: &Show) -> Result<Vec<jimaku:
 /// are entries of their own). Which entry that is is worked out once, from
 /// the folder's name, and kept.
 fn group_files(backend: &Backend, key: &str, show: &Show, group: &str, in_group: usize) -> Result<Vec<jimaku::Local>> {
-    if group.is_empty() {
+    // A disc of the show's (Disc 2) has the show's own entry's files.
+    if group.is_empty() || crate::anilist_list::is_disc(group) {
         return Ok(Vec::new());
     }
     let setting = format!("jimaku.group.{}.{group}", show.id);

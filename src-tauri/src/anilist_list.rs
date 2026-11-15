@@ -221,6 +221,10 @@ pub(crate) fn place(show: &Show, episodes: &[Episode], episode: &Episode, group_
         return Ok(Some((own, from_one(show.anilist_episodes, &listing, episode.number))));
     }
     let group = matching::group_of(&show.folder, &episode.path);
+    // A disc of the show's (Disc 2, Vol 3) is no other season: its numbers go on from the disc before.
+    if is_disc(&group) {
+        return Ok(Some((own, from_one(show.anilist_episodes, &listing, episode.number))));
+    }
     let first = listing.iter().filter(|(_, p)| matching::group_of(&show.folder, p) == group).map(|(n, _)| *n).min().unwrap_or(episode.number);
     let number = episode.number - first + 1;
     if groups.first().is_some_and(|(g, _)| *g == group) {
@@ -241,6 +245,15 @@ fn from_one(entry_episodes: Option<i64>, listing: &[(i64, String)], number: i64)
         Some(count) if first > 1 && last > count && last - (first - 1) <= count => number - (first - 1),
         _ => number,
     }
+}
+
+/// Whether a show's folder `group` is one of its discs or volumes ("Disc 2",
+/// "Vol.3", "[BD] Box 1"), not a season with an AniList entry of its own.
+pub(crate) fn is_disc(group: &str) -> bool {
+    static DISC: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let folder = group.rsplit('/').next().unwrap_or(group).trim();
+    DISC.get_or_init(|| regex::Regex::new(r"(?i)^(?:\[[^\]]*\]\s*)*(?:disc|disk|dvd|bd|vol(?:ume)?|box)[\s._-]*\d+$").expect("disc pattern"))
+        .is_match(folder)
 }
 
 /// Kept for a season folder AniList has no entry for. -1 was kept before a
@@ -355,6 +368,20 @@ mod tests {
         assert_eq!(found.unwrap(), Some((20626, 2)));
         // A folder AniList isn't sure about logs nothing.
         assert_eq!(place(&s, &seasons, &seasons[2], |_, _| Ok(None)).unwrap(), None);
+    }
+
+    #[test]
+    fn a_disc_folder_logs_to_the_show_s_own_entry() {
+        let s = Show { folder: "/anime/NARUTO DVD Box 1".into(), anilist_id: Some(20), anilist_episodes: Some(220), ..show() };
+        let discs: Vec<Episode> = (1..=4).map(|n| ep(n, &format!("/anime/NARUTO DVD Box 1/Disc {}/{n:02}.mkv", (n + 1) / 2))).collect();
+        let none = |_: &str, _| panic!("a disc is the show's own");
+        assert_eq!(place(&s, &discs, &discs[2], none).unwrap(), Some((20, 3)));
+        for disc in ["Disc 2", "DISC2", "Vol.3", "Volume 03", "[BD] Box 1", "Season 1/Disc 2"] {
+            assert!(is_disc(disc), "{disc}");
+        }
+        for season in ["Season 2", "Fairy Tail 2014", "2nd Season", "Discovery 2"] {
+            assert!(!is_disc(season), "{season}");
+        }
     }
 
     #[test]

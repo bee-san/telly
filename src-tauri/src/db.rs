@@ -376,9 +376,11 @@ impl Db {
         // The Library, the workers' choice of work and every page ask the same
         // few queries again and again: each is parsed once.
         conn.set_prepared_statement_cache_capacity(64);
-        // Work cut short when Telly last closed starts again.
+        // Work cut short when Telly last closed starts again: subtitles Whisper
+        // was making (see claim_whisper) wait for Whisper again.
         conn.execute_batch(
             "UPDATE episodes SET media_state = 'pending', media_progress = 0 WHERE media_state = 'working';
+             UPDATE episodes SET subs_state = 'whisper', subs_detail = '' WHERE subs_state = 'working' AND subs_detail LIKE '% is listening';
              UPDATE episodes SET subs_state = 'pending' WHERE subs_state = 'working';",
         )?;
         Ok(Self { conn: Mutex::new(conn) })
@@ -1199,6 +1201,24 @@ mod tests {
         assert_eq!(db.show_completion(show).unwrap(), history);
         db.remove_show(show).unwrap();
         assert_eq!(db.show_completion(show).unwrap(), ShowCompletion::default());
+        drop(db);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn subtitles_whisper_was_making_when_telly_closed_wait_for_whisper_again() {
+        let (db, dir) = temp_db("whisper-closed");
+        let episode = |number| NewEpisode { number, path: format!("{number}.mkv"), size: 1, duration: 1400.0 };
+        let show = db.add_show(&NewShow { folder: "Series".into(), episodes: vec![episode(1), episode(2)], ..Default::default() }).unwrap();
+        let ids: Vec<i64> = db.episodes(show).unwrap().iter().map(|e| e.id).collect();
+        db.queue_whisper(None, Some(ids[0])).unwrap();
+        assert!(db.claim_whisper(ids[0], "Whisper is listening").unwrap());
+        assert!(db.claim_subs(ids[1]).unwrap());
+        drop(db);
+
+        let db = Db::open(&dir.join("telly.sqlite")).unwrap();
+        let states: Vec<String> = db.episodes(show).unwrap().into_iter().map(|e| e.subs_state).collect();
+        assert_eq!(states, ["whisper", "pending"]);
         drop(db);
         let _ = std::fs::remove_dir_all(dir);
     }

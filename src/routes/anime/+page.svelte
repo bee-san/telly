@@ -77,43 +77,48 @@
     if (folder) adding = folder;
   }
 
+  /** Does `work` to every part, each whatever happens to the others; says which parts it couldn't do. */
+  async function eachPart(work: (part: ShowCard) => Promise<void>): Promise<string> {
+    const failed: string[] = [];
+    for (const s of anime?.parts ?? []) {
+      try {
+        await work(s);
+      } catch (e) {
+        failed.push(`${s.title}: ${errorText(e)}`);
+      }
+    }
+    return failed.join(" · ");
+  }
+
   async function lookAgain() {
     if (!anime) return;
     toast({ key: "rescan", state: "working", title: "Looking for new episodes", text: anime.title });
     let added = 0;
-    try {
-      for (const s of anime.parts) added += (await call<{ added: number }>("rescan", { id: s.id })).added;
-      toast({ key: "rescan", state: "done", title: added ? `Added ${plural(added, "episode")}` : "No new episodes", text: added ? "They’ll be ready to play soon." : "Telly checks the folders every 10 minutes too." });
-    } catch (e) {
-      toast({ key: "rescan", state: "failed", title: "Couldn’t read a folder", text: errorText(e) });
-    }
+    const failed = await eachPart(async (s) => void (added += (await call<{ added: number }>("rescan", { id: s.id })).added));
+    const title = added ? `Added ${plural(added, "episode")}` : failed ? "Couldn’t read a folder" : "No new episodes";
+    const text = failed ? (added ? `Couldn’t read ${failed}` : failed) : added ? "They’ll be ready to play soon." : "Telly checks the folders every 10 minutes too.";
+    toast({ key: "rescan", state: failed && !added ? "failed" : "done", title, text });
     load();
   }
 
   async function findSubtitles() {
     if (!anime) return;
-    try {
-      for (const s of anime.parts) await call("retrySubs", { show: s.id });
-    } catch (e) {
-      toast({ key: "showerr", state: "failed", title: "That didn’t work", text: errorText(e) });
-    }
+    const failed = await eachPart((s) => call("retrySubs", { show: s.id }));
+    if (failed) toast({ key: "showerr", state: "failed", title: "That didn’t work", text: failed });
     load();
   }
 
   async function freeSpace() {
     if (!anime) return;
-    try {
-      let episodes = 0;
-      let freed = 0;
-      for (const s of anime.parts) {
-        const r = await call<{ episodes: number; bytes: number }>("freeSpace", { show: s.id });
-        episodes += r.episodes;
-        freed += r.bytes;
-      }
-      toast({ key: "free", state: "done", title: episodes ? `Freed ${bytes(freed)}` : "Nothing to free", text: episodes ? `Removed Telly’s copies of ${plural(episodes, "watched episode")}. The rips are untouched.` : "Telly only removes its copies of watched episodes." });
-    } catch (e) {
-      toast({ key: "free", state: "failed", title: "Couldn’t free up space", text: errorText(e) });
-    }
+    let episodes = 0;
+    let freed = 0;
+    const failed = await eachPart(async (s) => {
+      const r = await call<{ episodes: number; bytes: number }>("freeSpace", { show: s.id });
+      episodes += r.episodes;
+      freed += r.bytes;
+    });
+    if (failed && !episodes) toast({ key: "free", state: "failed", title: "Couldn’t free up space", text: failed });
+    else toast({ key: "free", state: "done", title: episodes ? `Freed ${bytes(freed)}` : "Nothing to free", text: failed ? `Couldn’t free ${failed}` : episodes ? `Removed Telly’s copies of ${plural(episodes, "watched episode")}. The rips are untouched.` : "Telly only removes its copies of watched episodes." });
     load();
   }
 
@@ -121,13 +126,10 @@
     if (!anime) return;
     const a = anime;
     if (!confirm(`Remove ${a.title} and its ${a.parts.length} parts from Telly? The video files stay where they are. Telly’s copies and subtitles are deleted.`)) return;
-    try {
-      for (const s of a.parts) await call("removeShow", { id: s.id });
-      goto("/");
-    } catch (e) {
-      toast({ key: "remove", state: "failed", title: `Couldn’t remove ${a.title}`, text: errorText(e) });
-      load();
-    }
+    const failed = await eachPart((s) => call("removeShow", { id: s.id }));
+    if (!failed) return void goto("/");
+    toast({ key: "remove", state: "failed", title: `Couldn’t remove all of ${a.title}`, text: failed });
+    load();
   }
 </script>
 

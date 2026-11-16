@@ -596,7 +596,7 @@
   /* The top of the page, tinted with a little of the cover's colour. */
   .sp-hero { margin: -18px -32px 0; padding: 18px 32px 30px; background: color-mix(in srgb, var(--tint, var(--bg)) 14%, var(--bg)); border-bottom: 1px solid var(--rule); }
   .sp-head { display: grid; grid-template-columns: 172px minmax(0, 1fr); gap: 32px; align-items: end; max-width: 1180px; margin: 14px auto 0; }
-  .sp-cover { border-radius: 10px; overflow: hidden; box-shadow: var(--shadow-lg); }
+  .sp-cover { align-self: start; border-radius: 10px; overflow: hidden; box-shadow: var(--shadow-lg); }
   .sp-cover :global(.cv) { display: block; width: 100%; }
   .sp-body { display: grid; gap: 12px; min-width: 0; }
   .sp-head h2 { font: 800 clamp(32px, 4.4vw, 54px)/1.08 var(--font-jp-title); letter-spacing: .03em; overflow-wrap: anywhere; }

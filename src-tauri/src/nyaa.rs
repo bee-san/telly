@@ -86,7 +86,7 @@ fn agent() -> &'static ureq::Agent {
 }
 
 /// Searches nyaa for `query`: `category` is "all", "translated" or "raw",
-/// `sort` "seeders" or "newest", and `page` counts from 1.
+/// `sort` "seeders", "newest" or "size", and `page` counts from 1.
 pub fn search(chosen_site: &str, query: &str, category: &str, trusted: bool, sort: &str, page: u32) -> Result<Found> {
     let site = site(chosen_site);
     let category = match category {
@@ -94,7 +94,11 @@ pub fn search(chosen_site: &str, query: &str, category: &str, trusted: bool, sor
         "raw" => "1_4",
         _ => "1_0",
     };
-    let sort = if sort == "newest" { "id" } else { "seeders" };
+    let sort = match sort {
+        "newest" => "id",
+        "size" => "size",
+        _ => "seeders",
+    };
     let page = page.max(1).to_string();
     let params = [("q", query.trim()), ("c", category), ("f", if trusted { "2" } else { "0" }), ("s", sort), ("o", "desc"), ("p", page.as_str())];
     let html = fetch(&format!("{site}/"), &params)?;

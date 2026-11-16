@@ -303,6 +303,7 @@
     {#if searched && !releases.length && !searching && !searchError}
       <p class="hint">nyaa has nothing for “{searched}”.</p>
     {/if}
+        <option value="size">Biggest first</option>
     {#if set && entry}
       {@const s = set}
       {@const left = s.releases.filter((r) => sent[r.id] !== "sent").length}

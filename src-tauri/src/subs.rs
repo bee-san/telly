@@ -160,8 +160,8 @@ fn split_ruby(text: &str) -> (String, Vec<(usize, usize, String)>) {
             continue;
         }
         if (c == '(' || c == '（') && out.last().is_some_and(|&p| is_kanji(p)) {
-            let close = if c == '(' { ')' } else { '）' };
-            if let Some(len) = chars[i + 1..].iter().position(|&x| x == close) {
+            // Closed by either width of bracket: files mix them, 鈴木(すずき）.
+            if let Some(len) = chars[i + 1..].iter().position(|&x| x == ')' || x == '）') {
                 let inner: String = chars[i + 1..i + 1 + len].iter().collect();
                 // The base is the run of kanji just before the bracket, after
                 // any that have a reading already (魔導士(まどうし)達(たち): 達).
@@ -181,16 +181,39 @@ fn split_ruby(text: &str) -> (String, Vec<(usize, usize, String)>) {
 }
 
 /// Takes a speaker's name in brackets off the front: （ナルト）よし！ → ("ナルト", "よし！").
+/// A bracket inside the name's own (a note, a reading that wasn't taken for
+/// one) comes off with it, and isn't part of the name: （鈴木(49歳)）.
 fn split_speaker(text: &str) -> (String, String) {
     static R: OnceLock<Regex> = OnceLock::new();
-    let r = re(&R, r"^[（(]([^）)\n]{1,12})[）)]\s*");
+    static INNER: OnceLock<Regex> = OnceLock::new();
+    let r = re(&R, r"^[（(]((?:[^（()）\n]|[（(][^（()）\n]*[）)]){1,16})[）)]\s*");
     if let Some(c) = r.captures(text) {
         let rest = text[c.get(0).map(|m| m.end()).unwrap_or(0)..].to_string();
-        if !rest.trim().is_empty() {
-            return (c[1].to_string(), rest);
+        let name = re(&INNER, r"[（(][^（()）]*[）)]").replace_all(&c[1], "").trim().to_string();
+        if !rest.trim().is_empty() && !name.is_empty() {
+            return (name, rest);
         }
     }
     (String::new(), text.to_string())
+}
+
+/// Puts right a line kept from before a reading could close with the other
+/// width of bracket: its speaker was cut at the reading's bracket
+/// (鈴木(すずき) and the name's own bracket left at the front of its words.
+/// Any other line is left as it is.
+pub fn mend(line: &mut Line) {
+    if !line.speaker.contains(['(', '（']) || !line.text.starts_with([')', '）']) {
+        return;
+    }
+    let (whole, _) = split_ruby(&format!("（{}）{}", line.speaker, line.text));
+    let (speaker, rest) = split_speaker(&whole);
+    if speaker.is_empty() || !line.text.ends_with(&rest) {
+        return;
+    }
+    let cut = line.text.chars().count() - rest.chars().count();
+    line.ruby = std::mem::take(&mut line.ruby).into_iter().filter(|r| r.0 >= cut).map(|(at, len, reading)| (at - cut, len, reading)).collect();
+    line.speaker = speaker;
+    line.text = rest;
 }
 
 fn make_line(start: f64, end: f64, raw: &str, sign: bool) -> Option<Line> {
@@ -460,6 +483,26 @@ mod tests {
         assert_eq!((lines[0].text.as_str(), &lines[0].ruby), ("鬼殺隊隊士だ", &vec![(0, 3, "きさつたい".into()), (3, 2, "たいし".into())]));
         assert_eq!((lines[1].speaker.as_str(), lines[1].text.as_str(), &lines[1].ruby), ("炭治郎", "禰豆子！", &vec![(0, 3, "ねずこ".into())]));
         assert_eq!((lines[2].speaker.as_str(), lines[2].text.as_str()), ("男", "どうした？"));
+        // A reading opened with one width of bracket and closed with the other, and a note in the name's brackets.
+        let mixed = "1\n00:00:01,000 --> 00:00:02,000\n(鈴木(すずき）)うーい 佐々木(ささき）\n\n2\n00:00:03,000 --> 00:00:04,000\n（鈴木（すずき)）うーい\n\n3\n00:00:05,000 --> 00:00:06,000\n（鈴木(49歳)）うーい\n";
+        let lines = parse("ep.srt", mixed.as_bytes()).unwrap();
+        assert_eq!((lines[0].speaker.as_str(), lines[0].text.as_str(), &lines[0].ruby), ("鈴木", "うーい 佐々木", &vec![(4, 3, "ささき".into())]));
+        assert_eq!((lines[1].speaker.as_str(), lines[1].text.as_str()), ("鈴木", "うーい"));
+        assert_eq!((lines[2].speaker.as_str(), lines[2].text.as_str()), ("鈴木", "うーい"));
+        // As one file has it: the name's reading closed with the wide bracket, then the name's own.
+        let seen = "1\n00:00:01,000 --> 00:00:02,000\n（鈴木(すずき））うーい 佐々木\n\n2\n00:00:03,000 --> 00:00:04,000\n鈴木(すずき）うーい 佐々木\n";
+        let lines = parse("ep.srt", seen.as_bytes()).unwrap();
+        assert_eq!((lines[0].speaker.as_str(), lines[0].text.as_str()), ("鈴木", "うーい 佐々木"));
+        // A line kept as it was read before: the name cut at its reading's bracket, the other bracket left in its words.
+        let mut kept = Line { start: 1.0, end: 2.0, text: "）うーい 佐々木(ささき)".into(), ruby: vec![(5, 3, "ささき".into())], speaker: "鈴木(すずき".into(), sign: false };
+        kept.text = "）うーい 佐々木".into();
+        mend(&mut kept);
+        assert_eq!((kept.speaker.as_str(), kept.text.as_str(), &kept.ruby), ("鈴木", "うーい 佐々木", &vec![(4, 3, "ささき".into())]));
+        let mut fine = lines[0].clone();
+        mend(&mut fine);
+        assert_eq!(fine, lines[0]);
+        // With no brackets of its own, it's a word of the line with its reading over it.
+        assert_eq!((lines[1].speaker.as_str(), lines[1].text.as_str(), &lines[1].ruby), ("", "鈴木うーい 佐々木", &vec![(0, 2, "すずき".into())]));
     }
 
     #[test]

@@ -1470,10 +1470,10 @@ pub fn read_tried(backend: &Backend, episode_id: i64) -> Vec<Tried> {
 }
 
 pub fn read_lines(backend: &Backend, episode_id: i64) -> Vec<Line> {
-    std::fs::read(lines_path(backend, episode_id))
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+    let mut lines: Vec<Line> = std::fs::read(lines_path(backend, episode_id)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    // Lines kept from before a reading could close with either width of bracket are put right as they're read.
+    lines.iter_mut().for_each(subs::mend);
+    lines
 }
 
 pub fn write_lines(backend: &Backend, episode_id: i64, lines: &[Line]) -> Result<()> {

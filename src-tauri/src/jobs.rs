@@ -1333,8 +1333,8 @@ fn whisper_subtitles(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, whisper: 
             .arg(source)
             .args(["-map", &format!("0:a:{}", media::japanese_audio(&probe)), "-vn", "-sn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le"])
             .arg(&wav)
-            .status()
-            .context("starting ffmpeg")?;
+            .status_within(crate::util::WHOLE_RIP)
+            .context("running ffmpeg")?;
         if !status.success() {
             return Err(anyhow!("ffmpeg couldn’t read the audio"));
         }
@@ -1350,8 +1350,8 @@ fn whisper_subtitles(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, whisper: 
             .arg("-f")
             .arg(&wav)
             .current_dir(whisper.parent().unwrap_or(Path::new(".")))
-            .output()
-            .context("starting whisper.cpp")?;
+            .output_within(crate::util::LISTENING)
+            .context("running whisper.cpp")?;
         let _ = std::fs::remove_file(&wav);
         if !output.status.success() {
             let text = String::from_utf8_lossy(&output.stderr);

@@ -5,7 +5,7 @@
 //! in Telly's own tools folder, else one on PATH, else the copy another
 //! Japanese tool on this PC keeps (GameSentenceMiner, Fushi, Migaku).
 
-use crate::util::command;
+use crate::util::{command, Helper, QUICK};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -96,16 +96,14 @@ fn encoder_works(ffmpeg: &Path, encoder: &str) -> bool {
     command(ffmpeg)
         .args(["-hide_banner", "-nostdin", "-v", "error", "-f", "lavfi", "-i", "color=c=gray:s=320x240:r=24:d=0.5"])
         .args(["-vf", &format!("format={format}"), "-c:v", encoder, "-f", "null", "-"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
+        .status_within(QUICK)
         .is_ok_and(|s| s.success())
 }
 
 fn encoders(ffmpeg: &Path) -> String {
     command(ffmpeg)
         .args(["-hide_banner", "-encoders"])
-        .output()
+        .output_within(QUICK)
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         .unwrap_or_default()
 }
@@ -138,7 +136,7 @@ fn ask_ffmpeg(tools: &mut Tools) {
     if let Some(ffmpeg) = &tools.ffmpeg {
         tools.version = command(ffmpeg)
             .arg("-version")
-            .output()
+            .output_within(QUICK)
             .map(|o| String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").to_string())
             .unwrap_or_default();
         let list = encoders(ffmpeg);

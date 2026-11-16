@@ -18,7 +18,7 @@
 //! picked another for the show. A rip that plays as it is keeps all its
 //! tracks, and the player switches to that one; Telly's copy holds only it.
 
-use crate::util::command;
+use crate::util::{command, Helper, QUICK, WHOLE_RIP};
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -188,7 +188,7 @@ pub fn probe(ffprobe: &Path, path: &Path) -> Result<Probe> {
     let out = command(ffprobe)
         .args(["-v", "error", "-print_format", "json", "-show_format", "-show_streams", "-show_chapters"])
         .arg(path)
-        .output()
+        .output_within(QUICK)
         .context("running ffprobe")?;
     if !out.status.success() {
         return Err(anyhow!("ffprobe couldn’t read {}: {}", path.display(), String::from_utf8_lossy(&out.stderr).trim()));
@@ -201,7 +201,7 @@ pub fn duration(ffprobe: &Path, path: &Path) -> Result<f64> {
     let out = command(ffprobe)
         .args(["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1"])
         .arg(path)
-        .output()?;
+        .output_within(QUICK)?;
     String::from_utf8_lossy(&out.stdout).trim().parse::<f64>().map_err(|_| anyhow!("no duration"))
 }
 
@@ -423,6 +423,8 @@ pub fn run_ffmpeg(
         .stderr(Stdio::piped())
         .spawn()
         .context("starting ffmpeg")?;
+    // It ends when Telly does: a conversion nobody is waiting for is only in the way.
+    crate::util::own(&child);
     let stdout = child.stdout.take().expect("piped stdout");
     let mut stderr = child.stderr.take().expect("piped stderr");
     let errors = std::thread::spawn(move || {
@@ -546,7 +548,7 @@ pub fn sheet_being_made(sheet: &Path) -> bool {
 pub fn make_sheet(ffmpeg: &Path, video: &Path, duration: f64, output: &Path) -> Result<()> {
     let Some(_making) = start_making(output) else { return Ok(()) };
     let partial = output.with_extension("jpg.part");
-    let out = command(ffmpeg).args(sheet_args(video, duration, &partial)).stdin(Stdio::null()).output().context("starting ffmpeg")?;
+    let out = command(ffmpeg).args(sheet_args(video, duration, &partial)).output_within(WHOLE_RIP).context("running ffmpeg")?;
     if !out.status.success() {
         let _ = std::fs::remove_file(&partial);
         let text = String::from_utf8_lossy(&out.stderr);
@@ -583,7 +585,7 @@ pub fn read_audio_filtered(
         cmd.args(["-af", filter]);
     }
     cmd.args(["-map", &format!("0:a:{audio}"), "-vn", "-sn", "-ac", "1", "-ar", &rate.to_string(), "-f", "s16le", "-"]);
-    let out = cmd.stdin(Stdio::null()).output().context("starting ffmpeg")?;
+    let out = cmd.output_within(WHOLE_RIP).context("running ffmpeg")?;
     if !out.status.success() {
         let text = String::from_utf8_lossy(&out.stderr);
         return Err(anyhow!("ffmpeg couldn’t read the audio: {}", text.lines().last().unwrap_or("")));
@@ -598,9 +600,8 @@ pub fn write_wav(ffmpeg: &Path, path: &Path, audio: usize, start: f64, length: f
         .arg(path)
         .args(["-t", &format!("{length:.3}"), "-map", &format!("0:a:{audio}"), "-vn", "-sn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le"])
         .arg(output)
-        .stdin(Stdio::null())
-        .output()
-        .context("starting ffmpeg")?;
+        .output_within(WHOLE_RIP)
+        .context("running ffmpeg")?;
     if !out.status.success() {
         let text = String::from_utf8_lossy(&out.stderr);
         return Err(anyhow!("ffmpeg couldn’t read the audio: {}", text.lines().last().unwrap_or("")));
@@ -772,7 +773,7 @@ pub fn read_rip_and(ffmpeg: &Path, path: &Path, probe: &Probe, sheet: Option<&Pa
     let partial = sheet.map(|s| s.with_extension("jpg.reading"));
     let Some(args) = rip_args(path, &out, &folder, speech, partial.as_deref().map(|p| (probe.duration, p))) else { return Ok((out, None)) };
     std::fs::create_dir_all(&folder)?;
-    let ran = command(ffmpeg).args(args).stdin(Stdio::null()).output();
+    let ran = command(ffmpeg).args(args).output_within(WHOLE_RIP);
     let written: Vec<Option<Vec<u8>>> = (0..out.len()).map(|i| std::fs::read(folder.join(i.to_string())).ok()).collect();
     let _ = std::fs::remove_dir_all(&folder);
     let ran = ran.context("starting ffmpeg")?;
@@ -826,9 +827,8 @@ pub fn read_subtitle_track(ffmpeg: &Path, path: &Path, stream_index: i64, format
         .args(["-nostdin", "-hide_banner", "-v", "error", "-i"])
         .arg(path)
         .args(["-map", &format!("0:{stream_index}"), "-f", format, "-"])
-        .stdin(Stdio::null())
-        .output()
-        .context("starting ffmpeg")?;
+        .output_within(WHOLE_RIP)
+        .context("running ffmpeg")?;
     if !out.status.success() {
         return Err(anyhow!("ffmpeg couldn’t read subtitle track {stream_index}"));
     }

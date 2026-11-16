@@ -5,11 +5,10 @@
 //!
 //! And the Library's small copy of every cover, made when the cover is got.
 
-use crate::util::command;
+use crate::util::{command, Helper, QUICK};
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 use std::path::Path;
-use std::process::Stdio;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const USER_AGENT: &str = concat!("Telly/", env!("CARGO_PKG_VERSION"), " (personal anime player)");
@@ -67,7 +66,7 @@ pub fn frame(ffmpeg: &Path, video: &Path, duration: f64, output: &Path) -> Resul
         std::fs::create_dir_all(dir)?;
     }
     let partial = output.with_extension("jpg.part");
-    let out = command(ffmpeg).args(frame_args(video, at, &partial)).stdin(Stdio::null()).output().context("starting ffmpeg")?;
+    let out = command(ffmpeg).args(frame_args(video, at, &partial)).output_within(QUICK).context("running ffmpeg")?;
     if !out.status.success() || !partial.is_file() {
         let _ = std::fs::remove_file(&partial);
         let text = String::from_utf8_lossy(&out.stderr);

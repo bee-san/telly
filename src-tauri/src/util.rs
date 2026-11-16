@@ -37,6 +37,109 @@ pub fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     command
 }
 
+/// The longest a helper program gets for a quick question (ffprobe's of a rip, one frame, a short clip).
+pub const QUICK: std::time::Duration = std::time::Duration::from_secs(3 * 60);
+/// The longest it gets to read a rip from end to end: a film off a slow hard drive takes minutes.
+pub const WHOLE_RIP: std::time::Duration = std::time::Duration::from_secs(90 * 60);
+/// The longest whisper.cpp gets to hear an episode with its biggest model on a slow processor.
+pub const LISTENING: std::time::Duration = std::time::Duration::from_secs(8 * 60 * 60);
+
+/// Running a helper program to its end, for no longer than a limit. A read of
+/// a rip on a share that stopped answering, or an ffmpeg that hangs on a
+/// broken file, would otherwise hold its worker (and the drive's turn) until
+/// Telly restarts. The program also goes when Telly does (`own`).
+pub trait Helper {
+    /// As `Command::output`, but the program is stopped after `limit`, which is then the error.
+    fn output_within(&mut self, limit: std::time::Duration) -> std::io::Result<std::process::Output>;
+    /// As `Command::status`, with nothing of what the program writes kept.
+    fn status_within(&mut self, limit: std::time::Duration) -> std::io::Result<std::process::ExitStatus>;
+}
+
+impl Helper for Command {
+    fn output_within(&mut self, limit: std::time::Duration) -> std::io::Result<std::process::Output> {
+        use std::io::Read;
+        use std::process::Stdio;
+        let mut child = self.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+        own(&child);
+        // Read as it's written: a program whose pipe is full waits for a reader.
+        let read = |mut pipe: Box<dyn Read + Send>| {
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let _ = pipe.read_to_end(&mut bytes);
+                bytes
+            })
+        };
+        let stdout = read(Box::new(child.stdout.take().expect("piped stdout")));
+        let stderr = read(Box::new(child.stderr.take().expect("piped stderr")));
+        let status = wait_within(&mut child, limit);
+        let (stdout, stderr) = (stdout.join().unwrap_or_default(), stderr.join().unwrap_or_default());
+        Ok(std::process::Output { status: status?, stdout, stderr })
+    }
+
+    fn status_within(&mut self, limit: std::time::Duration) -> std::io::Result<std::process::ExitStatus> {
+        use std::process::Stdio;
+        let mut child = self.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()?;
+        own(&child);
+        wait_within(&mut child, limit)
+    }
+}
+
+/// Waits for a program to end, stopping it once `limit` has passed.
+fn wait_within(child: &mut std::process::Child, limit: std::time::Duration) -> std::io::Result<std::process::ExitStatus> {
+    let started = std::time::Instant::now();
+    let mut pause = std::time::Duration::from_millis(2);
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        if started.elapsed() >= limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            let minutes = limit.as_secs().div_ceil(60);
+            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, format!("it was still running after {minutes} minutes, and Telly stopped it")));
+        }
+        std::thread::sleep(pause);
+        pause = (pause * 2).min(std::time::Duration::from_millis(100));
+    }
+}
+
+/// Has a helper program Telly started end when Telly does, however Telly
+/// ends: it joins a Windows job that closes with Telly, and Windows ends
+/// what's in it. A conversion left running after Telly closed would go on
+/// for minutes with nobody to use its copy, beside the one Telly starts when
+/// it next opens.
+#[cfg(windows)]
+pub fn own(child: &std::process::Child) {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    // Kept as a number: a handle is a pointer, which a static can't hold.
+    static JOB: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    // SAFETY: the job is made once and never closed (it closes with Telly, which is the point);
+    // `limits` is a zeroed struct of the size passed, and the child's handle is open while `child` is.
+    unsafe {
+        let job = *JOB.get_or_init(|| {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return 0;
+            }
+            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            SetInformationJobObject(job, JobObjectExtendedLimitInformation, (&raw const limits).cast(), size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32);
+            job as usize
+        });
+        if job != 0 {
+            AssignProcessToJobObject(job as _, child.as_raw_handle() as _);
+        }
+    }
+}
+
+/// Elsewhere than Windows (where Telly is only developed), helper programs are left to end by themselves.
+#[cfg(not(windows))]
+pub fn own(_child: &std::process::Child) {}
+
 /// Full-width letters, digits and signs (Ｓ０１Ｅ０５, 第１０話, ＃０５) as
 /// their ASCII selves, and the ideographic space as a space.
 pub fn half_width(text: &str) -> String {
@@ -143,6 +246,27 @@ mod tests {
     fn counts_like_gsm() {
         assert_eq!(count_chars("明日の試験、絶対に合格してみせる。"), 15);
         assert_eq!(count_chars("「えっ？」 …"), 2);
+    }
+
+    #[test]
+    fn a_helper_program_is_stopped_after_its_limit() {
+        use std::time::{Duration, Instant};
+        if cfg!(windows) {
+            let said = command("cmd").args(["/C", "echo hello"]).output_within(Duration::from_secs(20)).unwrap();
+            assert_eq!(String::from_utf8_lossy(&said.stdout).trim(), "hello");
+            let started = Instant::now();
+            let hung = command("ping").args(["-n", "30", "127.0.0.1"]).output_within(Duration::from_millis(300));
+            assert_eq!(hung.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+            assert!(started.elapsed() < Duration::from_secs(10));
+        } else {
+            let said = command("sh").args(["-c", "echo hello; echo oops >&2"]).output_within(Duration::from_secs(20)).unwrap();
+            assert_eq!((String::from_utf8_lossy(&said.stdout).trim(), String::from_utf8_lossy(&said.stderr).trim()), ("hello", "oops"));
+            assert!(command("sh").args(["-c", "exit 3"]).status_within(Duration::from_secs(20)).is_ok_and(|s| s.code() == Some(3)));
+            let started = Instant::now();
+            let hung = command("sleep").arg("30").output_within(Duration::from_millis(300));
+            assert_eq!(hung.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+            assert!(started.elapsed() < Duration::from_secs(10));
+        }
     }
 
     #[test]

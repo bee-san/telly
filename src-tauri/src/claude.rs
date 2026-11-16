@@ -207,6 +207,7 @@ fn run(exe: &Path, question: &Ask, modern: bool, on_text: &mut impl FnMut(&str),
     }
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| anyhow!("Couldn’t start Claude Code: {e}"))?;
+    crate::util::own(&child);
     // An older Claude Code stops at an option it doesn't know without reading
     // the question, so writing it can fail: what it says about the option is
     // still read below, so the older flags are tried, and it's waited for.
@@ -306,6 +307,7 @@ impl Session {
         }
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
         let mut child = cmd.spawn()?;
+        crate::util::own(&child);
         let stdin = child.stdin.take().ok_or_else(|| anyhow!("no stdin"))?;
         let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
         let (tx, lines) = mpsc::channel();

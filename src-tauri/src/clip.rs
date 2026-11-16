@@ -8,10 +8,9 @@
 //!
 //! Opus: mono, 48 kb/s, loudness-normalised. About 20 KB for a 3-second line.
 
-use crate::util::command;
+use crate::util::{command, Helper, QUICK};
 use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 
 /// Clips stop at this length.
 pub const MAX_SECONDS: f64 = 12.0;
@@ -33,7 +32,7 @@ pub struct Clip {
 }
 
 fn run(ffmpeg: &Path, args: &[String]) -> Result<()> {
-    let out = command(ffmpeg).args(args).stdin(Stdio::null()).output()?;
+    let out = command(ffmpeg).args(args).output_within(QUICK)?;
     if !out.status.success() {
         let text = String::from_utf8_lossy(&out.stderr);
         return Err(anyhow!("ffmpeg: {}", text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("failed")));

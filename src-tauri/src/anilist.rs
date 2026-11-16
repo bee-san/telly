@@ -199,6 +199,48 @@ pub fn by_id(id: i64) -> Result<Anime> {
     answer.pointer("/data/Media").and_then(Anime::from_api).ok_or_else(|| anyhow!("AniList has no anime {id}"))
 }
 
+/// What AniList says the anime is about, as plain text, without its spoilers.
+pub fn description(id: i64) -> Result<String> {
+    let answer = query("query ($id: Int) { Media(id: $id, type: ANIME) { description(asHtml: false) } }", json!({ "id": id }))?;
+    Ok(plain_description(answer.pointer("/data/Media/description").and_then(Value::as_str).unwrap_or("")))
+}
+
+/// AniList's description without its tags, entities, spoilers (`~!…!~`) and
+/// "(Source: …)" line, its paragraphs one blank line apart.
+pub(crate) fn plain_description(text: &str) -> String {
+    static PATTERNS: OnceLock<[Regex; 4]> = OnceLock::new();
+    let [spoiler, line_break, tag, source] = PATTERNS.get_or_init(|| {
+        [r"(?s)~!.*?!~", r"(?i)<br\s*/?>", r"<[^>]*>", r"(?i)^[\[(](?:source|written by)\b.*$"].map(|p| Regex::new(p).expect("valid pattern"))
+    });
+    let text = spoiler.replace_all(text, "");
+    let text = line_break.replace_all(&text, "\n");
+    let text = tag
+        .replace_all(&text, "")
+        .replace("&quot;", "\"")
+        .replace("&#039;", "’")
+        .replace("&apos;", "’")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&mdash;", "—")
+        .replace("&ndash;", "–")
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&");
+    let mut paragraphs: Vec<String> = Vec::new();
+    let mut gap = true;
+    for line in text.lines().map(str::trim) {
+        if line.is_empty() || source.is_match(line) {
+            gap = true;
+        } else if gap || paragraphs.is_empty() {
+            paragraphs.push(line.to_string());
+            gap = false;
+        } else if let Some(last) = paragraphs.last_mut() {
+            last.push(' ');
+            last.push_str(line);
+        }
+    }
+    paragraphs.join("\n\n")
+}
+
 /// How many of an anime's episodes are out: every one once it's finished, those before the
 /// next to air while it's airing, and None when AniList doesn't say.
 pub fn episodes_out(id: i64) -> Result<Option<i64>> {
@@ -564,6 +606,12 @@ mod tests {
 
     fn anime(id: i64, romaji: &str, english: &str, format: &str, episodes: Option<i64>) -> Anime {
         Anime { id, romaji: romaji.into(), english: english.into(), format: format.into(), episodes, ..Default::default() }
+    }
+
+    #[test]
+    fn a_description_is_plain_text_without_its_spoilers_or_source() {
+        let text = "Lucy wants to join <i>Fairy Tail</i>.<br><br>\nShe meets Natsu &amp; Happy.~!Igneel is gone.!~ It&#039;s loud.<br><br>\n(Source: Crunchyroll)";
+        assert_eq!(plain_description(text), "Lucy wants to join Fairy Tail.\n\nShe meets Natsu & Happy. It’s loud.");
     }
 
     #[test]

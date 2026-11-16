@@ -1049,6 +1049,20 @@ impl Backend {
         Ok(json!({ "shows": cards, "libraries": libraries, "activity": self.activity(), "setup": self.setup() }))
     }
 
+    /// What AniList says a show is about, asked for once per AniList entry and
+    /// kept ("" for a show without an entry).
+    fn show_about(&self, id: i64) -> Result<String> {
+        let show = self.db.show(id)?.ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?;
+        let Some(anilist_id) = show.anilist_id else { return Ok(String::new()) };
+        let key = format!("anilist.about.{anilist_id}");
+        if let Some(Value::String(text)) = self.db.setting(&key)? {
+            return Ok(text);
+        }
+        let text = anilist::description(anilist_id)?;
+        self.db.set_setting(&key, &Value::String(text.clone()))?;
+        Ok(text)
+    }
+
     fn show_view(&self, id: i64) -> Result<Value> {
         let show = self.db.show(id)?.ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?;
         let cards_by_show = self.db.cards_per_show().unwrap_or_default();
@@ -1290,6 +1304,7 @@ impl Backend {
             "activity" => to_value(self.activity()),
             "queue" => to_value(self.queue()),
             "show" => self.show_view(arg(&args, "id")?).map(|v| tagged(v, &args)),
+            "showAbout" => self.show_about(arg(&args, "id")?).map(|text| json!({ "text": text })),
             "scan" => self.scan(&arg::<String>(&args, "folder")?, arg(&args, "anilistId")?, arg::<Option<bool>>(&args, "sure")?.unwrap_or(false)),
             "chosenFolder" => crate::library::chosen(self, &arg::<String>(&args, "folder")?),
             "scanFilm" => crate::library::film(self, &arg::<String>(&args, "folder")?, &arg::<String>(&args, "path")?),

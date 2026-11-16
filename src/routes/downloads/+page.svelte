@@ -19,7 +19,7 @@
   let show = $state<{ id: number; title: string; folder: string } | null>(null);
   /** Where the AniList entry's download goes, and the libraries it could go in. */
   let plan = $state.raw<DownloadPlan | null>(null);
-  /** What waits on which library it goes in: started, once you've said, into the library chosen. */
+  /** A download pressed before Telly knows where the entry goes: started once it does. */
   let choosing = $state.raw<{ what: string; go: (library: number | null) => void } | null>(null);
   /** Telly couldn't work out where the AniList entry's download goes. */
   let placeFailed = $state(false);
@@ -161,19 +161,19 @@
     }
   }
 
-  /** Whether a download for the AniList entry asks which library it goes in: it's a new show, and there's a choice. */
-  const asksLibrary = $derived(!show && !!entry && !!plan && plan.to.show === null && plan.libraries.length > 1);
+  /** Whether the AniList entry's downloads can go in a library you choose: it's a new show, and there's a choice. */
+  const choosesLibrary = $derived(!show && !!entry && !!plan && plan.to.show === null && plan.libraries.length > 1);
 
-  /** Starts `go` into the library you choose, asking first when there's a choice. Pressed before Telly
-   *  knows where the entry goes, it waits for that. */
+  /** Starts `go` into the library chosen above the results. Pressed before Telly knows where the entry
+   *  goes, it waits for that. */
   function intoLibrary(what: string, go: (library: number | null) => void) {
-    if (asksLibrary || (entry && !show && !plan && !placeFailed)) choosing = { what, go };
+    if (entry && !show && !plan && !placeFailed) choosing = { what, go };
     else go(entry ? (plan?.to.library ?? null) : null);
   }
 
-  // Once Telly knows where the entry goes, a download that waited on it asks, or starts when there's no choice.
+  // Once Telly knows where the entry goes, a download that waited on it starts.
   $effect(() => {
-    if (!choosing || (!plan && !placeFailed) || asksLibrary) return;
+    if (!choosing || (!plan && !placeFailed)) return;
     const go = choosing.go;
     choosing = null;
     go(plan?.to.library ?? null);
@@ -260,7 +260,7 @@
   </div>
   <div class="dl-head">
     <h2>Download</h2>
-    <span>{show ? `Into ${show.title}’s folder` : entry && plan ? `Into ${plan.to.folder}` : "Telly asks which show a release is, and puts it in its place"}</span>
+    <span>{show ? `Into ${show.title}’s folder` : entry && plan && !choosesLibrary ? `Into ${plan.to.folder}` : entry && plan ? "" : "Telly asks which show a release is, and puts it in its place"}</span>
   </div>
 
   {#if view?.error}
@@ -271,6 +271,16 @@
   {/if}
 
   <section aria-label="Find on nyaa.si">
+  {#if choosesLibrary && plan}
+    {@const p = plan}
+    <p class="into">
+      <label for="library">Into</label>
+      <select id="library" class="input" value={p.to.library ?? 0} onchange={(e) => placeEntry(Number(e.currentTarget.value))} title="The library what you download from here goes in">
+        {#each p.libraries as l, i (i)}{@const kind = l.kind === "movies" ? "Movies" : "Series"}<option value={i}>{l.name === kind ? l.name : `${l.name} (${kind})`}</option>{/each}
+      </select>
+      <span class="mono">{p.to.folder}</span>
+    </p>
+  {/if}
     <form class="find" onsubmit={(e) => { e.preventDefault(); search(); }}>
       <input class="input grow" bind:value={q} placeholder="Sousou no Frieren 1080p" aria-label="Search nyaa.si" />
       <button type="submit" class="btn" disabled={searching || !q.trim()}>{searching && pageNo === 1 ? "Searching…" : "Search"}</button>
@@ -347,33 +357,6 @@
       <div class="sheet-foot"><button type="button" class="btn quiet" onclick={() => (choosing = null)}>Cancel</button></div>
     </div>
   </div>
-{:else if choosing && plan}
-  {@const c = choosing}
-  {@const p = plan}
-  <div class="modal-bg" role="presentation" onclick={(e) => e.target === e.currentTarget && (choosing = null)} onkeydown={(e) => e.key === "Escape" && (choosing = null)}>
-    <div class="sheet" role="dialog" aria-modal="true" aria-label="Which library does it go in?">
-      <div class="ask-head">
-        <span class="kicker">Which library does it go in?</span>
-        <span class="mono what">{c.what}</span>
-      </div>
-      <div class="libs" role="radiogroup" aria-label="Library">
-        {#each p.libraries as l, i (i)}
-          <label class="lib" class:on={p.to.library === i}>
-            <input type="radio" name="library" checked={p.to.library === i} onchange={() => placeEntry(i)} />
-            <span class="lib-body">
-              <b>{l.name}</b>
-              <span>{l.kind === "movies" ? "Movies" : "Series"} · {l.downloads}</span>
-            </span>
-          </label>
-        {/each}
-      </div>
-      <p class="sheet-note">Goes in <span class="mono">{p.to.folder}</span></p>
-      <div class="sheet-foot">
-        <button type="button" class="btn quiet" onclick={() => (choosing = null)}>Cancel</button>
-        <button type="button" class="btn" onclick={() => { choosing = null; c.go(p.to.library); }}><Icon name="download" /><span>Download into {p.libraries[p.to.library ?? 0]?.name ?? "it"}</span></button>
-      </div>
-    </div>
-  </div>
 {/if}
 
 {#if asking}
@@ -406,15 +389,8 @@
   .warn { color: var(--warn); }
   .ok { color: var(--ok); font-weight: 600; }
   .more { justify-self: start; }
-  .ask-head { display: grid; gap: 4px; }
-  .kicker { font-size: 12.5px; color: var(--ink-3); }
-  .what { font-size: 13px; overflow-wrap: anywhere; }
-  .libs { display: grid; gap: 6px; }
-  .lib { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: start; padding: 10px 12px; border: 1px solid var(--rule); border-radius: 8px; cursor: pointer; }
-  .lib.on { border-color: var(--ink-3); background: var(--sunk); }
-  .lib input { margin: 3px 0 0; }
-  .lib-body { display: grid; gap: 2px; min-width: 0; font-size: 13.5px; }
-  .lib-body span { font-size: 12.5px; color: var(--ink-2); overflow-wrap: anywhere; }
+  .into { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 4px 0 0; font-size: 13px; color: var(--ink-2); }
+  .into .mono { overflow-wrap: anywhere; }
   .set { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: center; padding: 12px 14px; border: 1px solid var(--rule-2); border-radius: 8px; background: var(--surface); }
   .set.first { border-color: var(--ink-3); }
 </style>

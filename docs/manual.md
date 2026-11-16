@@ -338,6 +338,7 @@ In **Settings → AniList**, **Get a token** opens AniList, which shows an acces
 - Only episodes watched after signing in count. Progress only goes up: rewatching an earlier episode, or marking one unwatched, changes nothing.
 - Watching a show your list has as completed (finished in Telly or anywhere) is a rewatch: it's marked **rewatching** at the episode you're on, goes up as you watch, and is completed again at its last episode, its rewatch count one more. An episode counts when it's played to its end again; rewatching only the last episode starts no rewatch, and nor does marking episodes watched by hand.
 - A show added as one folder holding several seasons: the first season folder goes to the show's own entry, and a later one to the entry AniList finds for its folder's name, numbered from 1 within that folder. When AniList isn't fairly sure which entry a folder is, or a number is past the entry's last episode, nothing is logged.
+- A film is its entry's one episode, whatever number its file's name has (`Jujutsu Kaisen 0.mkv`, `Kizumonogatari 3.mkv`): watching it completes it.
 - Shows AniList doesn't know aren't logged.
 - If AniList can't be reached, Telly tries again every 10 minutes, and Settings says why it failed.
 - **Recommended** goes on what's on your list, except what you only plan to watch, and leaves it out of its picks ([Recommended](#-recommended) says how each counts). A copy of the list, with each anime's status and your score, is kept, fetched again when Telly starts, when you sign in and after Telly updates it.

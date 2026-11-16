@@ -1312,6 +1312,10 @@ impl Backend {
             base.year = a.year;
             base.cover_url = a.cover.clone();
             base.cover_color = a.color.clone();
+            // A film is the one episode of its entry, whatever number its name has ("Jujutsu Kaisen 0").
+            if a.format == "MOVIE" && a.episodes == Some(1) && base.episodes.len() == 1 {
+                base.episodes[0].number = 1;
+            }
         }
         base
     }
@@ -2666,6 +2670,19 @@ mod tests {
         assert_eq!(backend.db.episodes(show).unwrap()[0].path, path("Paprika (2006) [Bluray-1080p].mkv"));
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_film_is_its_entry_s_one_episode_whatever_number_its_name_has() {
+        let episode = |number: i64| vec![crate::db::NewEpisode { number, path: "Jujutsu Kaisen 0.mkv".into(), size: 1, duration: 6000.0 }];
+        let film = Anime { id: 131573, format: "MOVIE".into(), episodes: Some(1), ..Default::default() };
+        assert_eq!(Backend::new_show_from(Some(&film), NewShow { episodes: episode(0), ..Default::default() }).episodes[0].number, 1);
+        // A film released in parts keeps the number of the part.
+        let parts = Anime { episodes: Some(6), ..film.clone() };
+        assert_eq!(Backend::new_show_from(Some(&parts), NewShow { episodes: episode(3), ..Default::default() }).episodes[0].number, 3);
+        // So does a series you have one episode of.
+        let series = Anime { format: "TV".into(), ..film };
+        assert_eq!(Backend::new_show_from(Some(&series), NewShow { episodes: episode(5), ..Default::default() }).episodes[0].number, 5);
     }
 
     #[test]

@@ -678,8 +678,8 @@ pub fn add(backend: &Arc<Backend>, magnet: &str, torrent: &str, title: &str, sho
             });
         }
     }
-    // A show you follow gets its next episodes from this release (follow.rs).
-    if let Some(show) = to.show {
+    // A show you follow gets its next episodes from this release (follow.rs), unless it's several episodes in one.
+    if let Some(show) = to.show.filter(|_| !crate::nyaa::several_episodes(title)) {
         backend.db.set_setting(&crate::follow::like_setting(show), &json!(title))?;
     }
     backend.downloads.poke();

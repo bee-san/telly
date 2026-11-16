@@ -175,9 +175,10 @@ pub struct Looked {
 /// file name, or the title of the last release Telly downloaded for it, which is how nyaa lists it.
 fn latest(backend: &Backend, show: i64) -> Result<Option<(String, Shape)>> {
     let files = backend.db.episodes(show)?.into_iter().filter_map(|e| Some(Path::new(&e.path).file_name()?.to_string_lossy().into_owned()));
-    let downloaded = backend.db.setting_str(&like_setting(show));
+    // A release of several episodes in one (a batch) isn't named as its episodes are.
+    let downloaded = Some(backend.db.setting_str(&like_setting(show))).filter(|title| !nyaa::several_episodes(title));
     // Of two for the same episode, the release's title is the one to go by.
-    let named = files.chain([downloaded]).filter_map(|name| Some((shape(&name)?, name)));
+    let named = files.chain(downloaded).filter_map(|name| Some((shape(&name)?, name)));
     Ok(named.max_by_key(|(shape, _)| shape.number).map(|(shape, name)| (name, shape)))
 }
 

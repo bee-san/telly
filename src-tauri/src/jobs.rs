@@ -350,6 +350,9 @@ impl Jobs {
                 tasks.push(Task { show_id: 0, episode_id: 0, number: 0, title: "Telly".into(), label, progress: 0.0 });
             }
         }
+        if let Some(label) = self.copies_wait.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            tasks.push(Task { show_id: 0, episode_id: 0, number: 0, title: "Telly".into(), label, progress: 0.0 });
+        }
         tasks
     }
 
@@ -666,6 +669,8 @@ fn media_worker(backend: &Backend) {
             backend.jobs.cancel_media.store(false, Ordering::SeqCst);
             set_task(&backend.jobs.media, Some(task(&show, &episode, "Reading")));
             let result = plan_video(backend, &ffprobe, &show, &episode).and_then(|planned| match planned {
+                // No room for its copy, or nowhere to put it: nothing's wrong with the episode.
+                Some(_) if no_room(backend, &episode).is_some() => Err(anyhow!(NO_ROOM)),
                 Some((probe, plan, audio)) => convert_video(backend, &ffmpeg, &tools.encoder, &show, &episode, &probe, plan, audio),
                 None => Ok(()),
             });
@@ -675,12 +680,60 @@ fn media_worker(backend: &Backend) {
                 Err(e) if e.to_string() == "cancelled" => {
                     let _ = backend.db.media_reset(episode.id);
                 }
+                // The copies folder is unplugged or full (ffmpeg says so too, when it fills as it
+                // writes). Failing the episode would fail every one after it within seconds; it
+                // waits, and the work goes on by itself once there's somewhere to put a copy.
+                Err(e) if e.to_string() == NO_ROOM || format!("{e:#}").contains("No space left on device") => {
+                    let _ = backend.db.media_reset(episode.id);
+                    wait_for_room(backend, &episode);
+                }
                 Err(e) => {
                     let _ = backend.db.media_failed(episode.id, &format!("{e:#}"));
                 }
             }
         }
     }
+}
+
+/// What a conversion that wasn't started says, for want of somewhere to put the copy.
+const NO_ROOM: &str = "no room for the copy";
+/// How much room a copy is given beyond the size of its rip (a copy is at most about the rip's size).
+const ROOM_TO_SPARE: u64 = 500 * 1024 * 1024;
+
+/// Why a copy of `episode` can't be made now: the copies folder isn't there
+/// (its drive is unplugged), or hasn't room for a file the size of the rip.
+/// None when one can, or the drive won't say how much room it has.
+fn no_room(backend: &Backend, episode: &Episode) -> Option<String> {
+    let folder = backend.media_dir();
+    if std::fs::create_dir_all(&folder).is_err() {
+        return Some(format!("Waiting for the copies folder, which isn’t there: {}", folder.display()));
+    }
+    let needed = episode.size.max(0) as u64 + ROOM_TO_SPARE;
+    let free = crate::drives::free_space(&folder)?;
+    (free < needed).then(|| format!("Waiting for room in the copies folder: {} needs {} more", folder.display(), size_text(needed - free)))
+}
+
+/// "1.4 GB" or "350 MB".
+fn size_text(bytes: u64) -> String {
+    let mb = bytes as f64 / (1024.0 * 1024.0);
+    if mb >= 1024.0 { format!("{:.1} GB", mb / 1024.0) } else { format!("{} MB", mb.ceil()) }
+}
+
+/// Waits until a copy of `episode` can be made (see `no_room`), the title bar
+/// saying what for. Where the drive won't say how much room it has, a full
+/// one is tried again after 5 minutes.
+fn wait_for_room(backend: &Backend, episode: &Episode) {
+    let started = Instant::now();
+    let unknown = || format!("Waiting for room in the copies folder: {}", backend.media_dir().display());
+    loop {
+        let why = no_room(backend, episode);
+        if why.is_none() && (crate::drives::free_space(&backend.media_dir()).is_some() || started.elapsed() >= Duration::from_secs(300)) {
+            break;
+        }
+        *backend.jobs.copies_wait.lock().unwrap_or_else(|e| e.into_inner()) = Some(why.unwrap_or_else(unknown));
+        std::thread::sleep(Duration::from_secs(10));
+    }
+    *backend.jobs.copies_wait.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 /// Reads what's in rips nobody has looked at yet, while `media_worker`
@@ -2509,6 +2562,23 @@ pub fn use_file(backend: &Backend, episode: &Episode, path: &Path, name: &str) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_copies_folder_that_isn_t_there_is_waited_for() {
+        let dir = std::env::temp_dir().join(format!("telly-no-room-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Arc::new(Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap());
+        let episode = Episode { size: 1_400_000_000, ..Default::default() };
+        // Telly's own folder can be made, and whether it has room is the drive's to say.
+        assert!(no_room(&backend, &episode).is_none_or(|why| why.starts_with("Waiting for room")));
+        // A folder that can't be made (its drive is unplugged; here, a file is in the way).
+        std::fs::write(dir.join("unplugged"), b"").unwrap();
+        backend.call("setSetting", serde_json::json!({ "key": "media.folder", "value": dir.join("unplugged").join("copies").to_string_lossy() })).unwrap();
+        assert!(no_room(&backend, &episode).is_some_and(|why| why.starts_with("Waiting for the copies folder, which isn’t there")));
+        assert_eq!((size_text(350 * 1024 * 1024), size_text(1536 * 1024 * 1024)), ("350 MB".to_string(), "1.5 GB".to_string()));
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn the_episode_playing_and_the_one_after_it_don_t_wait_for_the_player() {

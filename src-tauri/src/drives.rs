@@ -1,6 +1,7 @@
 //! What kind of drive a rip is on: whether reading it costs a seek (a hard
 //! drive) or not (an SSD), as Windows says. Two rips read at once from a hard
-//! drive take longer than one after the other; from an SSD, less.
+//! drive take longer than one after the other; from an SSD, less. And how
+//! much room a drive has left, for Telly's copies of episodes.
 
 use std::path::Path;
 
@@ -16,6 +17,25 @@ pub fn seek_penalty(root: &Path) -> Option<bool> {
 /// rips are read as from a hard drive.
 #[cfg(not(windows))]
 pub fn seek_penalty(_root: &Path) -> Option<bool> {
+    None
+}
+
+/// How many bytes can still be written in `folder`, which is there. None
+/// when Windows won't say.
+#[cfg(windows)]
+pub fn free_space(folder: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let name: Vec<u16> = folder.as_os_str().encode_wide().chain([0]).collect();
+    let mut free = 0u64;
+    // SAFETY: `name` is a NUL-terminated UTF-16 string that outlives the call, and `free` a u64 to write to.
+    let asked = unsafe { GetDiskFreeSpaceExW(name.as_ptr(), &mut free, std::ptr::null_mut(), std::ptr::null_mut()) };
+    (asked != 0).then_some(free)
+}
+
+/// Elsewhere than Windows (where Telly is only developed) it isn't told.
+#[cfg(not(windows))]
+pub fn free_space(_folder: &Path) -> Option<u64> {
     None
 }
 

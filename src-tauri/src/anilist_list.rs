@@ -1,4 +1,4 @@
-//! Your AniList list: once you've signed in (Settings → AniList), each
+//! Your AniList list: once you've signed in (Settings → Keys and accounts), each
 //! episode you watch in Telly raises that anime's progress on your list.
 //!
 //! Only episodes watched since signing in count, and progress only ever goes

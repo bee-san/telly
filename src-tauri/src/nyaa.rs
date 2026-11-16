@@ -349,7 +349,7 @@ fn parse(html: &str, site: &str) -> Result<Found> {
     let re = |cell: &'static OnceLock<Regex>, pattern: &str| cell.get_or_init(|| Regex::new(pattern).expect("a valid pattern"));
     // An internet provider's page saying nyaa is blocked has no table of torrents.
     if !html.contains("torrent-list") {
-        return Err(anyhow!("That isn’t nyaa’s search page. If your internet provider blocks nyaa.si, give another address for it in Settings → Downloads."));
+        return Err(anyhow!("That isn’t nyaa’s search page. If your internet provider blocks nyaa.si, give another address for it in Settings → Library and downloads."));
     }
     let row = re(&ROW, r#"(?s)<tr class="(default|success|danger)">(.*?)</tr>"#);
     let view = re(&VIEW, r#"<a href="/view/(\d+)" title="([^"]*)""#);

@@ -1184,7 +1184,7 @@
   /** Where the episode carries on from when the recap closes: where you stopped, or where it is. */
   const resumeFrom = $derived(recapAt ?? Math.max(startAt(), now));
   const startLabel = $derived(ended ? "Close" : `${resumeFrom > 5 ? "Resume" : "Start"}${view?.movie ? "" : ` Episode ${view?.episode.number ?? ""}`}`);
-  /** The language Claude writes the recap and Explain in (Settings → Claude), so Japanese is drawn with Japanese, not Chinese, kanji. */
+  /** The language Claude writes the recap and Explain in (Settings → Explain and Previously on), so Japanese is drawn with Japanese, not Chinese, kanji. */
   const recapLang = $derived(settings["claude.language"] === "ja" ? "ja" : "en");
 
   /** "Episode 7", or "Episodes 2–7". */

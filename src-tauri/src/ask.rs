@@ -1176,7 +1176,7 @@ mod tests {
         assert_eq!(kept_more(&backend, id, 1, "nuance", "台詞1", "English"), None);
         assert_eq!(kept_more(&backend, id, 2, "gist", "台詞2", "English"), None);
         assert_eq!(kept_more(&backend, id, 1, "gist", "台詞一", "English"), None);
-        // With Settings → Claude on simple Japanese, the answer kept in Japanese comes back.
+        // With simple Japanese chosen in Settings → Explain and Previously on, the answer kept in Japanese comes back.
         backend.db.set_setting("claude.language", &json!("ja")).unwrap();
         backend.db.save_answer(id, "line.nuance", 1, "台詞1", "ていねいです。", "simple Japanese").unwrap();
         assert_eq!(explain_more(&backend, id, 1, "", "nuance").unwrap()["text"], "ていねいです。");

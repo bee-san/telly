@@ -24,9 +24,28 @@
 //! A finished download is shared while Telly is open, until it's removed in
 //! Processing; removing one leaves its files.
 //!
+//! What the client may do is yours to say, in Settings → Library and
+//! downloads:
+//!
+//! - How fast it downloads and uploads, at most (no limit unless set).
+//! - Whether a download goes on being shared once it's finished. When it
+//!   doesn't, each is paused as it finishes; while it downloads it shares
+//!   what it has, as a torrent does.
+//! - Whether Telly asks your router to let others connect to it (UPnP).
+//! - The one network connection to download through (a VPN's). While that
+//!   connection isn't up the client isn't running at all: it's stopped
+//!   within a second of the connection going, and started again when it's
+//!   back. librqbit can't tie its sockets to a connection on Windows, so
+//!   this is what Telly can do there.
+//! - How much room to keep free on the drive: a download there isn't room
+//!   for, counting what the others on that drive still need, isn't started.
+//!
 //! Settings: downloads.folder (where new shows go when no library folder
 //! takes them; Downloads\Telly in your home folder unless set),
-//! downloads.used (Telly has downloaded something, so it starts the client
+//! downloads.downLimit and downloads.upLimit (KB a second; none or 0 for no
+//! limit), downloads.share (true unless set), downloads.upnp (true unless
+//! set), downloads.adapter (the connection's name; empty for any),
+//! downloads.keepFree (GB; 1 unless set), downloads.used (Telly has downloaded something, so it starts the client
 //! when it opens), downloads.unfinished (the info hashes of the downloads
 //! that weren't finished at the last look) and downloads.entries (the AniList
 //! entry of each new show's download, by its folder, until it's added).
@@ -37,6 +56,7 @@ use crate::util::safe_file_name;
 use crate::{library, scan, series};
 use anyhow::{anyhow, Context, Result};
 use librqbit::dht::DhtPersistenceConfig;
+use librqbit::limits::LimitsConfig;
 use librqbit::{
     AddTorrent, AddTorrentOptions, AddTorrentResponse, DhtSessionConfig, ListenerOptions, ManagedTorrent, Session, SessionOptions,
     SessionPersistenceConfig, TorrentStatsState,
@@ -47,6 +67,7 @@ use serde_json::{json, Value};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
@@ -252,6 +273,15 @@ impl Downloads {
         paths.iter().map(|p| if downloading(p) { None } else { lengths.next().flatten() }).collect()
     }
 
+    /// The client has stopped: nothing is downloading any more, as far as the last look goes.
+    fn halted(&self) {
+        if let Ok(mut seen) = self.seen.lock() {
+            for t in seen.torrents.iter_mut().filter(|t| t.state != "done" && t.state != "error") {
+                (t.state, t.speed, t.peers, t.eta) = ("paused".into(), 0, 0, None);
+            }
+        }
+    }
+
     /// How many downloads have stopped on an error, at the last look.
     pub fn stopped(&self) -> usize {
         self.seen.lock().map(|s| s.torrents.iter().filter(|t| t.state == "error").count()).unwrap_or(0)
@@ -270,9 +300,99 @@ impl Downloads {
     }
 }
 
+/// A speed limit from Settings (KB a second), in bytes a second: none when it's unset or 0.
+fn limit(backend: &Backend, key: &str) -> Option<NonZeroU32> {
+    NonZeroU32::new((backend.db.setting_i64(key, 0).clamp(0, 4_000_000) as u32) * 1024)
+}
+
+/// The computer's network connections by the names Windows gives them
+/// ("Wi-Fi", "Mullvad"), each with whether it's connected now: it has an
+/// address of its own. A VPN's tunnel is one of them, though it's no piece
+/// of hardware; many VPNs make theirs when they connect and take it away
+/// when they drop.
+pub fn connections() -> Vec<(String, bool)> {
+    use network_interface::{NetworkInterface, NetworkInterfaceConfig};
+    let own = |ip: std::net::IpAddr| match ip {
+        std::net::IpAddr::V4(v4) => !v4.is_link_local() && !v4.is_unspecified(),
+        std::net::IpAddr::V6(v6) => !v6.is_unicast_link_local() && !v6.is_unspecified(),
+    };
+    let mut all: Vec<(String, bool)> = Vec::new();
+    // The computer's connection to itself isn't one to download through.
+    for interface in NetworkInterface::show().unwrap_or_default().into_iter().filter(|i| !i.internal && !i.addr.iter().any(|a| a.ip().is_loopback())) {
+        let connected = interface.addr.iter().any(|a| own(a.ip()));
+        // Listed once, though some systems list a connection once for each of its addresses.
+        match all.iter_mut().find(|(name, _)| *name == interface.name) {
+            Some(listed) => listed.1 |= connected,
+            None => all.push((interface.name, connected)),
+        }
+    }
+    all.sort();
+    all
+}
+
+/// The connection Settings has Telly download through, when it isn't connected now.
+fn waiting_for(backend: &Backend) -> Option<String> {
+    let chosen = backend.db.setting_str("downloads.adapter");
+    let chosen = chosen.trim();
+    (!chosen.is_empty() && !connections().iter().any(|(name, connected)| name == chosen && *connected)).then(|| chosen.to_string())
+}
+
+/// The drive `folder` is on (or will be), and how much room it has free, when the computer says.
+fn drive_of(folder: &Path) -> Option<(PathBuf, u64)> {
+    let disks = sysinfo::Disks::new_with_refreshed_list().ok()?;
+    disks.iter().filter(|d| folder.starts_with(d.mount_point())).max_by_key(|d| d.mount_point().as_os_str().len()).map(|d| (d.mount_point().to_path_buf(), d.available_space()))
+}
+
+/// "14.2 GB", "310 MB".
+fn size_text(bytes: u64) -> String {
+    const GB: f64 = 1024.0 * 1024.0 * 1024.0;
+    let b = bytes as f64;
+    if b >= GB { format!("{:.1} GB", b / GB) } else { format!("{:.0} MB", (b / (1024.0 * 1024.0)).ceil()) }
+}
+
+/// How much of a release still has to be written into `folder`: its files' sizes, less what's there of each already.
+fn still_to_write(torrent: &[u8], folder: &str) -> Option<u64> {
+    let meta = librqbit::torrent_from_bytes(torrent).ok()?;
+    let info = meta.info.data.validate().ok()?;
+    let sizes = info.iter_file_details().filter(|f| !f.attrs().padding).map(|f| {
+        let there = std::fs::metadata(Path::new(folder).join(f.filename.to_vec().join("/"))).map_or(0, |m| m.len());
+        f.len.saturating_sub(there)
+    });
+    Some(sizes.sum())
+}
+
+/// Why a release that needs `needed` more bytes in `folder` isn't started:
+/// its drive hasn't the room, with what Settings keeps free and what the
+/// downloads `others` (each its folder and what it still needs) are still
+/// to write there. None when there's room, or the drive doesn't say.
+fn no_room(backend: &Backend, folder: &str, needed: u64, others: &[(String, u64)]) -> Option<String> {
+    let (drive, free) = drive_of(Path::new(folder))?;
+    let keep = backend.db.setting_i64("downloads.keepFree", 1).clamp(0, 10_000) as u64 * 1024 * 1024 * 1024;
+    let queued: u64 = others.iter().filter(|(f, _)| drive_of(Path::new(f)).is_some_and(|(d, _)| d == drive)).map(|(_, left)| *left).sum();
+    if needed.saturating_add(keep).saturating_add(queued) <= free {
+        return None;
+    }
+    let mut why = format!("There isn’t room for this on {}: it needs {} and {} is free", drive.display(), size_text(needed), size_text(free));
+    if queued > 0 {
+        why.push_str(&format!(", {} of which your other downloads still need", size_text(queued)));
+    }
+    if keep > 0 {
+        why.push_str(&format!(". Settings keeps {} free", size_text(keep)));
+    }
+    Some(why + ".")
+}
+
 /// The client, started on first use with what it was downloading when Telly closed.
 fn session(backend: &Backend) -> Result<Arc<Session>> {
     let mut slot = backend.downloads.session.lock().map_err(|_| anyhow!("Telly’s downloader stopped"))?;
+    // The connection it downloads through isn't up: it doesn't run until it is.
+    if let Some(connection) = waiting_for(backend) {
+        if let Some(running) = slot.take() {
+            let _ = run(async move { running.stop().await });
+            backend.downloads.halted();
+        }
+        return Err(anyhow!("Downloads are waiting for {connection} to connect: Settings → Library and downloads has Telly download only through it."));
+    }
     if let Some(session) = slot.as_ref() {
         return Ok(session.clone());
     }
@@ -290,8 +410,9 @@ fn session(backend: &Backend) -> Result<Arc<Session>> {
             persistence: Some(DhtPersistenceConfig { config_filename: Some(dir.join("dht.json")), ..Default::default() }),
             ..Default::default()
         }),
-        // Others can connect to it as well as it to them, through the router where it lets it.
-        listen: Some(ListenerOptions { enable_upnp_port_forwarding: true, ..Default::default() }),
+        // Others can connect to it as well as it to them, through the router where it lets it and you do.
+        listen: Some(ListenerOptions { enable_upnp_port_forwarding: backend.db.setting_bool("downloads.upnp", true), ..Default::default() }),
+        ratelimits: LimitsConfig { upload_bps: limit(backend, "downloads.upLimit"), download_bps: limit(backend, "downloads.downLimit") },
         ..Default::default()
     };
     let folder = downloads_folder(backend);
@@ -445,6 +566,16 @@ pub fn add(backend: &Arc<Backend>, magnet: &str, torrent: &str, title: &str, sho
     if let Some(rip) = files.as_deref().and_then(|files| over_a_rip(backend, &folder, files)) {
         return Err(anyhow!("{rip} is in {folder} already, as one of your episodes, and downloading this would write over it"));
     }
+    let session = session(backend)?;
+    // A magnet link's size isn't known until the people sharing it say.
+    if let Some(needed) = fetched.as_ref().ok().and_then(|bytes| still_to_write(bytes, &folder)) {
+        let others: Vec<(String, u64)> = session.with_torrents(|all| {
+            all.map(|(_, handle)| (handle.output_folder().to_string_lossy().into_owned(), handle.stats())).filter(|(_, s)| !s.finished).map(|(f, s)| (f, s.total_bytes.saturating_sub(s.progress_bytes))).collect()
+        });
+        if let Some(why) = no_room(backend, &folder, needed, &others) {
+            return Err(anyhow!("{why}"));
+        }
+    }
     std::fs::create_dir_all(&folder).with_context(|| format!("Telly couldn’t make the folder {folder}"))?;
     if to.sorted {
         library::make_room(backend, &folder)?;
@@ -452,7 +583,6 @@ pub fn add(backend: &Arc<Backend>, magnet: &str, torrent: &str, title: &str, sho
     if let (None, true, Some(id)) = (to.show, to.joins, anilist) {
         set_entry(backend, &folder, Some(id))?;
     }
-    let session = session(backend)?;
     let options = AddTorrentOptions { output_folder: Some(folder.clone()), overwrite: true, ..Default::default() };
     backend.db.set_setting("downloads.used", &Value::Bool(true))?;
     match fetched {
@@ -566,10 +696,50 @@ fn torrent_now(id: usize, handle: &ManagedTorrent) -> (Torrent, Vec<String>) {
     (torrent, unfinished)
 }
 
+/// The finished downloads that are being shared (`live`), or that aren't (paused).
+fn finished(session: &Session, live: bool) -> Vec<Arc<ManagedTorrent>> {
+    let is = |state: &TorrentStatsState| if live { matches!(state, TorrentStatsState::Live) } else { matches!(state, TorrentStatsState::Paused) };
+    session.with_torrents(|all| all.filter(|(_, handle)| handle.stats().finished && is(&handle.stats().state)).map(|(_, handle)| handle.clone()).collect())
+}
+
+/// What changing one of the downloads' settings does at once: a speed limit
+/// holds from now, finished downloads are shared again, and the client is
+/// stopped to start again with or without asking the router.
+pub fn setting_changed(backend: &Backend, key: &str) {
+    let running = backend.downloads.session.lock().ok().and_then(|slot| slot.clone());
+    match (key, running) {
+        ("downloads.downLimit" | "downloads.upLimit", Some(session)) => {
+            session.ratelimits.set_download_bps(limit(backend, "downloads.downLimit"));
+            session.ratelimits.set_upload_bps(limit(backend, "downloads.upLimit"));
+        }
+        ("downloads.share", Some(session)) if backend.db.setting_bool("downloads.share", true) => {
+            for handle in finished(&session, false) {
+                let session = session.clone();
+                let _ = run(async move { session.unpause(&handle).await });
+            }
+        }
+        ("downloads.upnp", Some(session)) => {
+            if let Ok(mut slot) = backend.downloads.session.lock() {
+                *slot = None;
+            }
+            let _ = run(async move { session.stop().await });
+        }
+        _ => {}
+    }
+    backend.downloads.poke();
+}
+
 /// Looks at how the downloads are going. When a file has finished in a
 /// show's folder since the last look, the show looks in its folder again.
 pub fn look(backend: &Arc<Backend>) -> Result<()> {
     let session = session(backend)?;
+    // A finished download stops being shared, when Settings says not to share them.
+    if !backend.db.setting_bool("downloads.share", true) {
+        for handle in finished(&session, true) {
+            let session = session.clone();
+            let _ = run(async move { session.pause(&handle).await });
+        }
+    }
     let shows = backend.db.shows()?;
     let mut unfinished = HashSet::new();
     let mut torrents: Vec<Torrent> = session.with_torrents(|all| {
@@ -673,8 +843,9 @@ pub fn look(backend: &Arc<Backend>) -> Result<()> {
 
 /// Starts the client if Telly has downloaded anything, so what it was
 /// downloading carries on, and looks at the downloads now and then: every
-/// 3 seconds while something is downloading, every minute otherwise, and at
-/// once when woken.
+/// 3 seconds while something is downloading, every minute otherwise, every
+/// second while there's one connection to download through, and at once
+/// when woken.
 pub fn start(backend: Arc<Backend>) {
     // Which files aren't finished is known before any folder is looked in.
     if backend.db.setting_bool("downloads.used", false) {
@@ -684,7 +855,9 @@ pub fn start(backend: Arc<Backend>) {
         .name("telly-downloads".into())
         .spawn(move || loop {
             let busy = backend.db.setting_bool("downloads.used", false) && look(&backend).is_ok() && backend.downloads.summary().is_some();
-            backend.downloads.wait(Duration::from_secs(if busy { 3 } else { 60 }));
+            // With one connection to download through, it's looked for every second, so the client stops within one of its going.
+            let watched = backend.db.setting_bool("downloads.used", false) && !backend.db.setting_str("downloads.adapter").trim().is_empty();
+            backend.downloads.wait(Duration::from_secs(if watched { 1 } else if busy { 3 } else { 60 }));
         })
         .ok();
 }
@@ -784,6 +957,53 @@ mod tests {
         // Their BD batch, named as the WEB one you have.
         assert_eq!(over_a_rip(&backend, &folder, &files(&["[Judas] Show - S01E02.mkv", "[Judas] Show - S01E01.mkv"])).map(String::as_str), Some("[Judas] Show - S01E01.mkv"));
         assert_eq!(over_a_rip(&backend, &folder, &files(&["[Judas] Show - S01E02.mkv"])), None);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_download_there_isn_t_room_for_isn_t_started() {
+        let dir = std::env::temp_dir().join(format!("telly-room-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let folder = dir.join("Show").to_string_lossy().into_owned();
+        let (_, free) = drive_of(Path::new(&folder)).expect("the drive the temp folder is on");
+        backend.db.set_setting("downloads.keepFree", &json!(0)).unwrap();
+        assert_eq!(no_room(&backend, &folder, free / 2, &[]), None);
+        assert!(no_room(&backend, &folder, free.saturating_add(1 << 30), &[]).unwrap().starts_with("There isn’t room for this on "));
+        // What the other downloads on the drive still need counts, and so does what Settings keeps free.
+        let others = [(dir.join("Other").to_string_lossy().into_owned(), free)];
+        assert!(no_room(&backend, &folder, free / 2, &others).unwrap().contains("your other downloads still need"));
+        backend.db.set_setting("downloads.keepFree", &json!(10_000)).unwrap();
+        assert!(no_room(&backend, &folder, 1, &[]).unwrap().ends_with("Settings keeps 10000.0 GB free."));
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_speed_limit_is_none_until_set() {
+        let dir = std::env::temp_dir().join(format!("telly-limit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        assert_eq!(limit(&backend, "downloads.downLimit"), None);
+        backend.db.set_setting("downloads.downLimit", &json!(500)).unwrap();
+        assert_eq!(limit(&backend, "downloads.downLimit").map(NonZeroU32::get), Some(500 * 1024));
+        backend.db.set_setting("downloads.downLimit", &json!(0)).unwrap();
+        assert_eq!(limit(&backend, "downloads.downLimit"), None);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn downloads_wait_for_the_connection_chosen() {
+        let dir = std::env::temp_dir().join(format!("telly-connection-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        assert_eq!(waiting_for(&backend), None);
+        backend.db.set_setting("downloads.adapter", &json!("a connection this computer hasn’t")).unwrap();
+        assert_eq!(waiting_for(&backend).as_deref(), Some("a connection this computer hasn’t"));
+        // The client doesn't start without it.
+        assert!(session(&backend).err().is_some_and(|e| e.to_string().starts_with("Downloads are waiting for ")));
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

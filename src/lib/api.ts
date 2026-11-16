@@ -694,6 +694,33 @@ export interface DownloadsView {
   folder: string;
 }
 
+/** A show as it's added when nothing in Add media's sheet is changed, as `addShows` takes it. */
+export interface ShowAsRead {
+  folder: string;
+  /** What it's called when it has no AniList entry. */
+  title: string;
+  anilistId: number | null;
+  /** Its folder holds other shows' rips too. */
+  shared: boolean;
+  episodes: { number: number; path: string; size: number; duration: number }[];
+}
+
+/** What the first-time setup reads in a folder you chose: the folders in it, an anime each, and the videos lying loose in it, a film each (one anime's own folder is the one folder). */
+export interface ChosenFolder {
+  show: boolean;
+  folders: string[];
+  videos: string[];
+  /** How many of them are in Telly already, and so left out. */
+  have: number;
+}
+
+/** A video lying loose in a chosen folder, as the film the first-time setup would add. */
+export interface FilmFound {
+  title: string;
+  anime: Anime | null;
+  asRead: ShowAsRead[];
+}
+
 export interface ScanResult {
   scan: Scan;
   matches: Anime[];
@@ -705,6 +732,8 @@ export interface ScanResult {
   anime: Anime | null;
   error: string | null;
   ffprobe: boolean;
+  /** The shows the folder is added as when nothing is changed: its parts, or the folder as one show. */
+  asRead: ShowAsRead[];
 }
 
 /** An anime AniList's users recommend to people who liked shows in the library or on your AniList list. */
@@ -780,7 +809,7 @@ export interface Status {
 
 export type Settings = Record<string, unknown>;
 
-/** What Settings → Known words chooses from: Anki's decks, its note types with the word's field, and how many notes the choice finds. */
+/** What Settings → Cards and Anki → Known words chooses from: Anki's decks, its note types with the word's field, and how many notes the choice finds. */
 export interface KnownSources {
   field: string;
   decks: string[];

@@ -4,15 +4,30 @@
 // in the app, from Hachidori's own status.
 import { call, errorText, inTauri, type AnkiNames, type ClaudeStatus, type HachidoriInfo, type OwnHachidori, type Settings, type Status } from "./api";
 
-/** The setup's screens, in order, and what opens each from Settings. */
+/** The setup's screens, in order. */
 export const STEPS = [
-  { id: "rips", name: "Your rips", setUp: "Set up your rips" },
-  { id: "subtitles", name: "Subtitles", setUp: "Set up subtitles" },
-  { id: "anki", name: "Anki", setUp: "Set up Anki" },
-  { id: "lookups", name: "Lookups", setUp: "Set up lookups" },
-  { id: "claude", name: "Explain and Previously on", setUp: "Set up Explain and Previously on" },
-  { id: "anilist", name: "AniList", setUp: "Sign in to AniList" },
+  { id: "rips", name: "Your rips" },
+  { id: "subtitles", name: "Subtitles" },
+  { id: "anki", name: "Anki" },
+  { id: "lookups", name: "Lookups" },
+  { id: "claude", name: "Explain and Previously on" },
+  { id: "anilist", name: "AniList" },
 ] as const;
+
+/** What Settings' Overview calls each check, and the page of Settings that sets it right. */
+export const IN_SETTINGS: Record<string, { name: string; page: string }> = {
+  ffmpeg: { name: "ffmpeg", page: "playing" },
+  clip: { name: "Pictures and audio for cards", page: "playing" },
+  jimaku: { name: "Subtitles", page: "keys" },
+  anki: { name: "Anki", page: "cards" },
+  fields: { name: "Note type", page: "cards" },
+  deck: { name: "Deck", page: "cards" },
+  beacon: { name: "Anki Beacon", page: "cards" },
+  hachidori: { name: "Hachidori", page: "lookups" },
+  dictionaries: { name: "Dictionaries", page: "lookups" },
+  claude: { name: "Explain and Previously on", page: "explain" },
+  anilist: { name: "AniList", page: "keys" },
+};
 
 export type Step = (typeof STEPS)[number]["id"];
 
@@ -43,7 +58,7 @@ export interface Facts {
   claude: ClaudeStatus | null;
 }
 
-/** The note type cards are made as, and the deck they go in, as Settings → Cards has them. */
+/** The note type cards are made as, and the deck they go in, as Settings → Cards and Anki has them. */
 export const noteType = (s: Settings) => String(s["anki.noteType"] ?? "").trim() || "kiku_typed";
 export const deck = (s: Settings) => String(s["anki.deck"] ?? "").trim() || "例文マイニング";
 
@@ -165,7 +180,7 @@ export function checks(f: Facts): Check[] {
   if (!f.claude) add("claude", "claude", "wait", "Looking for Claude Code…");
   else if (f.claude.openrouter) add("claude", "claude", "ok", f.claude.detail);
   else if (f.claude.available) add("claude", "claude", "ok", `Claude Code ${f.claude.version.replace(/\s*\(Claude Code\)$/, "")} is installed.`);
-  else add("claude", "claude", "bad", `Telly can’t find Claude Code: ${f.claude.detail} Install Claude Code, sign in, and check again, or add an OpenRouter API key (Subtitles) and gpt-oss on OpenRouter answers instead.`);
+  else add("claude", "claude", "bad", `Telly can’t find Claude Code: ${f.claude.detail} Install Claude Code, sign in, and check again, or add an OpenRouter API key and gpt-oss on OpenRouter answers instead.`);
 
   // AniList
   const user = String(settings["anilist.user"] ?? "");
@@ -176,9 +191,6 @@ export function checks(f: Facts): Check[] {
 
   return out;
 }
-
-/** The checks that find something not working. */
-export const problems = (all: Check[]) => all.filter((c) => c.state === "bad" || c.state === "warn");
 
 /** How a step stands: its worst check. */
 export function stepState(all: Check[], step: Step): CheckState {

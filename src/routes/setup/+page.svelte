@@ -415,7 +415,7 @@
         {#if claude?.openrouter}
           <small class="muted">It asks gpt-oss on OpenRouter what はじめまして means, to see that your OpenRouter key works. It costs a fraction of a cent.</small>
         {:else}
-          <small class="muted">It asks what はじめまして means, with the model chosen in Settings → Claude, to see that Claude Code is signed in and answers. It uses your Claude Code, so it costs a little.</small>
+          <small class="muted">It asks what はじめまして means, with the model chosen in Settings → Explain and Previously on, to see that Claude Code is signed in and answers. It uses your Claude Code, so it costs a little.</small>
         {/if}
         {#if test}
           <div class="status-list">

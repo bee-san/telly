@@ -776,7 +776,7 @@ export interface Status {
 
 export type Settings = Record<string, unknown>;
 
-/** What Settings → Known words chooses from: Anki's decks, its note types with the word's field, and how many notes the choice finds. */
+/** What Settings → Cards and Anki → Known words chooses from: Anki's decks, its note types with the word's field, and how many notes the choice finds. */
 export interface KnownSources {
   field: string;
   decks: string[];

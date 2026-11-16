@@ -216,7 +216,7 @@ pub fn note_words(backend: &Backend) -> HashMap<i64, String> {
     read(backend).notes
 }
 
-/// What Settings → Known words chooses from and shows: Anki's decks, its note
+/// What Settings → Cards and Anki → Known words chooses from and shows: Anki's decks, its note
 /// types that have the word's field, and how many notes the choice finds now.
 pub fn sources(backend: &Backend) -> Result<Value> {
     let url = cards::anki_url(backend);

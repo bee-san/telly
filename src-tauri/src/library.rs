@@ -1,5 +1,5 @@
 //! Your libraries: the folders your shows are kept in, and where a download
-//! goes when you've said which show it is. Settings → Libraries lists them,
+//! goes when you've said which show it is. Settings → Library and downloads lists them,
 //! each a name, a kind (series or movies) and its folders, one of which takes
 //! downloads. They live only in Settings: the Library lists every show
 //! together whatever folder it's in.

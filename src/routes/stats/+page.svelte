@@ -288,7 +288,7 @@
           {#if view.totalKnown}<p class="readout" aria-live="polite">{wReadout}</p>{/if}
         </div>
         {#if !view.totalKnown}
-          <p class="note">No known words yet. Telly reads them from Anki, as Settings → Known words says.</p>
+          <p class="note">No known words yet. Telly reads them from Anki, as Settings → Cards and Anki → Known words says.</p>
         {:else}
           <div class="words">
             <div class="w-side">

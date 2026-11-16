@@ -145,8 +145,9 @@ export interface Newer {
   version: string;
   /** Its page on GitHub. */
   page: string;
-  /** Its installer, once it's built. */
+  /** Its installer, once it's built, and its size in bytes. */
   installer: string | null;
+  size: number | null;
 }
 
 export interface DownloadSummary {

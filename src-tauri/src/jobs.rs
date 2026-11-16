@@ -539,7 +539,7 @@ pub fn waiting<'a>(backend: &Backend, kind: &str, library: &'a [(Show, Vec<Episo
     found.into_iter().map(|(_, s, e, n)| (s, e, n)).collect()
 }
 
-fn set_task(slot: &Mutex<Option<Task>>, task: Option<Task>) {
+pub(crate) fn set_task(slot: &Mutex<Option<Task>>, task: Option<Task>) {
     if let Ok(mut t) = slot.lock() {
         *t = task;
     }

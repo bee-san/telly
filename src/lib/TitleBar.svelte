@@ -10,17 +10,7 @@
   /** A newer Telly that's out: said beside the window's buttons, but not over the player. */
   const newer = $derived(app.dark ? null : (act?.newer ?? null));
 
-  async function openNewer() {
-    if (!newer) return;
-    try {
-      if (inTauri) {
-        const { openUrl } = await import("@tauri-apps/plugin-opener");
-        await openUrl(newer.page);
-      } else window.open(newer.page);
-    } catch {
-      goto("/settings#updates");
-    }
-  }
+
   const task = $derived(act?.tasks[0] ?? null);
   /** With no other work, the title bar shows the downloads, and goes to Processing. */
   const downloads = $derived(act?.downloading ?? null);
@@ -232,7 +222,7 @@
   <SearchBox dark={app.dark} />
   <span class="wt-right" data-tauri-drag-region>
   {#if newer}
-    <button type="button" class="wt-new" title="Open its page, to download it" onclick={openNewer}>Telly {newer.version} is out</button>
+    <button type="button" class="wt-new" title="Install it, in Settings" onclick={() => goto("/settings#updates")}>Telly {newer.version} is out</button>
   {/if}
   {#if inTauri}
     <span class="wt-caps">

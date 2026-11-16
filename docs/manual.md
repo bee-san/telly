@@ -64,7 +64,7 @@ Download the installer, `Telly_<version>_x64-setup.exe`, from the [latest releas
 
 ### 🔔 When a newer Telly is out
 
-Telly doesn't update itself. Once a day it asks GitHub what the latest release is, and when that's newer than the one you have, the title bar says **Telly 0.10.3 is out**: press it for the release's page, or **Download its installer** in Settings → Updates, and run the installer over this one. Your library stays as it is. Nothing about you or your library is sent, and Settings → Updates turns the asking off.
+Once a day Telly asks GitHub what the latest release is, and when that's newer than the one you have, the title bar says **Telly 0.10.3 is out**. Press it, then **Install Telly 0.10.3** in Settings → Updates: Telly downloads the release's installer (the title bar shows how far it's got), closes, and opens again as the newer one, your library as it was. **What's new** opens the release's page. Nothing is downloaded or installed until you press Install. The installer isn't signed, so Telly runs only one from this project's own releases page on GitHub, fetched over HTTPS and of the size GitHub lists for it. Nothing about you or your library is sent, and Settings → Updates turns the asking off.
 
 ### 🧭 The first time it opens
 

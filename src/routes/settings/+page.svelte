@@ -465,6 +465,22 @@
     }
   }
 
+  let installing = $state(false);
+
+  /** Downloads the newer Telly's installer and runs it: Telly closes when it starts. */
+  async function installNewer() {
+    installing = true;
+    try {
+      await call("installUpdate");
+      toast({ key: "update", state: "working", title: "Downloading the newer Telly", text: "The title bar shows how it’s going. Telly closes and opens again when it’s ready." }, 8000);
+      // What goes wrong is said in a note from the backend: the button comes back for another go.
+      setTimeout(() => (installing = false), 60_000);
+    } catch (e) {
+      installing = false;
+      toast({ key: "update", state: "failed", title: "Not installed", text: errorText(e) });
+    }
+  }
+
   async function openLink(link: string) {
     try {
       if (inTauri) {
@@ -888,14 +904,14 @@
       {@const newer = app.activity.newer}
       <p class="lede"><b>Telly {newer.version} is out.</b> This is Telly {status?.version ?? ""}.</p>
       <div class="actions">
-        <button type="button" class="btn" onclick={() => openLink(newer.installer ?? newer.page)}>{newer.installer ? "Download its installer" : "Open its page"}</button>
-        {#if newer.installer}<button type="button" class="btn quiet" onclick={() => openLink(newer.page)}>What’s new</button>{/if}
+        <button type="button" class="btn" disabled={!newer.installer || installing} onclick={installNewer}>{installing ? "Installing…" : `Install Telly ${newer.version}`}</button>
+        <button type="button" class="btn quiet" onclick={() => openLink(newer.page)}>What’s new</button>
       </div>
-      <p class="muted">Run the installer and it takes this Telly’s place. Your library stays as it is.</p>
+      <p class="muted">{newer.installer ? `Telly downloads its installer${newer.size ? ` (${bytes(newer.size)})` : ""} from GitHub, closes, and opens again as Telly ${newer.version}. Your library stays as it is.` : "Its installer is still being built. It’ll be here in a few minutes."}</p>
     {:else}
       <p class="lede">This is Telly {status?.version ?? ""}.</p>
     {/if}
-    <label class="check"><input type="checkbox" checked={bool("updates.check", true)} onchange={(e) => set("updates.check", e.currentTarget.checked)} /><span>Say when a newer Telly is out<small>Telly asks GitHub once a day what the latest release is. Nothing about you or your library is sent, and nothing is downloaded until you press the button.</small></span></label>
+    <label class="check"><input type="checkbox" checked={bool("updates.check", true)} onchange={(e) => set("updates.check", e.currentTarget.checked)} /><span>Say when a newer Telly is out<small>Telly asks GitHub once a day what the latest release is. Nothing about you or your library is sent, and nothing is downloaded or installed until you press Install.</small></span></label>
   </section>
 
   <section id="backup">

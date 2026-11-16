@@ -686,6 +686,11 @@ impl Backend {
         dir
     }
 
+    /// The newer Telly that's out, if GitHub has said there's one.
+    pub fn newer(&self) -> Option<crate::update::Newer> {
+        self.newer.lock().ok().and_then(|n| n.clone())
+    }
+
     /// Keeps what GitHub said of a newer Telly, for the title bar and Settings.
     pub fn set_newer(&self, newer: Option<crate::update::Newer>) {
         *self.newer.lock().unwrap_or_else(|e| e.into_inner()) = newer;
@@ -1359,6 +1364,10 @@ impl Backend {
             }
             "knownSources" => known::sources(self),
             "status" => Ok(self.status()),
+            "installUpdate" => {
+                crate::update::install(self.clone())?;
+                Ok(json!({}))
+            }
             "findTools" => {
                 self.refind_tools();
                 Ok(self.status())

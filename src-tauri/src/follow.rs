@@ -9,8 +9,9 @@
 //! It looks when following is turned on, a couple of minutes after Telly
 //! opens and every hour after that, and not while a game is running. A show
 //! with every episode AniList lists isn't looked for. A rip whose name gives
-//! no episode number, or names the episode's title, has nothing to go by, and
-//! nothing is downloaded for it: better none than the wrong one.
+//! no episode number has nothing to go by, and nothing is downloaded for it:
+//! better none than the wrong one. An episode's title in a name ("- 05 - The
+//! Return") is each episode's own, so it's left out when names are compared.
 //!
 //! Settings: follow.<show> (the show is followed), follow.got.<show> (the
 //! last episode Telly started a download of, so none is started twice),
@@ -101,6 +102,17 @@ pub(crate) fn shape(name: &str) -> Option<Shape> {
         (c[2].parse::<i64>().ok() == Some(number)).then(|| (i, format!("{}#", c.get(1).map_or("", |m| m.as_str()))))
     })?;
     words[at] = marked;
+    // An episode's title after its number is each episode's own: "- 05 - The Return", "05「帰還」",
+    // and "S01E05 The Return 1080p", where the release's details come after it.
+    static RESOLUTION: OnceLock<Regex> = OnceLock::new();
+    static TITLED: OnceLock<Regex> = OnceLock::new();
+    let details = words[at + 1..].iter().position(|w| re(&RESOLUTION, r"^[0-9]{3,4}p$").is_match(w));
+    let titled = || re(&TITLED, r"([0-9]{1,4})(?:v[0-9])?[話话回]?(?:\s+-\s+\S|\s*[「『])").captures_iter(&bare).any(|c| c[1].parse::<i64>().ok() == Some(number));
+    match details {
+        Some(n) => drop(words.drain(at + 1..at + 1 + n)),
+        None if titled() => words.truncate(at + 1),
+        None => {}
+    }
     Some(Shape { tags, words, number })
 }
 
@@ -306,6 +318,32 @@ mod tests {
         // A title with a number in it keeps it: only the episode's is taken out.
         assert_eq!(shape("[Group] 86 - 05 [720p].mkv").unwrap().words, ["86", "#"]);
         assert_eq!(shape("[Group] Show (BD 1080p).mkv"), None);
+    }
+
+    #[test]
+    fn an_episode_s_title_is_left_out_of_its_shape() {
+        let five = shape("[Group] Show - 05 - The Return [1080p].mkv").unwrap();
+        assert_eq!(five.words, ["show", "#"]);
+        assert!(five.same_release(&shape("[Group] Show - 06 - A Second Title, With 2 Parts [1080p].mkv").unwrap()));
+        assert!(five.same_release(&shape("[Group] Show - 06「帰還」[1080p].mkv").unwrap()));
+        let scene = shape("Sousou no Frieren S01E05 Phantoms of the Dead 1080p CR WEB-DL AAC2.0 H 264-VARYG").unwrap();
+        assert_eq!(scene.words, ["sousou", "no", "frieren", "s01e#", "1080p", "cr", "web", "dl", "aac2", "0", "h", "264", "varyg"]);
+        assert!(scene.same_release(&shape("Sousou no Frieren S01E06 A Privileged Wish 1080p CR WEB-DL AAC2.0 H 264-VARYG").unwrap()));
+        // What comes after the number without a title's dash, or details after it, stays: it may be the release's.
+        assert_eq!(shape("[Group] Show - 05 END [1080p].mkv").unwrap().words, ["show", "#", "end"]);
+        // A number in the title is the title's own.
+        assert_eq!(shape("[Group] 86 - 05 - Title [720p].mkv").unwrap().words, ["86", "#"]);
+    }
+
+    #[test]
+    fn later_episodes_with_their_own_titles_come_from_the_same_release() {
+        let like = "Sousou no Frieren S01E05 Phantoms of the Dead 1080p CR WEB-DL AAC2.0 H 264-VARYG";
+        let found = [
+            "Sousou no Frieren S01E07 Like a Fairy-tale 1080p CR WEB-DL AAC2.0 H 264-VARYG",
+            "Sousou no Frieren S01E06 A Privileged Wish 720p CR WEB-DL AAC2.0 H 264-VARYG",
+            "Sousou no Frieren S01E06 A Privileged Wish 1080p CR WEB-DL AAC2.0 H 264-VARYG",
+        ];
+        assert_eq!(numbers(like, 5, &found), [(6, 98), (7, 100)]);
     }
 
     #[test]

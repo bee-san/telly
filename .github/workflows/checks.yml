@@ -1,13 +1,17 @@
-# Checks every push to main, and every pull request: the frontend's types,
-# tests and build, and the backend's tests. Telly has no review gate, so this
-# is what says a commit on main broke something.
+# Checks the backend on every push to main that changes it: its tests, and
+# that the measuring examples still build. Telly has no review gate, so this
+# is what says a commit on main broke something. The frontend's checks are
+# in frontend.yml. Pushes that change neither (the manual, the README) run
+# nothing, since Windows runners' minutes count double.
 
 name: Checks
 
 on:
   push:
     branches: [main]
-  pull_request:
+    paths:
+      - src-tauri/**
+      - .github/workflows/checks.yml
   workflow_dispatch:
 
 permissions:
@@ -18,22 +22,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  frontend:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: lts/*
-          cache: npm
-
-      - run: npm ci
-      - run: npm run check
-      - run: npm test
-      - run: npm run build
-
   # On Windows, which Telly ships for: the tests' paths are Windows' (D:\Anime\...).
   backend:
     runs-on: windows-latest

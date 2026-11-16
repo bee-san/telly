@@ -1,0 +1,43 @@
+# Checks the frontend on every push to main that changes it: its types, tests
+# and build. On Linux, whose minutes cost half Windows': nothing here depends
+# on the platform. The backend's checks are in checks.yml.
+
+name: Frontend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - src/**
+      - static/**
+      - package.json
+      - package-lock.json
+      - svelte.config.js
+      - vite.config.js
+      - tsconfig.json
+      - .github/workflows/frontend.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frontend-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm run build

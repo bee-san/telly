@@ -39,9 +39,10 @@ jobs:
         with:
           toolchain: 1.99.1
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
+      # No Rust cache: a release runs on its tag, and GitHub lets a tag's run
+      # restore only its own caches or main's. Main's are the tests' debug
+      # builds, so restoring one and saving another (2 to 3 minutes) gained
+      # nothing.
 
       - name: The release's tag is the app's version
         if: github.event_name == 'release'

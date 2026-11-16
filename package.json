@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "prepare": "svelte-kit sync || echo ''",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "test": "vitest run",
     "tauri": "tauri",
     "prepare:hachidori": "node scripts/prepare-hachidori.mjs",
     "devserver": "cargo run --manifest-path src-tauri/Cargo.toml --features devserver --bin telly-devserver --",
@@ -32,6 +33,7 @@
     "svelte": "^5.56.3",
     "svelte-check": "^4.6.0",
     "typescript": "~6.0.3",
-    "vite": "^8.0.16"
+    "vite": "^8.0.16",
+    "vitest": "^5.1.0"
   }
 }

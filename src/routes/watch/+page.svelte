@@ -4,6 +4,7 @@
   import { onDestroy, onMount, tick as nextTick } from "svelte";
   import Icon from "$lib/Icon.svelte";
   import { afterCredits } from "$lib/ending";
+  import { lineHtml as subtitleHtml, namesIndex } from "$lib/subtitle-html";
   import { call, callKept, errorText, kept, mediaUrl, setFullscreen, setWindowTitle, type AskProgress, type CardEvent, type CastName, type ClaudeStatus, type EpisodeLite, type Line, type Moment, type PlayerView, type Recap, type SeekSheet } from "$lib/api";
   import { arrange, createRenderer, drawTiles, filters, toggle } from "$lib/filters";
   import { dragWindow, enterCompact, leaveCompact, setCompactShape } from "$lib/compact";
@@ -174,76 +175,10 @@
   /** The subtitles' size: in the small player, scaled to its width, from 14 px up to their usual size. */
   const subFont = $derived(app.compact ? `clamp(14px, ${subSize / 10}vw, ${subSize}px)` : `${subSize}px`);
 
-  function esc(s: string): string {
-    return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c] as string);
-  }
-
-  /** The names to look for, by their first character, longest first. */
-  const namesByFirst = $derived.by(() => {
-    const map = new Map<string, { chars: string[]; name: CastName; kana: boolean }[]>();
-    if (settings["player.names"] === false) return map;
-    for (const n of castNames) {
-      const chars = [...n.term];
-      if (chars.length < 2) continue;
-      const list = map.get(chars[0]) ?? [];
-      list.push({ chars, name: n, kana: chars.every(isKatakana) });
-      map.set(chars[0], list);
-    }
-    for (const list of map.values()) list.sort((a, b) => b.chars.length - a.chars.length);
-    return map;
-  });
-
-  /** Katakana and its long-vowel mark: a katakana name only counts when it isn’t part of a longer katakana word. */
-  const isKatakana = (c: string | undefined) => !!c && /[ァ-ヺー]/.test(c);
-
-  /** Where characters' names are in a line: start → (end, who). A name never splits a furigana base. */
-  function nameMarks(chars: string[], ruby: [number, number, string][]): Map<number, { end: number; name: CastName }> {
-    const marks = new Map<number, { end: number; name: CastName }>();
-    if (!namesByFirst.size) return marks;
-    const crossesRuby = (a: number, b: number) => ruby.some(([at, len]) => (a > at && a < at + len) || (b > at && b < at + len));
-    for (let i = 0; i < chars.length; i++) {
-      const found = (namesByFirst.get(chars[i]) ?? []).find(
-        (n) =>
-          n.chars.every((c, k) => chars[i + k] === c) &&
-          !crossesRuby(i, i + n.chars.length) &&
-          !(n.kana && (isKatakana(chars[i - 1]) || isKatakana(chars[i + n.chars.length]))),
-      );
-      if (!found) continue;
-      marks.set(i, { end: i + found.chars.length, name: found.name });
-      i += found.chars.length - 1;
-    }
-    return marks;
-  }
-
+  /** The names to look for in the lines, unless Settings turned colouring them off. */
+  const names = $derived(namesIndex(settings["player.names"] === false ? [] : castNames));
   /** A line as HTML: furigana as ruby, breaks as <br>, characters' names marked. */
-  function lineHtml(l: Line): string {
-    const chars = [...l.text];
-    const ruby = new Map<number, [number, string]>((l.ruby ?? []).map(([at, len, r]) => [at, [len, r]]));
-    const marks = nameMarks(chars, l.ruby ?? []);
-    let out = "";
-    let closeAt = -1;
-    for (let i = 0; i < chars.length; ) {
-      const m = marks.get(i);
-      if (m) {
-        out += `<span class="nm" title="${esc(m.name.name)}">`;
-        closeAt = m.end;
-      }
-      const r = ruby.get(i);
-      if (r && r[0] > 0) {
-        out += `<ruby>${esc(chars.slice(i, i + r[0]).join(""))}<rt>${esc(r[1])}</rt></ruby>`;
-        i += r[0];
-      } else {
-        out += chars[i] === "\n" ? "<br>" : esc(chars[i]);
-        i++;
-      }
-      if (closeAt >= 0 && i >= closeAt) {
-        out += "</span>";
-        closeAt = -1;
-      }
-    }
-    if (closeAt >= 0) out += "</span>";
-    return out;
-  }
+  const lineHtml = (l: Line) => subtitleHtml(l, names);
 
   function countChars(text: string): number {
     let n = 0;

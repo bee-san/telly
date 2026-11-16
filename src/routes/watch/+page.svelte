@@ -173,6 +173,8 @@
   const after = $derived(afterCredits(view?.ending, duration, view?.chapters ?? []));
   const autoplay = $derived(settings["player.autoplay"] !== false);
   const skipEndings = $derived(settings["player.skipEndings"] === true);
+  /** The next episode starts as this one ends, without the end card, when it's ready to. */
+  const straightOn = $derived(settings["player.endCard"] === false && autoplay && !!view?.next?.ready);
   const subSize = $derived(Number(settings["player.subtitleSize"] ?? 36) || 36);
   /** The subtitles' size: in the small player, scaled to its width, from 14 px up to their usual size. */
   const subFont = $derived(app.compact ? `clamp(14px, ${subSize / 10}vw, ${subSize}px)` : `${subSize}px`);
@@ -1296,6 +1298,7 @@
         return;
       }
     }
+    if (settings["player.endCard"] === false) return playNext();
     countdown = 8;
     if (countTimer) clearInterval(countTimer);
     countTimer = setInterval(() => {
@@ -1953,7 +1956,7 @@
     </div>
   {/if}
 
-  {#if ended && view}
+  {#if ended && view && !straightOn}
     <EndCard
       {view}
       {sat}

@@ -198,6 +198,7 @@
     { label: "Machine-made subtitles", page: "subtitles", group: "machine", words: "whisper openrouter model mai-transcribe elevenlabs" },
     { label: "Play the next episode when one ends", page: "playing", group: "play", words: "autoplay countdown" },
     { label: "Skip endings", page: "playing", group: "play", words: "outro credits" },
+    { label: "End card", page: "playing", group: "play", words: "summary stats countdown" },
     { label: "Convert ahead", page: "playing", group: "play" },
     { label: "Convert the rest while nothing plays", page: "playing", group: "play" },
     { label: "Wait while a game is running", page: "playing", group: "games" },
@@ -932,6 +933,7 @@
           <h3>Episodes</h3>
           <div class="card">
             {@render toggle("player.autoplay", true, "Play the next episode when one ends", "After an 8-second countdown. Esc stops it.")}
+            {@render toggle("player.endCard", true, "End card", "What you watched in the episode, and the countdown to the next. Off, the next episode starts as soon as one ends.")}
             {@render toggle("player.skipEndings", false, "Skip endings", "The countdown starts when the ending does, from the disc’s chapters, else where AniSkip’s users marked it. A scene after the credits plays first.")}
             <label class="row">
               <span class="what"><b>Convert ahead</b><small>Episodes WebView2 can’t play are converted this far ahead of the one playing.</small></span>

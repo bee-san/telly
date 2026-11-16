@@ -2534,7 +2534,7 @@ mod tests {
             std::fs::rename(path("[BD] Show - 01 [1080p].mkv"), in_other(name)).unwrap();
             rip("[BD] Show - 01 [1080p].mkv");
         }
-        *backend.scanned.lock().unwrap() = Some(scan::scan(&other, |paths| vec![Some(400.0); paths.len()]).unwrap());
+        let read = scan::scan(&other, |paths| vec![Some(400.0); paths.len()]).unwrap();
         let chosen = crate::db::NewShow {
             folder: other.to_string_lossy().into_owned(),
             title: "Other".into(),
@@ -2542,7 +2542,7 @@ mod tests {
             ..Default::default()
         };
         let other_id = backend.db.add_show(&chosen).unwrap();
-        backend.keep_left_out(other_id, &chosen);
+        backend.keep_left_out(other_id, &chosen, Some(&read));
         assert_eq!(backend.rescan(other_id).unwrap(), 0);
         // Kept by its place in the show's folder, so it's left out wherever the folder goes.
         assert_eq!(backend.db.setting(&left_out_setting(other_id)).unwrap(), Some(json!(["Other - 02.mkv"])));

@@ -415,14 +415,31 @@ fn add_folder(backend: &Arc<Backend>, folder: &str) -> bool {
 }
 
 /// Does `add` until AniList can be asked, for as long as a library has
-/// `library` (its folder). What `add` gave, or none when the library went.
+/// `library` (its folder). What `add` gave; or none when the library went,
+/// or `add` failed though AniList can be asked (see `tried`).
 fn patiently<T>(backend: &Backend, library: &str, add: impl Fn() -> Result<T>) -> Option<T> {
-    loop {
-        if let Ok(done) = add() {
-            return Some(done);
-        }
+    tried(add, anilist::answers, || {
         std::thread::sleep(ASK_AGAIN);
-        if !wanted(backend, library) {
+        wanted(backend, library)
+    })
+}
+
+/// What `add` gives, tried again after each `wait` (which says whether to go
+/// on) for as long as AniList `answers` nothing. An `add` that fails while
+/// AniList answers has trouble of its own (an entry AniList no longer has,
+/// a library that can't be written): it's given up on, with none, so what's
+/// after it isn't kept waiting. The next look tries it again.
+fn tried<T>(add: impl Fn() -> Result<T>, answers: impl Fn() -> bool, wait: impl Fn() -> bool) -> Option<T> {
+    loop {
+        match add() {
+            Ok(done) => return Some(done),
+            Err(e) if answers() => {
+                eprintln!("library: passed over for now: {e:#}");
+                return None;
+            }
+            Err(_) => {}
+        }
+        if !wait() {
             return None;
         }
     }
@@ -859,6 +876,34 @@ mod tests {
         assert!(look_now(&backend, 1).is_err());
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_folder_that_can_t_be_added_is_given_up_on_only_while_anilist_answers() {
+        use std::cell::Cell;
+        let (tries, waits) = (Cell::new(0), Cell::new(0));
+        let count = |cell: &Cell<i32>| cell.set(cell.get() + 1);
+        // AniList can't be asked: tried again after each wait, until it can.
+        let add = || {
+            count(&tries);
+            if tries.get() < 3 { Err(anyhow!("AniList isn’t reachable")) } else { Ok("added") }
+        };
+        let wait = || {
+            count(&waits);
+            true
+        };
+        assert_eq!(tried(add, || false, wait), Some("added"));
+        assert_eq!((tries.get(), waits.get()), (3, 2));
+        // It answers, and the folder still can't be added: given up on at once, without a wait.
+        let fails = || -> Result<()> {
+            count(&tries);
+            Err(anyhow!("AniList has no anime 5"))
+        };
+        assert_eq!(tried(fails, || true, wait), None);
+        assert_eq!((tries.get(), waits.get()), (4, 2));
+        // Its library removed while AniList can't be asked: no more of it.
+        assert_eq!(tried(fails, || false, || false), None);
+        assert_eq!(tries.get(), 5);
     }
 
     #[test]

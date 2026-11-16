@@ -134,6 +134,11 @@ fn query_as(q: &str, variables: Value, token: Option<&str>) -> Result<Value> {
     Ok(answer)
 }
 
+/// Whether AniList can be asked now: it's reachable, and isn't asking Telly to slow down.
+pub fn answers() -> bool {
+    query("query { Page(perPage: 1) { media(type: ANIME) { id } } }", json!({})).is_ok()
+}
+
 /// AniList answered "Not Found" (404) to a query.
 #[derive(Debug)]
 pub struct NotFound(String);

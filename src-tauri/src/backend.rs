@@ -143,8 +143,14 @@ pub struct Backend {
     /// Held while a show's folder is looked in for new episodes, so two looks
     /// at once (a download finishing, the 10-minute look) don't both add one.
     rescanning: Mutex<()>,
-    /// Whether the folders new to your libraries are being read for shows (library.rs).
+    /// Whether your libraries' folders are being read for shows (library.rs).
     pub adding_libraries: Mutex<bool>,
+    /// The libraries' folders to look in again for shows that aren't in Telly yet (library.rs).
+    pub library_looks: Mutex<Vec<String>>,
+    /// The videos in your libraries' folders that aren't in Telly and aren't looked at again, each with its length (library.rs).
+    pub passed_over: Mutex<Option<std::collections::HashMap<String, f64>>>,
+    /// The folder Add media's sheet is open on, and since when: the libraries' look leaves it to you.
+    sheet: Mutex<Option<(String, std::time::Instant)>>,
 }
 
 /// A folder Add media read, and what AniList makes of it.
@@ -589,6 +595,9 @@ impl Backend {
             scanned: Mutex::new(None),
             rescanning: Mutex::new(()),
             adding_libraries: Mutex::new(false),
+            library_looks: Mutex::new(Vec::new()),
+            passed_over: Mutex::new(None),
+            sheet: Mutex::new(None),
         })
     }
 
@@ -606,7 +615,6 @@ impl Backend {
             torrents::start(backend.clone());
             follow::start(backend.clone());
             backend.watch_folders();
-            crate::library::carry_on(&backend);
             backend.fill_covers();
             series::gather(&backend);
             recommend::gather(&backend);
@@ -1035,8 +1043,32 @@ impl Backend {
         if let Ok(mut kept) = self.scanned.lock() {
             *kept = Some(scan.clone());
         }
+        if let Ok(mut sheet) = self.sheet.lock() {
+            *sheet = Some((folder.to_string(), std::time::Instant::now()));
+        }
         let found = self.matched(scan, base, false)?;
         Ok(json!({ "scan": found.scan, "matches": found.matches, "parts": found.parts, "entries": found.entries, "anime": found.anime, "error": found.error, "ffprobe": self.tools().ffprobe.is_some() }))
+    }
+
+    /// Whether Add media's sheet has been open on `path`, a folder in it or one
+    /// it's in, in the last half hour: what's there is yours to add, as you
+    /// match it, not the libraries' look's.
+    pub(crate) fn sheet_open(&self, path: &str) -> bool {
+        let sheet = self.sheet.lock().ok().and_then(|sheet| sheet.clone());
+        sheet.is_some_and(|(folder, since)| since.elapsed() < Duration::from_secs(1800) && (relink::below(&folder, path).is_some() || relink::below(path, &folder).is_some()))
+    }
+
+    /// What's done once Add media's sheet has added from the folder it read:
+    /// the libraries' look may look there again, and takes none of what you
+    /// left out for new. `added` are the rips of the shows it added.
+    fn sheet_done(&self, scan: Option<&scan::Scan>, added: &[&str]) {
+        if let Ok(mut sheet) = self.sheet.lock() {
+            *sheet = None;
+        }
+        // Only the folder those shows were added from: the one read last may be another.
+        let Some(scan) = scan.filter(|scan| !added.is_empty() && added.iter().all(|path| scan.files.iter().any(|f| f.path == *path))) else { return };
+        let rest: Vec<(String, f64)> = scan.files.iter().filter(|f| f.duration > 0.0 && !added.contains(&f.path.as_str())).map(|f| (f.path.clone(), f.duration)).collect();
+        crate::library::pass_over(self, &rest);
     }
 
     /// The length of each video, through ffprobe. One still downloading has none.
@@ -1099,19 +1131,24 @@ impl Backend {
     /// sheet is changed: one show, or each of its parts as a show, with the
     /// AniList entries its name finds. Nobody checks these, so an anime whose
     /// names aren't much like the folder's isn't taken for it: the folder is
-    /// added under its own name, better that than as the wrong show. Returns
-    /// the shows added (none when the folder has no episodes), or why AniList
-    /// couldn't be asked.
-    pub(crate) fn add_as_read(self: &Arc<Self>, scan: &scan::Scan) -> Result<Vec<i64>> {
-        let found = self.matched(scan.clone(), None, true)?;
+    /// added under its own name, better that than as the wrong show.
+    ///
+    /// Only what isn't in Telly is added: a show (or part) with a video that
+    /// `new` says is new, and no episode of a show in Telly. So a folder some
+    /// of whose seasons are in Telly gets the ones that turned up since; with
+    /// `base`, they're matched as parts of that anime, the one the seasons in
+    /// Telly are. Returns the shows added, or why AniList couldn't be asked.
+    pub(crate) fn add_as_read(self: &Arc<Self>, scan: &scan::Scan, base: Option<i64>, new: impl Fn(&str) -> bool) -> Result<Vec<i64>> {
+        let found = self.matched(scan.clone(), base, true)?;
         if let Some(error) = &found.error {
             return Err(anyhow!("{error}"));
         }
-        let shows = found.shows();
+        let mut shows = found.shows();
+        shows.retain(|(show, _)| show.episodes.iter().any(|e| new(&e.path)));
         if shows.is_empty() {
             return Ok(Vec::new());
         }
-        self.add_parts(shows, found.anime.map(|a| a.id), Some(scan))
+        self.add_parts(shows, found.anime.map(|a| a.id), Some(scan), true)
     }
 
     /// Looks in a show's folder again for episodes that weren't there, or
@@ -1285,7 +1322,8 @@ impl Backend {
         }
     }
 
-    /// Looks for new episodes in every show's folder now, and every 10 minutes.
+    /// Looks for new episodes in every show's folder, then for new shows in
+    /// your libraries' folders (library.rs), now and every 10 minutes.
     fn watch_folders(self: &Arc<Self>) {
         let backend = self.clone();
         std::thread::Builder::new()
@@ -1296,6 +1334,7 @@ impl Backend {
                         let _ = backend.rescan(show.id);
                     }
                 }
+                crate::library::look(&backend);
                 std::thread::sleep(Duration::from_secs(600));
             })
             .ok();
@@ -1335,7 +1374,9 @@ impl Backend {
         }
         let new = Self::new_show_from(anime.as_ref(), new);
         let id = self.db.add_show(&new)?;
-        self.keep_left_out(id, &new, self.scanned.lock().ok().and_then(|s| s.clone()).as_ref());
+        let scan = self.scanned.lock().ok().and_then(|s| s.clone());
+        self.keep_left_out(id, &new, scan.as_ref());
+        self.sheet_done(scan.as_ref(), &new.episodes.iter().map(|e| e.path.as_str()).collect::<Vec<_>>());
         self.fetch_cover(id, new.cover_url.clone());
         series::gather(self);
         recommend::gather(self);
@@ -1395,6 +1436,12 @@ impl Backend {
             None => anilist::by_id(anilist_id)?,
         };
         let Some(new) = self.show_in_download(folder, &anime)? else { return Ok(false) };
+        // Its rips are a show's already (a library's look came by first): it's in Telly.
+        let _one_at_a_time = self.rescanning.lock().unwrap_or_else(|e| e.into_inner());
+        let in_telly: std::collections::HashSet<String> = self.db.all_episodes()?.iter().map(|e| crate::library::key(&e.path)).collect();
+        if new.episodes.iter().any(|e| in_telly.contains(&crate::library::key(&e.path))) {
+            return Ok(true);
+        }
         let id = self.db.add_show(&new)?;
         self.fetch_cover(id, new.cover_url.clone());
         series::gather(self);
@@ -1422,22 +1469,31 @@ impl Backend {
             return Err(anyhow!("There are no episodes to add"));
         }
         let scan = self.scanned.lock().ok().and_then(|s| s.clone());
-        let added = self.add_parts(parts.into_iter().map(|p| (p.show, p.shared)).collect(), anime, scan.as_ref())?;
+        let rips: Vec<String> = parts.iter().flat_map(|p| p.show.episodes.iter().map(|e| e.path.clone())).collect();
+        let added = self.add_parts(parts.into_iter().map(|p| (p.show, p.shared)).collect(), anime, scan.as_ref(), false)?;
+        self.sheet_done(scan.as_ref(), &rips.iter().map(String::as_str).collect::<Vec<_>>());
         Ok(json!({ "ids": added }))
     }
 
     /// Adds each of `parts` as a show, with whether its folder holds other
     /// parts' rips too. `scan` is the folder as it was read: what's in a
     /// part's folder and isn't its own is left out of later looks for new
-    /// episodes.
-    pub(crate) fn add_parts(self: &Arc<Self>, parts: Vec<(NewShow, bool)>, anime: Option<i64>, scan: Option<&scan::Scan>) -> Result<Vec<i64>> {
+    /// episodes. With `new_only` (nobody chose these: a library's look did),
+    /// a part with a rip that's a show's episode by now isn't added.
+    pub(crate) fn add_parts(self: &Arc<Self>, parts: Vec<(NewShow, bool)>, anime: Option<i64>, scan: Option<&scan::Scan>, new_only: bool) -> Result<Vec<i64>> {
         let ids: Vec<i64> = parts.iter().filter_map(|(show, _)| show.anilist_id).collect();
         let entries = anilist::by_ids(&ids)?;
         if let Some(missing) = ids.iter().find(|id| !entries.iter().any(|a| a.id == **id)) {
             return Err(anyhow!("AniList has no anime {missing}"));
         }
+        // Held from the look at what's in Telly to the adding, so a look for new episodes and this don't both take a rip.
+        let _one_at_a_time = new_only.then(|| self.rescanning.lock().unwrap_or_else(|e| e.into_inner()));
+        let in_telly: std::collections::HashSet<String> = if new_only { self.db.all_episodes()?.iter().map(|e| crate::library::key(&e.path)).collect() } else { Default::default() };
         let mut added = Vec::new();
         for (mut show, shared) in parts {
+            if show.episodes.iter().any(|e| in_telly.contains(&crate::library::key(&e.path))) {
+                continue;
+            }
             if show.title.trim().is_empty() {
                 show.title = scan::clean_title(Path::new(&show.folder).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default().as_str());
             }
@@ -1453,6 +1509,9 @@ impl Backend {
             }
             self.fetch_cover(id, new.cover_url.clone());
             added.push(id);
+        }
+        if added.is_empty() {
+            return Ok(added);
         }
         series::gather(self);
         recommend::gather(self);
@@ -2009,7 +2068,14 @@ impl Backend {
             "backUp" => backup::back_up(self, &arg::<String>(&args, "path")?),
             "readBackup" => backup::read(self, &arg::<String>(&args, "path")?),
             "restoreBackup" => backup::stage(self, &arg::<String>(&args, "path")?),
-            "removeShow" => self.remove_show(arg(&args, "id")?),
+            "removeShow" => {
+                let id: i64 = arg(&args, "id")?;
+                // What you remove stays out of Telly, though its rips stay in a library's folder.
+                let rips: Vec<(String, f64)> = self.db.episodes(id)?.into_iter().map(|e| (e.path, e.duration)).collect();
+                let done = self.remove_show(id)?;
+                crate::library::pass_over(self, &rips);
+                Ok(done)
+            }
             "moveShow" => {
                 series::move_show(self, arg(&args, "id")?, arg(&args, "to")?)?;
                 Ok(json!({}))
@@ -2257,6 +2323,10 @@ impl Backend {
             "follow" => follow::set(self, arg(&args, "show")?, arg(&args, "on")?),
             "downloads" => Ok(torrents::view(self)),
             "libraries" => crate::library::view(self),
+            "lookInLibrary" => {
+                crate::library::look_now(self, arg(&args, "at")?)?;
+                crate::library::view(self)
+            }
             "pauseDownload" => {
                 torrents::pause(self, arg(&args, "id")?, arg(&args, "paused")?)?;
                 Ok(torrents::view(self))

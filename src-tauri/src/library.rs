@@ -4,16 +4,27 @@
 //! downloads. They live only in Settings: the Library lists every show
 //! together whatever folder it's in.
 //!
-//! A folder new to your libraries (a library added, or a folder added to
-//! one) is read, and what's in it that isn't in Telly yet is added:
+//! Each library's folders are read, and what's in them that isn't in Telly
+//! yet is added: when the library is added (or a folder is added to one),
+//! every 10 minutes after the look for new episodes, and when you press Look
+//! for new shows.
 //!
 //! - Each folder in it is an anime, added as Add media… adds one when
-//!   nothing in its sheet is changed (`add_as_read` in backend.rs).
+//!   nothing in its sheet is changed (`add_as_read` in backend.rs). Of an
+//!   anime some of whose seasons are in Telly, the seasons, movies and OVAs
+//!   that turned up since are added.
 //! - In a movies library, each video lying loose in it is a film.
-//! - One at a time, in the background. The folders still being read are
-//!   kept, so Telly carries on with them when it next starts, and waits a
-//!   minute at a time while AniList can't be asked. A folder no library has
-//!   any more isn't read any further.
+//! - One at a time, in the background. The folders a library's adding or
+//!   your pressing asked for are kept, so Telly carries on with them when it
+//!   next starts, and waits a minute at a time while AniList can't be asked.
+//!   A folder no library has any more isn't read any further.
+//! - A video that's been looked at and isn't in Telly is passed over from
+//!   then on: an extra, a second copy of an episode, a show you removed or
+//!   left out in Add media…. So a look costs a listing of each folder, and
+//!   only a folder with a video that's new is read (ffprobe) and matched
+//!   (AniList). Add media… still adds what's passed over.
+//! - A folder Telly is downloading into is the downloader's to add
+//!   (torrents.rs), and one open in Add media… is yours.
 //!
 //! Telly's downloader writes a release straight into its place in the
 //! library you choose, so nothing is moved once it's down:
@@ -42,21 +53,23 @@
 //! no library, a download goes in the downloads folder as before
 //! (torrents.rs).
 //!
-//! Settings: libraries (the list) and libraries.adding (the folders still
-//! being read for shows). library.series and library.movies, the two folders
-//! Telly had before, become the first libraries.
+//! Settings: libraries (the list) and libraries.adding (the folders to read
+//! that were asked for and aren't read yet). library.series and
+//! library.movies, the two folders Telly had before, become the first
+//! libraries. The videos passed over are in libraries-passed-over.json, each
+//! with its length.
 
 use crate::anilist;
 use crate::backend::{shared_setting, Backend};
 use crate::db::{NewEpisode, NewShow, Show};
-use crate::relink::{below, folder_of, join};
-use crate::scan;
+use crate::relink::{below, folder_of, join, parts};
 use crate::series::Graph;
 use crate::util::{natural_cmp, safe_file_name};
-use anyhow::Result;
+use crate::{scan, torrents};
+use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -207,12 +220,50 @@ fn same(a: &str, b: &str) -> bool {
     below(a, b).is_some_and(|rest| rest.is_empty())
 }
 
-/// The folders still being read for shows.
+/// What a video is known by however its path is written: D:\Anime\a.mkv is d:/anime/a.mkv.
+pub(crate) fn key(path: &str) -> String {
+    parts(path).join("/").to_lowercase()
+}
+
+/// Reads, or with `change` changes and saves, the videos passed over: each by its `key`, with its length.
+fn passed<R>(backend: &Backend, change: bool, with: impl FnOnce(&mut HashMap<String, f64>) -> R) -> R {
+    let file = backend.dirs.local.join("libraries-passed-over.json");
+    let mut kept = backend.passed_over.lock().unwrap_or_else(|e| e.into_inner());
+    let videos = kept.get_or_insert_with(|| std::fs::read(&file).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default());
+    let out = with(videos);
+    if change {
+        let _ = crate::util::write_whole(&file, serde_json::to_vec(videos).unwrap_or_default());
+    }
+    out
+}
+
+/// Passes over `videos` (each with its length) from now on, those of them
+/// in a library's folder: a look for new shows takes none of them for new.
+/// What you removed from Telly, and what you left out in Add media….
+pub fn pass_over(backend: &Backend, videos: &[(String, f64)]) {
+    let folders: Vec<String> = libraries(backend).unwrap_or_default().into_iter().flat_map(|l| l.folders).collect();
+    let inside: Vec<&(String, f64)> = videos.iter().filter(|(path, _)| folders.iter().any(|f| below(f, path).is_some())).collect();
+    if !inside.is_empty() {
+        passed(backend, true, |kept| kept.extend(inside.iter().map(|(path, length)| (key(path), *length))));
+    }
+}
+
+/// The videos passed over that were below `from`: below `to` now, as the rips there are (relink.rs).
+pub fn moved(backend: &Backend, from: &str, to: &str) {
+    let (from, to) = (format!("{}/", key(from)), format!("{}/", key(to)));
+    if passed(backend, false, |kept| kept.keys().any(|k| k.starts_with(&from))) {
+        passed(backend, true, |kept| {
+            *kept = kept.drain().map(|(k, length)| (k.strip_prefix(&from).map_or(k.clone(), |rest| format!("{to}{rest}")), length)).collect();
+        });
+    }
+}
+
+/// The folders to read that were asked for (a library's adding, Look for new shows) and aren't read yet.
 fn adding(backend: &Backend) -> Vec<String> {
     backend.db.setting("libraries.adding").ok().flatten().and_then(|kept| serde_json::from_value(kept).ok()).unwrap_or_default()
 }
 
-/// Changes the folders still being read, from one place at a time.
+/// Changes the folders still to be read, from one place at a time.
 fn change_adding(backend: &Backend, change: impl FnOnce(&mut Vec<String>)) {
     let _one_at_a_time = backend.adding_libraries.lock().unwrap_or_else(|e| e.into_inner());
     let mut folders = adding(backend);
@@ -238,12 +289,44 @@ pub fn saved(backend: &Arc<Backend>, before: &[Library]) -> Result<()> {
     Ok(())
 }
 
-/// Reads the folders still to be read for shows, one after another, unless
-/// that's going on already.
+/// Looks in every library's folders again for shows that aren't in Telly yet (every 10 minutes: backend.rs).
+pub fn look(backend: &Arc<Backend>) {
+    let folders: Vec<String> = libraries(backend).unwrap_or_default().into_iter().flat_map(|l| l.folders).collect();
+    if let Ok(mut looks) = backend.library_looks.lock() {
+        for folder in folders {
+            if !looks.iter().any(|f| same(f, &folder)) {
+                looks.push(folder);
+            }
+        }
+    }
+    carry_on(backend);
+}
+
+/// Looks in the folders of the library `at` in the list for new shows now (Look for new shows, in Settings).
+pub fn look_now(backend: &Arc<Backend>, at: usize) -> Result<()> {
+    let library = libraries(backend)?.into_iter().nth(at).ok_or_else(|| anyhow!("That library isn’t in Settings any more"))?;
+    change_adding(backend, |folders| {
+        for folder in &library.folders {
+            if !folders.iter().any(|f| same(f, folder)) {
+                folders.push(folder.clone());
+            }
+        }
+    });
+    carry_on(backend);
+    Ok(())
+}
+
+/// Reads the folders to read for shows (those asked for first, then those
+/// to look in again), one after another, unless that's going on already.
 pub fn carry_on(backend: &Arc<Backend>) {
+    fn waiting(backend: &Backend) -> Vec<String> {
+        let mut folders = adding(backend);
+        folders.extend(backend.library_looks.lock().map(|looks| looks.clone()).unwrap_or_default());
+        folders
+    }
     {
         let mut going = backend.adding_libraries.lock().unwrap_or_else(|e| e.into_inner());
-        if *going || adding(backend).is_empty() {
+        if *going || waiting(backend).is_empty() {
             return;
         }
         *going = true;
@@ -252,17 +335,21 @@ pub fn carry_on(backend: &Arc<Backend>) {
     std::thread::Builder::new()
         .name("telly-libraries".into())
         .spawn(move || {
-            // A folder that isn't there (its drive is unplugged) waits for Telly's next start.
+            // A folder that isn't there (its drive is unplugged) waits for the next look.
             let mut away: Vec<String> = Vec::new();
             loop {
                 let next = {
                     let mut going = backend.adding_libraries.lock().unwrap_or_else(|e| e.into_inner());
-                    let next = adding(&backend).into_iter().find(|f| !away.contains(f));
+                    let next = waiting(&backend).into_iter().find(|f| !away.contains(f));
                     *going = next.is_some();
                     next
                 };
                 let Some(folder) = next else { break };
-                if add_folder(&backend, &folder) {
+                let read = add_folder(&backend, &folder);
+                if let Ok(mut looks) = backend.library_looks.lock() {
+                    looks.retain(|f| f != &folder);
+                }
+                if read {
                     change_adding(&backend, |folders| folders.retain(|f| f != &folder));
                 } else {
                     away.push(folder);
@@ -272,10 +359,23 @@ pub fn carry_on(backend: &Arc<Backend>) {
         .ok();
 }
 
+/// Whether a library has `folder`: one no library has any more isn't read any further.
+fn wanted(backend: &Backend, folder: &str) -> bool {
+    libraries(backend).is_ok_and(|all| all.iter().flat_map(|l| &l.folders).any(|f| same(f, folder)))
+}
+
+/// Every episode's rip in Telly, by its `key`: its length and its show.
+fn in_telly(backend: &Backend) -> Result<HashMap<String, (f64, i64)>> {
+    Ok(backend.db.all_episodes()?.into_iter().map(|e| (key(&e.path), (e.duration, e.show_id))).collect())
+}
+
 /// Adds what's in a library's folder that isn't in Telly yet: each folder as
 /// an anime and, in a movies library, each loose video as a film. False when
 /// the folder can't be read.
 fn add_folder(backend: &Arc<Backend>, folder: &str) -> bool {
+    if !wanted(backend, folder) {
+        return true;
+    }
     let Ok(entries) = std::fs::read_dir(folder) else { return false };
     let films = libraries(backend).unwrap_or_default().iter().any(|l| l.kind == "movies" && l.folders.iter().any(|f| same(f, folder)));
     let (mut folders, mut videos): (Vec<PathBuf>, Vec<PathBuf>) = (Vec::new(), Vec::new());
@@ -295,52 +395,115 @@ fn add_folder(backend: &Arc<Backend>, folder: &str) -> bool {
     let by_name = |a: &PathBuf, b: &PathBuf| natural_cmp(&a.to_string_lossy(), &b.to_string_lossy());
     folders.sort_by(by_name);
     videos.sort_by(by_name);
+    let Ok(mut rips) = in_telly(backend) else { return false };
     for path in &folders {
-        if !adding(backend).iter().any(|f| f == folder) {
+        if !wanted(backend, folder) {
             return true;
         }
-        add_anime(backend, folder, &path.to_string_lossy());
+        if add_anime(backend, folder, &path.to_string_lossy(), &rips) {
+            let Ok(now) = in_telly(backend) else { return false };
+            rips = now;
+        }
     }
     for path in &videos {
-        if !adding(backend).iter().any(|f| f == folder) {
+        if !wanted(backend, folder) {
             return true;
         }
-        add_film(backend, folder, path);
+        add_film(backend, folder, path, &rips);
     }
     true
 }
 
-/// Does `add` until AniList can be asked, for as long as `library` (a
-/// library's folder) is being read.
-fn patiently(backend: &Backend, library: &str, add: impl Fn() -> Result<()>) {
-    while add().is_err() {
+/// Does `add` until AniList can be asked, for as long as a library has
+/// `library` (its folder). What `add` gave, or none when the library went.
+fn patiently<T>(backend: &Backend, library: &str, add: impl Fn() -> Result<T>) -> Option<T> {
+    loop {
+        if let Ok(done) = add() {
+            return Some(done);
+        }
         std::thread::sleep(ASK_AGAIN);
-        if !adding(backend).iter().any(|f| f == library) {
-            return;
+        if !wanted(backend, library) {
+            return None;
         }
     }
 }
 
-/// Adds the anime in `folder`, one of the folders in `library`, unless a
-/// show in Telly has an episode in it already.
-fn add_anime(backend: &Arc<Backend>, library: &str, folder: &str) {
-    if backend.db.all_episodes().map_or(true, |all| all.iter().any(|e| below(folder, &e.path).is_some())) {
-        return;
+/// Reads `folder` as Add media… does, asking ffprobe only for the videos
+/// whose length isn't `known` (by `key`): the episodes in Telly and the
+/// videos passed over were read before.
+fn read(backend: &Backend, folder: &str, known: &HashMap<String, f64>) -> Result<scan::Scan> {
+    scan::scan(Path::new(folder), |paths| {
+        let length = |path: &PathBuf| known.get(&key(&path.to_string_lossy())).copied();
+        let unknown: Vec<PathBuf> = paths.iter().filter(|p| length(p).is_none()).cloned().collect();
+        let mut probed = backend.lengths(&unknown).into_iter();
+        paths
+            .iter()
+            .map(|p| match length(p) {
+                // An episode in Telly counts as readable whatever its length, as when its show's folder is looked in.
+                Some(known) => Some(if known > 0.0 { known } else { 600.0 }),
+                None => probed.next().flatten(),
+            })
+            .collect()
+    })
+}
+
+/// Adds what's new in `folder`, one of the folders in `library`: the anime
+/// in it or, when some of it is in Telly, the seasons, movies and OVAs of it
+/// that aren't. `rips` are the episodes in Telly (`in_telly`). True when it
+/// added a show.
+fn add_anime(backend: &Arc<Backend>, library: &str, folder: &str, rips: &HashMap<String, (f64, i64)>) -> bool {
+    let mut videos = Vec::new();
+    scan::walk(Path::new(folder), 0, &mut videos);
+    let videos: Vec<String> = videos.iter().map(|path| key(&path.to_string_lossy())).collect();
+    let mut known: HashMap<String, f64> = passed(backend, false, |kept| videos.iter().filter_map(|v| kept.get(v).map(|length| (v.clone(), *length))).collect());
+    let new: HashSet<&String> = videos.iter().filter(|v| !rips.contains_key(*v) && !known.contains_key(*v)).collect();
+    // Nothing there Telly hasn't looked at. And a folder Telly is downloading into joins the library by itself
+    // (torrents.rs), and one open in Add media… is yours to match.
+    if new.is_empty() || torrents::going_in(backend, folder) || backend.sheet_open(folder) {
+        return false;
     }
-    // A folder with no videos in it is no show.
-    let Ok(scan) = backend.read_folder(folder) else { return };
-    patiently(backend, library, || backend.add_as_read(&scan).map(|_| ()));
+    known.extend(videos.iter().filter_map(|v| rips.get(v).map(|(length, _)| (v.clone(), *length))));
+    let Ok(scan) = read(backend, folder, &known) else { return false };
+    let is_new = |path: &str| new.contains(&key(path));
+    // An episode's length, or a film's: an extra, or a second copy, says nothing of a show to add.
+    let an_episode = |f: &scan::ScannedFile| f.reason.is_empty() || f.reason.starts_with("Over 2 hours");
+    let mut added: HashSet<String> = HashSet::new();
+    if scan.files.iter().any(|f| is_new(&f.path) && an_episode(f)) {
+        // The anime its seasons in Telly are (the one you chose, when you did), else what its name finds.
+        let here: HashSet<i64> = videos.iter().filter_map(|v| rips.get(v).map(|(_, show)| *show)).collect();
+        let mut shows: Vec<Show> = backend.db.shows().unwrap_or_default().into_iter().filter(|s| here.contains(&s.id) && s.anilist_id.is_some()).collect();
+        shows.sort_by(|a, b| natural_cmp(&a.folder, &b.folder));
+        let base = shows.first().and_then(|s| s.anilist_id);
+        let Some(ids) = patiently(backend, library, || backend.add_as_read(&scan, base, &is_new)) else { return false };
+        added = ids.iter().flat_map(|id| backend.db.episodes(*id).unwrap_or_default()).map(|e| key(&e.path)).collect();
+    }
+    // What's new and wasn't added is looked at now, and not again. A video Telly can't read yet (still being
+    // copied there) is; one that's gone is forgotten.
+    let looked: Vec<(String, f64)> =
+        scan.files.iter().filter(|f| is_new(&f.path) && f.duration > 0.0 && !added.contains(&key(&f.path))).map(|f| (key(&f.path), f.duration)).collect();
+    let below_here = format!("{}/", key(folder));
+    passed(backend, true, |kept| {
+        kept.retain(|video, _| !video.starts_with(&below_here) || videos.contains(video));
+        kept.extend(looked);
+    });
+    !added.is_empty()
 }
 
 /// Adds a video lying loose in `library`, a movies library's folder, as a
-/// film, unless it's a show's episode already. One Telly can't read (still
-/// being copied there) or shorter than an episode isn't one.
-fn add_film(backend: &Arc<Backend>, library: &str, path: &Path) {
+/// film, unless it's a show's episode already (`rips`) or was passed over.
+/// One Telly can't read (still being copied) is looked at again; one shorter
+/// than an episode isn't a film.
+fn add_film(backend: &Arc<Backend>, library: &str, path: &Path, rips: &HashMap<String, (f64, i64)>) {
     let file = path.to_string_lossy().into_owned();
-    if backend.db.all_episodes().map_or(true, |all| all.iter().any(|e| same(&e.path, &file))) {
+    let video = key(&file);
+    if rips.contains_key(&video) || passed(backend, false, |kept| kept.contains_key(&video)) || backend.sheet_open(&file) {
         return;
     }
-    let Some(duration) = backend.lengths(&[path.to_path_buf()]).pop().flatten().filter(|d| *d >= scan::MIN_SECONDS) else { return };
+    let Some(duration) = backend.lengths(&[path.to_path_buf()]).pop().flatten().filter(|length| *length > 0.0) else { return };
+    if duration < scan::MIN_SECONDS {
+        passed(backend, true, |kept| kept.insert(video, duration));
+        return;
+    }
     let name = scan::clean_title(&path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default());
     let size = std::fs::metadata(path).map_or(0, |m| m.len() as i64);
     patiently(backend, library, || {
@@ -356,7 +519,7 @@ fn add_film(backend: &Arc<Backend>, library: &str, path: &Path) {
             ..Default::default()
         };
         // Its folder holds the library's other films too.
-        backend.add_parts(vec![(show, true)], None, None).map(|_| ())
+        backend.add_parts(vec![(show, true)], None, None, true)
     });
 }
 
@@ -630,6 +793,70 @@ mod tests {
         std::fs::create_dir_all(&new).unwrap();
         save(&[library("series", &[new.as_str()]), library("movies", &[other.as_str()])]);
         assert!(wait_until(&|| adding(&backend) == [other.clone()]), "{:?}", adding(&backend));
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_show_you_remove_is_passed_over_where_its_rips_are_in_a_library() {
+        let dir = std::env::temp_dir().join(format!("telly-library-passed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let open = || Arc::new(Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap());
+        let backend = open();
+        let name = |folder: &str| dir.join(folder).to_string_lossy().into_owned();
+        let (series, elsewhere) = (name("Series"), name("Elsewhere"));
+        backend.db.set_setting("libraries", &json!([library("series", &[series.as_str()])])).unwrap();
+        let add = |folder: &str| {
+            let rip = join(folder, &["Show", "Show - 01.mkv"]);
+            let episodes = vec![NewEpisode { number: 1, path: rip.clone(), size: 1, duration: 1400.0 }];
+            (backend.db.add_show(&NewShow { folder: join(folder, &["Show"]), title: "Show".into(), episodes, ..Default::default() }).unwrap(), rip)
+        };
+        let ((inside, in_library), (outside, not_in_one)) = (add(&series), add(&elsewhere));
+        backend.call("removeShow", json!({ "id": inside })).unwrap();
+        backend.call("removeShow", json!({ "id": outside })).unwrap();
+        let length = |backend: &Backend, path: &str| passed(backend, false, |kept| kept.get(&key(path)).copied());
+        assert_eq!((length(&backend, &in_library), length(&backend, &not_in_one)), (Some(1400.0), None));
+        // However the path is written.
+        assert_eq!(length(&backend, &in_library.to_uppercase().replace('/', "\\")), Some(1400.0));
+        // Kept for when Telly next starts, and it moves with your rips.
+        drop(backend);
+        let backend = open();
+        assert_eq!(length(&backend, &in_library), Some(1400.0));
+        moved(&backend, &series, &elsewhere);
+        assert_eq!((length(&backend, &in_library), length(&backend, &not_in_one)), (None, Some(1400.0)));
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_look_passes_over_what_isn_t_an_episode_and_doesn_t_read_it_again() {
+        let dir = std::env::temp_dir().join(format!("telly-library-look-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Arc::new(Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap());
+        let Some(ffmpeg) = backend.tools().ffmpeg else { return }; // making a video to read needs ffmpeg
+        let series = dir.join("Series");
+        let extra = series.join("Show").join("Extras").join("Show - NCOP.mkv");
+        std::fs::create_dir_all(extra.parent().unwrap()).unwrap();
+        let made = std::process::Command::new(&ffmpeg).args(["-v", "quiet", "-f", "lavfi", "-i", "color=c=black:s=64x36:r=1", "-t", "90", "-c:v", "mpeg4", "-y"]).arg(&extra).status().unwrap();
+        assert!(made.success());
+        let extra = extra.to_string_lossy().into_owned();
+        backend.db.set_setting("libraries", &json!([library("series", &[&series.to_string_lossy()])])).unwrap();
+        let wait_until = |done: &dyn Fn() -> bool| (0..400).any(|_| done() || { std::thread::sleep(Duration::from_millis(25)); false });
+        let looked = |backend: &Backend| backend.library_looks.lock().unwrap().is_empty() && !*backend.adding_libraries.lock().unwrap();
+        // The 10-minute look: an extra is no show, so nothing is added (and AniList isn't asked).
+        look(&backend);
+        assert!(wait_until(&|| looked(&backend) && passed(&backend, false, |kept| kept.contains_key(&key(&extra)))));
+        assert!(backend.db.shows().unwrap().is_empty());
+        // Its length is kept, so the folder is read again without ffprobe; gone, it's forgotten.
+        assert_eq!(passed(&backend, false, |kept| kept.get(&key(&extra)).map(|length| length.round())), Some(90.0));
+        std::fs::remove_file(&extra).unwrap();
+        std::fs::write(series.join("Show").join("Extras").join("Show - Menu.mkv"), b"not a video").unwrap();
+        look(&backend);
+        assert!(wait_until(&|| looked(&backend) && passed(&backend, false, |kept| kept.is_empty())));
+        // Look for new shows says the library is being read until it has been.
+        look_now(&backend, 0).unwrap();
+        assert!(wait_until(&|| adding(&backend).is_empty()));
+        assert!(look_now(&backend, 1).is_err());
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

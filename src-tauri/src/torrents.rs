@@ -689,6 +689,15 @@ pub fn start(backend: Arc<Backend>) {
         .ok();
 }
 
+/// Whether a download that isn't finished, or a new show's that hasn't
+/// joined the library yet, is in `folder` or has `folder` in it. Such a
+/// folder is the downloader's to add from (`look`), not a library's.
+pub fn going_in(backend: &Backend, folder: &str) -> bool {
+    let overlaps = |other: &str| inside(other, folder) || inside(folder, other);
+    let downloading = backend.downloads.seen.lock().is_ok_and(|seen| seen.torrents.iter().any(|t| t.state != "done" && overlaps(&t.folder)));
+    downloading || entries(backend).iter().any(|(waiting, _)| overlaps(waiting))
+}
+
 /// Folders of finished downloads that aren't a show in the library, for it to offer.
 pub fn offers(backend: &Backend) -> Vec<Offer> {
     let Ok(seen) = backend.downloads.seen.lock() else { return Vec::new() };

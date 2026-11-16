@@ -664,7 +664,7 @@ export interface DownloadLibrary {
 export interface LibraryView extends DownloadLibrary {
   /** How many shows in the library are in its folders. */
   shows: number;
-  /** Whether a folder of it is still being read for shows to add. */
+  /** Whether its folders are being read for shows to add: it's new, or you pressed Look for new shows. */
   adding: boolean;
 }
 

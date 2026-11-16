@@ -270,6 +270,8 @@ fn move_folders(backend: &Backend, from: &str, to: &str) -> Result<()> {
         let now: Vec<String> = adding.iter().map(|f| moved(f).unwrap_or_else(|| f.clone())).collect();
         backend.db.set_setting("libraries.adding", &serde_json::json!(now))?;
     }
+    // And what a look for new shows passes over there is passed over where it is now.
+    crate::library::moved(backend, from, to);
     if let Some(now) = moved(&backend.db.setting_str("downloads.folder")) {
         backend.db.set_setting("downloads.folder", &serde_json::json!(now))?;
     }

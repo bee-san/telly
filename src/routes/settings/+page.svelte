@@ -414,6 +414,14 @@
     await set("libraries", list.map(({ name, kind, folders, downloads }) => ({ name, kind, folders, downloads })));
     libraries = await call<LibraryView[]>("libraries").catch(() => libraries);
   }
+  /** Looks in a library's folders for new shows now; its count goes up as they're added. */
+  async function lookIn(at: number) {
+    try {
+      libraries = await call<LibraryView[]>("lookInLibrary", { at });
+    } catch (e) {
+      toast({ key: "library", state: "failed", title: "Couldn’t look in the library", text: errorText(e) });
+    }
+  }
   /** Puts the library from its sheet in the list: in its place when edited, else at the end. */
   function saveLibrary(library: DownloadLibrary) {
     const at = editing?.at ?? null;
@@ -753,18 +761,19 @@
       <h2>Libraries</h2>
       <button type="button" class="btn quiet" onclick={() => (editing = { at: null })}><Icon name="plus" /><span>Add library…</span></button>
     </div>
-    <p class="lede">Telly adds the shows in a library’s folders when it’s added. A download goes there once you’ve said which show it is: Telly makes the folders and the release keeps its file names; nothing already there is moved.</p>
+    <p class="lede">Telly adds the shows in a library’s folders, and looks there again every 10 minutes for new ones: an anime, or a season or film of one you have. A download goes there once you’ve said which show it is: Telly makes the folders and the release keeps its file names; nothing already there is moved.</p>
     {#if libraries.length}
       <ul class="libraries">
         {#each libraries as l, i (i)}
           <li>
             <div class="library">
-              <span><b>{l.name}</b> <span class="muted">{l.kind === "movies" ? "Movies" : "Series"} · {plural(l.shows, "show")}{#if l.adding} · Adding shows…{/if}</span></span>
+              <span><b>{l.name}</b> <span class="muted">{l.kind === "movies" ? "Movies" : "Series"} · {plural(l.shows, "show")}{#if l.adding} · Looking for new shows…{/if}</span></span>
               {#each l.folders as folder (folder)}
                 <span class="path"><span class="mono">{folder}</span>{#if l.folders.length > 1 && folder === l.downloads} <span class="muted">Downloads go here</span>{/if}</span>
               {/each}
             </div>
             <span class="actions">
+              <button type="button" class="btn quiet small" disabled={l.adding} onclick={() => lookIn(i)}>Look for new shows</button>
               <button type="button" class="btn quiet small" onclick={() => (editing = { at: i })}>Edit…</button>
               <button type="button" class="btn quiet small" onclick={() => saveLibraries(libraries.filter((_, j) => j !== i))}>Remove</button>
             </span>

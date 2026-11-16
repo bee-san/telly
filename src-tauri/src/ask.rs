@@ -828,7 +828,9 @@ fn recap_about(source: &Source) -> String {
     format!("{ABOUT}{}", parts.join(","))
 }
 
-/// The recap kept for before the episode `id`, while the subtitles it was made from are as they were.
+/// The recap kept for before the episode `id`, while the subtitles it was
+/// made from are as they were, and you've seen no more of those episodes
+/// than it tells (a scene after the credits, played since).
 fn kept(backend: &Backend, id: i64) -> Option<Recap> {
     let answer = backend.db.answer(id, "recap", -1).ok().flatten()?;
     if answer.extra != kept_with("", answer_in(backend)) {
@@ -836,7 +838,10 @@ fn kept(backend: &Backend, id: i64) -> Option<Recap> {
     }
     let same = answer.about.strip_prefix(ABOUT)?.split(',').all(|part| {
         let of: Option<i64> = part.split(':').next().and_then(|id| id.parse().ok());
-        of.is_some_and(|of| about_part(of, &jobs::read_lines(backend, of)) == part)
+        // As far as you've seen each, which is what the recap was made from: an
+        // episode left at its ending is its lines up to there, not the whole file.
+        let episode = of.and_then(|of| backend.db.episode(of).ok().flatten());
+        episode.is_some_and(|e| about_part(e.id, &seen_lines(backend, &e)) == part)
     });
     if !same {
         return None;
@@ -1345,9 +1350,14 @@ mod tests {
         assert!(backend.db.set_opening_if(episodes[0].id, 1, 5, skips).unwrap());
         backend.db.reach(episodes[0].id, 1261.0).unwrap();
         assert_eq!(told(&backend), 42);
+        // A recap made from that is carried on from, though the file has lines after the ending.
+        keep(&backend, &episodes[1], &Recap { last: "Roman runs.".into(), ..Recap::default() });
+        assert!(kept(&backend, episodes[1].id).is_some());
         // Played on past the credits: it is.
         backend.db.reach(episodes[0].id, 1380.0).unwrap();
         assert_eq!(told(&backend), 46);
+        // And that recap doesn't tell the scene after the credits: it isn't carried on from any more.
+        assert!(kept(&backend, episodes[1].id).is_none());
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

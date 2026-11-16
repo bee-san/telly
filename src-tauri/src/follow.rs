@@ -209,14 +209,15 @@ pub fn look(backend: &Arc<Backend>, show: &Show) -> Result<Looked> {
     let mut begun = Vec::new();
     let mut failed = None;
     for (number, release) in later(&like, |n| n > after || retry.contains(&n), rip, &found.releases) {
-        going.retain(|(n, _)| *n != number);
         match torrents::add(backend, &release.magnet, &release.torrent, &release.title, Some(show.id), None, None) {
             Ok(_) => {
                 begun.push(number);
+                going.retain(|(n, _)| *n != number);
                 going.extend(torrents::magnet_hash(&release.magnet).map(|hash| (number, hash)));
             }
             // It's downloading already, or its file is here: there's nothing more to start.
-            Err(e) if e.to_string().contains("already") => {}
+            Err(e) if e.to_string().contains("already") => going.retain(|(n, _)| *n != number),
+            // One to start again stays on the list, to be tried at the next look.
             Err(e) => {
                 failed = Some(e);
                 break;

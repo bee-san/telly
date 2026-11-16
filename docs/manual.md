@@ -123,7 +123,7 @@ In the player (**?** lists them too):
 
 Both use [Claude Code](https://claude.com/claude-code), installed and signed in on this computer: Telly runs `claude -p` with no tools, the way Gromit Reader does, so it uses your own sign-in and needs no API key. It asks Haiku 5.5 unless Settings → Claude picks another model, and answers in English or simple Japanese.
 
-When Claude Code isn't installed and Settings has an OpenRouter API key (the one for machine-made subtitles), OpenAI's gpt-oss (`openai/gpt-oss-120b`) on [OpenRouter](https://openrouter.ai) answers instead, with the same instructions, thinking little, and the subtitles each question is about are sent to OpenRouter. Its answers show as they're written, are saved the same way, and the player and Settings say gpt-oss wrote them. Settings → Claude's model is then Claude Code's alone.
+When Claude Code isn't installed and Settings has an OpenRouter API key (the one for machine-made subtitles), OpenAI's gpt-oss (`openai/gpt-oss-120b`) on [OpenRouter](https://openrouter.ai) answers instead, with the same instructions, thinking little, and the subtitles each question is about are sent to OpenRouter. It answers too when Claude Code is installed but can't (signed out, its limit reached, it won't start): the explanation says gpt-oss wrote it, as Claude Code couldn't. Its answers show as they're written, are saved the same way, and the player and Settings say gpt-oss wrote them. Settings → Claude's model is then Claude Code's alone.
 
 <details>
 <summary>⚡ <b>How Explain answers within seconds</b></summary>

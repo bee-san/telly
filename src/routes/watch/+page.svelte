@@ -73,7 +73,7 @@
   const asked = $derived(answerer?.openrouter ? "gpt-oss" : "Claude");
 
   // Explain this line (E): Claude’s answer, shown as it’s written.
-  let explaining = $state<{ index: number; text: string; done: boolean; error: string; ask: number } | null>(null);
+  let explaining = $state<{ index: number; text: string; done: boolean; error: string; ask: number; openrouter?: boolean } | null>(null);
   let explainResume = false;
   let explainPoll: ReturnType<typeof setTimeout> | null = null;
   // Follow-up questions about the line explained, and their answers (`kind` for Gist, Break it down and Nuance).
@@ -908,7 +908,7 @@
       try {
         const r = await call<AskProgress>("ask", { ask });
         if (explaining?.index !== index) return;
-        explaining = { ...explaining, text: r.text ?? "", done: !!r.done, error: r.error ?? "" };
+        explaining = { ...explaining, text: r.text ?? "", done: !!r.done, error: r.error ?? "", openrouter: r.openrouter };
         if (!r.done) followExplain(index, ask);
       } catch (e) {
         if (explaining?.index === index) explaining = { ...explaining, done: true, error: errorText(e) };
@@ -1944,7 +1944,7 @@
           <button type="submit" disabled={!question.trim() || thread.some((item) => !item.done)}>Ask</button>
         </form>
       {/if}
-      <div class="ex-foot">{answerer?.openrouter ? "Answered by gpt-oss, through OpenRouter" : "Answered by Claude, through Claude Code"}{explaining.done && !explaining.error ? " · saved for next time" : ""}</div>
+      <div class="ex-foot">{answerer?.openrouter ? "Answered by gpt-oss, through OpenRouter" : explaining.openrouter ? "Answered by gpt-oss, through OpenRouter, as Claude Code couldn’t" : "Answered by Claude, through Claude Code"}{explaining.done && !explaining.error ? " · saved for next time" : ""}</div>
     </aside>
   {/if}
 

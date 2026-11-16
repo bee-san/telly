@@ -401,6 +401,8 @@ export interface AskProgress {
   error?: string;
   seconds?: number;
   line?: string;
+  /** gpt-oss on OpenRouter is answering, as Claude Code couldn't. */
+  openrouter?: boolean;
 }
 
 /** A stretch of an episode, played in "Previously on", and what's happening in it. */

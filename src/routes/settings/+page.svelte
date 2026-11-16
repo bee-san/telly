@@ -703,7 +703,7 @@
         <button type="button" class="btn quiet" onclick={() => (showRouterKey = !showRouterKey)}>{showRouterKey ? "Hide" : "Show"}</button>
         <button type="button" class="btn quiet" onclick={() => openLink("https://openrouter.ai/settings/keys")}>Get a key</button>
       </span>
-      <small>With a key, a model on OpenRouter makes the subtitles, and each episode’s audio is sent to it. Without one, Whisper on this computer does. Without Claude Code on this computer, gpt-oss on OpenRouter also answers Explain and Previously on.</small>
+      <small>With a key, a model on OpenRouter makes the subtitles, and each episode’s audio is sent to it. Without one, Whisper on this computer does. gpt-oss on OpenRouter also answers Explain and Previously on when Claude Code isn’t on this computer, or is but can’t answer (signed out, its limit reached): the lines each question is about are then sent to OpenRouter.</small>
     </label>
     {#if str("openrouter.key")}
       <label class="field narrow"><span>Model</span>

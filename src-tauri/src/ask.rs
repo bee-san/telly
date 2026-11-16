@@ -39,6 +39,8 @@ pub struct Asking {
     error: Mutex<String>,
     stop: Arc<AtomicBool>,
     started: Instant,
+    /// gpt-oss on OpenRouter answered, though Claude Code is installed: it couldn't.
+    fell_back: AtomicBool,
 }
 
 #[derive(Default)]
@@ -74,6 +76,7 @@ impl Asks {
             error: Mutex::new(String::new()),
             stop: Arc::new(AtomicBool::new(false)),
             started: Instant::now(),
+            fell_back: AtomicBool::new(false),
         });
         if let Ok(mut running) = self.running.lock() {
             // Answers nobody asked about for 10 minutes go.
@@ -86,12 +89,24 @@ impl Asks {
                     t.push_str(piece);
                 }
             };
+            let openrouter = |key: &str| openrouter::chat(&openrouter::api_address(), key, claude::SYSTEM, &prompt, Some(effort), on_text, &asking.stop);
             let result = match &who {
-                Who::Claude(model) => {
+                Who::Claude(model, fallback) => {
                     let question = claude::Ask { prompt: &prompt, model: model.as_deref(), effort: Some(effort), warm };
-                    claude::ask(&question, on_text, &asking.stop)
+                    let (asking, openrouter) = (&asking, &openrouter);
+                    let instead = fallback.as_deref().map(|key| {
+                        move || {
+                            // What Claude Code wrote before it stopped gives way to gpt-oss's answer.
+                            if let Ok(mut t) = asking.text.lock() {
+                                t.clear();
+                            }
+                            asking.fell_back.store(true, Ordering::SeqCst);
+                            openrouter(key)
+                        }
+                    });
+                    or_instead(claude::ask(&question, on_text, &asking.stop), asking.stop.load(Ordering::SeqCst), instead)
                 }
-                Who::OpenRouter(key) => openrouter::chat(&openrouter::api_address(), key, claude::SYSTEM, &prompt, Some(effort), on_text, &asking.stop),
+                Who::OpenRouter(key) => openrouter(key),
             };
             match result {
                 Ok(answer) => {
@@ -118,13 +133,26 @@ impl Asks {
         };
         let text = asking.text.lock().map(|t| t.clone()).unwrap_or_default();
         let error = asking.error.lock().map(|e| e.clone()).unwrap_or_default();
-        json!({ "text": text, "done": asking.done.load(Ordering::SeqCst), "error": error, "seconds": asking.started.elapsed().as_secs() })
+        json!({ "text": text, "done": asking.done.load(Ordering::SeqCst), "error": error, "seconds": asking.started.elapsed().as_secs(), "openrouter": asking.fell_back.load(Ordering::SeqCst) })
     }
 
     pub fn stop(&self, id: u64) {
         if let Some(asking) = self.running.lock().ok().and_then(|r| r.get(&id).cloned()) {
             asking.stop.store(true, Ordering::SeqCst);
         }
+    }
+}
+
+/// Claude Code's answer, or gpt-oss's `instead` when Claude Code is installed
+/// but couldn't give one (signed out, its limit reached, it won't start) and
+/// there's an OpenRouter key: an answer from gpt-oss rather than none. Not
+/// when you stopped the answer yourself.
+fn or_instead(claude: Result<String>, stopped: bool, instead: Option<impl FnOnce() -> Result<String>>) -> Result<String> {
+    match (claude, instead) {
+        (Err(e), Some(instead)) if !stopped => {
+            instead().map_err(|other| anyhow::anyhow!("Claude Code couldn’t answer ({e:#}), and nor could gpt-oss on OpenRouter ({other:#})"))
+        }
+        (answer, _) => answer,
     }
 }
 
@@ -139,20 +167,20 @@ pub fn model(backend: &Backend) -> Option<String> {
 }
 
 /// Who answers: the Claude Code on this computer, with the model Settings
-/// picked (None for Claude Code's own default), or gpt-oss on OpenRouter, with
-/// the key from Settings.
+/// picked (None for Claude Code's own default) and the OpenRouter key from
+/// Settings, if there is one, for gpt-oss to answer when Claude Code can't;
+/// or gpt-oss on OpenRouter, with that key.
 pub enum Who {
-    Claude(Option<String>),
+    Claude(Option<String>, Option<String>),
     OpenRouter(String),
 }
 
 /// Claude Code, unless it isn't installed and Settings has an OpenRouter key.
 pub fn who(backend: &Backend) -> Who {
-    let key = backend.db.setting_str("openrouter.key");
-    if claude::find().is_none() && !key.trim().is_empty() {
-        Who::OpenRouter(key.trim().to_string())
-    } else {
-        Who::Claude(model(backend))
+    let key = Some(backend.db.setting_str("openrouter.key").trim().to_string()).filter(|key| !key.is_empty());
+    match (claude::find(), key) {
+        (None, Some(key)) => Who::OpenRouter(key),
+        (_, key) => Who::Claude(model(backend), key),
     }
 }
 
@@ -167,7 +195,7 @@ pub fn status(backend: &Backend) -> Value {
             "detail": "Claude Code isn’t installed on this computer, so gpt-oss on OpenRouter answers, with your OpenRouter key.",
             "openrouter": true,
         }),
-        Who::Claude(_) => json!(claude::status()),
+        Who::Claude(..) => json!(claude::status()),
     }
 }
 
@@ -1089,7 +1117,7 @@ pub fn recaps_on(backend: &Backend) -> bool {
 /// before the next one; part-way through (`resume_at`), the recap up to there,
 /// or in its first 5 minutes the recap before it.
 pub fn prepare_recaps(backend: &Arc<Backend>, episode_id: i64, finished: bool, resume_at: Option<f64>) {
-    if !recaps_on(backend) || matches!(who(backend), Who::Claude(_)) && claude::find().is_none() {
+    if !recaps_on(backend) || matches!(who(backend), Who::Claude(..)) && claude::find().is_none() {
         return;
     }
     if finished {
@@ -1413,6 +1441,30 @@ mod tests {
     fn keep(backend: &Backend, episode: &Episode, recap: &Recap) {
         let about = recap_about(&source(backend, episode, None).unwrap());
         backend.db.save_answer(episode.id, "recap", -1, &about, &serde_json::to_string(recap).unwrap(), "").unwrap();
+    }
+
+    #[test]
+    fn gpt_oss_answers_when_claude_code_can_t_and_there_s_a_key() {
+        let asked = std::cell::Cell::new(0);
+        let gpt = || {
+            asked.set(asked.get() + 1);
+            Ok("gpt-oss’s answer".to_string())
+        };
+        let failed = || Err(anyhow::anyhow!("Not logged in · Please run /login"));
+        // Claude Code answers: nobody else is asked.
+        assert_eq!(or_instead(Ok("Claude’s answer".into()), false, Some(gpt)).unwrap(), "Claude’s answer");
+        assert_eq!(asked.get(), 0);
+        // It can't: gpt-oss does.
+        assert_eq!(or_instead(failed(), false, Some(gpt)).unwrap(), "gpt-oss’s answer");
+        assert_eq!(asked.get(), 1);
+        // You stopped the answer: nobody is asked instead.
+        assert!(or_instead(failed(), true, Some(gpt)).is_err());
+        assert_eq!(asked.get(), 1);
+        // No OpenRouter key: Claude Code's own reason is what's said.
+        assert_eq!(or_instead(failed(), false, None::<fn() -> Result<String>>).unwrap_err().to_string(), "Not logged in · Please run /login");
+        // Neither can: both reasons are said.
+        let both = or_instead(failed(), false, Some(|| Err(anyhow::anyhow!("OpenRouter answered 402")))).unwrap_err().to_string();
+        assert!(both.contains("Not logged in") && both.contains("OpenRouter answered 402"), "{both}");
     }
 
     #[test]

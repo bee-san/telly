@@ -61,7 +61,6 @@
   const shows = $derived(animeOf(lib?.shows ?? []));
   /** The anime being watched among `list`, the last one watched first. */
   const beingWatched = (list: AnimeCard[]) => list.filter(isWatching).sort((a, b) => lastWatched(b) - lastWatched(a));
-  const watching = $derived(beingWatched(shows));
 
   // Which of the Library's shows are listed, and in what order: what its Filter chooses (listing.ts). Kept in Settings.
   let settings = $state<Settings>(kept<Settings>("settings") ?? {});
@@ -81,8 +80,15 @@
     for (const [key, value] of Object.entries(NO_FILTERS)) choose(key, value);
   }
 
-  /** Every anime the Filter leaves in, those in Currently watching too. */
+  /** Every anime the Filter leaves in. */
   const listed = $derived(listedBy(shows, listing, libraries));
+  /** Whether the Filter leaves an anime in. */
+  const leftIn = $derived.by(() => {
+    const ids = new Set(listed.map((a) => a.id));
+    return (a: AnimeCard) => ids.has(a.id);
+  });
+  /** The anime being watched that the Filter leaves in. */
+  const watching = $derived(beingWatched(shows.filter(leftIn)));
   /** How many anime are at each status, for the Filter. */
   const statuses = $derived.by(() => {
     const count: Record<Status, number> = { new: 0, watching: 0, finished: 0 };
@@ -94,10 +100,10 @@
   const RECENT_MS = 30 * 24 * 3600 * 1000;
   /** How many anime Recently added holds at most. */
   const RECENT_COUNT = 20;
-  /** The anime added in the last 30 days, the newest first. */
+  /** The anime added in the last 30 days that the Filter leaves in, the newest first. */
   const recent = $derived(
     shows
-      .filter((a) => addedOf(a) > Date.now() - RECENT_MS)
+      .filter((a) => leftIn(a) && addedOf(a) > Date.now() - RECENT_MS)
       .sort((a, b) => addedOf(b) - addedOf(a))
       .slice(0, RECENT_COUNT),
   );
@@ -222,7 +228,7 @@
         {/each}
       </div>
     {:else}
-      <p class="empty">Nothing in progress. Pick something from the library.</p>
+      <p class="empty">{filtered ? "Nothing in progress matches these filters." : "Nothing in progress. Pick something from the library."}</p>
     {/if}
 
     {#if recent.length}

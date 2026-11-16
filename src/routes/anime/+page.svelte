@@ -51,6 +51,34 @@
   const now = $derived(anime?.current ?? null);
   const words = $derived(anime ? wordsOf(anime) : { uses: 0, known: 0 });
 
+  /** What AniList says the first season or movie is about ("" until it's known, or when it says nothing). */
+  let about = $state("");
+  let aboutOpen = $state(false);
+  let aboutBox = $state<HTMLParagraphElement | undefined>();
+  /** The description is longer than the lines it's cut to. */
+  let aboutLong = $state(false);
+  const firstId = $derived(first?.id ?? null);
+
+  $effect(() => {
+    const part = firstId;
+    about = "";
+    aboutOpen = false;
+    if (part === null) return;
+    call<{ text: string }>("showAbout", { id: part })
+      .then((r) => part === firstId && (about = r.text))
+      .catch(() => {});
+  });
+
+  $effect(() => {
+    if (!aboutBox || aboutOpen || !about) return;
+    const box = aboutBox;
+    const measure = () => (aboutLong = box.scrollHeight > box.clientHeight + 1);
+    measure();
+    const watch = new ResizeObserver(measure);
+    watch.observe(box);
+    return () => watch.disconnect();
+  });
+
   $effect(() => {
     if (anime) setWindowTitle(`${anime.title} — Telly`);
     // Its last show was removed, or moved to another anime.
@@ -134,14 +162,23 @@
 </script>
 
 <div class="animepg scroll">
+  <div class="an-hero" style:--tint={first?.coverColor || null}>
   <button type="button" class="back" onclick={() => goto("/")}><Icon name="back" /><span>Back to library</span></button>
   {#if error}<p class="err">{error}</p>{/if}
   {#if anime && first && now}
     <div class="an-head">
-      <Cover cover={first.cover} color={first.coverColor} native={anime.native} title={anime.title} caption={first.coverCaption} />
-      <div>
+      <div class="an-cover"><Cover cover={first.cover} color={first.coverColor} native={anime.native} title={anime.title} caption={first.coverCaption} /></div>
+      <div class="an-body">
         <h2 lang={anime.native ? "ja" : undefined}>{anime.native || anime.title}</h2>
         <p class="an-meta">{anime.title} · {partsText(anime.parts)}{words.uses ? ` · ${Math.round((100 * words.known) / words.uses)}% of its words known` : ""}</p>
+        {#if about}
+          <div class="an-about">
+            <p class:open={aboutOpen} bind:this={aboutBox}>{about}</p>
+            {#if aboutLong || aboutOpen}
+              <button type="button" class="an-more-text" aria-expanded={aboutOpen} onclick={() => (aboutOpen = !aboutOpen)}>{aboutOpen ? "Show less" : "Read more"}</button>
+            {/if}
+          </div>
+        {/if}
         <div class="an-actions">
           {#if now.next}
             <button type="button" class="btn" disabled={!now.next.ready} onclick={() => now.next && goto(`/watch?ep=${now.next.episodeId}`)}>
@@ -159,7 +196,9 @@
         </div>
       </div>
     </div>
-
+  {/if}
+  </div>
+  {#if anime && first && now}
     <div class="parts">
       <div class="part-row head"><span>Part</span><span></span><span>Watched</span><span class="right">Words known</span><span></span></div>
       {#each anime.parts as s (s.id)}
@@ -182,10 +221,24 @@
 
 <style>
   .animepg { position: absolute; inset: 0; overflow: auto; padding: 18px 32px 40px; }
-  .an-head { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 24px; align-items: center; margin: 14px 0 26px; }
-  .an-head h2 { font: 800 30px/1.2 var(--font-jp-title); letter-spacing: .02em; }
-  .an-meta { font-size: 13.5px; color: var(--ink-2); margin-top: 4px; }
-  .an-actions { display: flex; align-items: center; gap: 12px; margin-top: 16px; flex-wrap: wrap; }
+  /* The top of the page, tinted with a little of the cover's colour, as a show's page is. */
+  .an-hero { margin: -18px -32px 26px; padding: 18px 32px 30px; background: color-mix(in srgb, var(--tint, var(--bg)) 14%, var(--bg)); border-bottom: 1px solid var(--rule); }
+  .an-head { display: grid; grid-template-columns: 172px minmax(0, 1fr); gap: 32px; align-items: end; margin-top: 14px; }
+  .an-cover { border-radius: 10px; overflow: hidden; box-shadow: var(--shadow-lg); }
+  .an-cover :global(.cv) { display: block; width: 100%; }
+  .an-body { display: grid; gap: 12px; min-width: 0; }
+  .an-head h2 { font: 800 clamp(32px, 4.4vw, 54px)/1.08 var(--font-jp-title); letter-spacing: .03em; overflow-wrap: anywhere; }
+  .an-meta { font-size: 13.5px; color: var(--ink-2); }
+  .an-about { display: grid; justify-items: start; gap: 2px; max-width: 68ch; }
+  .an-about p { font-size: 14px; line-height: 1.6; color: var(--ink-2); white-space: pre-line; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; }
+  .an-about p.open { display: block; }
+  .an-more-text { all: unset; margin-left: -6px; padding: 4px 6px; border-radius: 5px; font-weight: 600; font-size: 13px; color: var(--ink); cursor: pointer; }
+  .an-more-text:hover { background: var(--sunk); }
+  .an-more-text:focus-visible { outline: 2px solid var(--ink); }
+  .an-actions { display: flex; align-items: center; gap: 12px; margin-top: 4px; flex-wrap: wrap; }
+  @media (max-width: 720px) {
+    .an-head { grid-template-columns: 112px minmax(0, 1fr); gap: 20px; align-items: start; }
+  }
   .an-now { font-size: 13px; color: var(--ink-2); }
   .parts { border-top: 1px solid var(--rule); }
   .part-row { display: grid; grid-template-columns: minmax(0, 2.2fr) minmax(0, 1fr) 110px 110px minmax(0, 1fr); gap: 12px; align-items: center; padding: 10px 6px; border-bottom: 1px solid var(--rule); font-size: 13px; color: var(--ink-2); text-decoration: none; }

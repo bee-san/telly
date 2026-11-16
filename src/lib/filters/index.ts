@@ -238,7 +238,8 @@ void main() {
 export interface Renderer {
   /** Draws a frame through a chain of filters, one after another, to fill the canvas. `preview` is
    *  for the panel's small tiles. False, with nothing drawn, while any of the chain's shaders are
-   *  still being compiled: that takes up to a second the first time, and goes on in the background. */
+   *  still being compiled: that takes up to a second the first time, and goes on in the background.
+   *  False too while the canvas's WebGL context is lost; a renderer made anew once it's restored draws again. */
   draw(frame: TexImageSource, width: number, height: number, chain: string[], preview?: boolean): boolean;
   dispose(): void;
 }
@@ -338,6 +339,8 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer | null {
 
   return {
     draw(frame, width, height, chain, preview = false) {
+      // The graphics card's driver was reset, or the computer slept: nothing can be drawn until the context is back.
+      if (gl.isContextLost()) return false;
       const key = chain.join(" ");
       let passes = built.get(key);
       if (!passes) {

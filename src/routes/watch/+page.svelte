@@ -778,15 +778,18 @@
     const v = video;
     const canvas = filtered;
     if (!v || !canvas) return;
-    const renderer = createRenderer(canvas);
+    let renderer = createRenderer(canvas);
     if (!renderer) {
       filterShown = false;
       flash("Picture filters need WebGL 2, which isn’t working here", 6000);
       return;
     }
     const box = canvas.parentElement as HTMLElement;
+    // A filter that can't be drawn (its shader won't compile on this graphics card) leaves the picture as it is.
+    let broken: string[] | null = null;
+    let lost = false;
     const paint = () => {
-      if (!v.videoWidth) return;
+      if (!v.videoWidth || broken === chain || lost || !renderer) return;
       const scale = Math.min(box.clientWidth / v.videoWidth, box.clientHeight / v.videoHeight) * devicePixelRatio;
       const w = Math.round(v.videoWidth * scale);
       const h = Math.round(v.videoHeight * scale);
@@ -794,7 +797,15 @@
         canvas.width = w;
         canvas.height = h;
       }
-      filterShown = renderer.draw(v, v.videoWidth, v.videoHeight, chain);
+      try {
+        filterShown = renderer.draw(v, v.videoWidth, v.videoHeight, chain);
+      } catch (e) {
+        // Until another chain is picked.
+        broken = chain;
+        filterShown = false;
+        flash(`This filter can’t be drawn here: ${errorText(e)}`, 8000);
+        return;
+      }
       // Paused, no new frame comes to try again on.
       if (!filterShown && !retry) {
         retry = requestAnimationFrame(() => {
@@ -808,6 +819,21 @@
       paint();
       handle = v.requestVideoFrameCallback(next);
     });
+    // The graphics card's driver was reset, or the computer slept: the canvas is blank, so the
+    // picture shows as it is until the context is back, and the filters are then made again.
+    const contextLost = (e: Event) => {
+      e.preventDefault();
+      lost = true;
+      filterShown = false;
+    };
+    const contextRestored = () => {
+      renderer = createRenderer(canvas);
+      lost = false;
+      broken = null;
+      paint();
+    };
+    canvas.addEventListener("webglcontextlost", contextLost);
+    canvas.addEventListener("webglcontextrestored", contextRestored);
     const resized = new ResizeObserver(paint);
     resized.observe(box);
     repaint = paint;
@@ -817,7 +843,9 @@
       cancelAnimationFrame(retry);
       v.cancelVideoFrameCallback(handle);
       resized.disconnect();
-      renderer.dispose();
+      canvas.removeEventListener("webglcontextlost", contextLost);
+      canvas.removeEventListener("webglcontextrestored", contextRestored);
+      renderer?.dispose();
     };
   });
 

@@ -445,7 +445,7 @@ Telly knows a show's episodes by where their rips are. When the rips aren't ther
 | Where | What |
 |---|---|
 | `%LOCALAPPDATA%\Telly\telly.sqlite` | your shows, episodes, where you are, settings, the card queue |
-| `%LOCALAPPDATA%\Telly\media` | Telly's copies of episodes WebView2 can't play as they are. Settings → Disk space can move them to another folder, on an external drive, say |
+| `%LOCALAPPDATA%\Telly\media` | Telly's copies of episodes WebView2 can't play as they are. Settings → Disk space can move them to another folder, on an external drive, say: they go in a folder of Telly's own there, `Telly copies`, apart from anything of yours in the folder you choose |
 | `%LOCALAPPDATA%\Telly\subtitles` | synced subtitles, one file per episode |
 | `%LOCALAPPDATA%\Telly\names` | casts from AniList, their portraits, and the character dictionary |
 | `%LOCALAPPDATA%\Telly\known-words.json` | Telly's copy of the words Anki says you have a studied card for |

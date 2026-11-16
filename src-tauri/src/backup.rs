@@ -53,6 +53,8 @@ pub const RESTORED: &str = "backup.restored";
 pub const NOT_RESTORED: &str = "backup.restoreFailed";
 /// Settings that are paths on the computer the library was on.
 const MEDIA_FOLDER: &str = "media.folder";
+/// Whether this computer's copies are in a folder of Telly's own in the one chosen (backend.rs).
+const MEDIA_APART: &str = "media.apart";
 const FFMPEG: &str = "tools.ffmpeg";
 
 /// What a backup says about itself (telly-backup.json): the Telly that made
@@ -421,7 +423,7 @@ fn fit(dirs: &Dirs) -> Result<Vec<PathBuf>> {
     let installed_error = format!("{}.error", own_hachidori::INSTALLED);
     // A restore that failed on the computer the backup was made on isn't this one's to tell.
     new.set_setting(NOT_RESTORED, &Value::Null)?;
-    for key in [MEDIA_FOLDER, own_hachidori::INSTALLED, installed_error.as_str()] {
+    for key in [MEDIA_FOLDER, MEDIA_APART, own_hachidori::INSTALLED, installed_error.as_str()] {
         new.set_setting(key, &mine(key).unwrap_or(Value::Null))?;
     }
     let file: fn(&Path) -> bool = Path::is_file;
@@ -445,7 +447,7 @@ fn fit(dirs: &Dirs) -> Result<Vec<PathBuf>> {
             _ => new.media_reset(e.id)?,
         }
     }
-    let media = mine(MEDIA_FOLDER).and_then(|v| v.as_str().map(str::to_string)).filter(|f| !f.is_empty()).map(PathBuf::from).unwrap_or_else(|| dirs.media());
+    let media = mine(MEDIA_FOLDER).and_then(|v| v.as_str().map(str::to_string)).filter(|f| !f.is_empty()).map(|f| crate::backend::copies_in(Path::new(&f))).unwrap_or_else(|| dirs.media());
     let mut forget = Vec::new();
     for o in old_episodes.values().filter(|o| !same(o)) {
         forget.extend(named_by(&media.join(o.show_id.to_string()), o.id));

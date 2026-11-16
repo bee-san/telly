@@ -754,6 +754,7 @@
       <span>Copies folder</span>
       <span class="inline"><input class="input grow mono" value={status?.mediaDir ?? ""} readonly aria-label="Copies folder" /><button type="button" class="btn quiet" onclick={chooseCopiesFolder}>Choose folder…</button></span>
       {#if str("media.folder")}<span><button type="button" class="link-btn" onclick={() => moveCopies(null)}>Use Telly’s own folder</button></span>{/if}
+      <span class="muted">In a folder you choose, Telly keeps them in a folder of its own, Telly copies, apart from anything of yours there.</span>
     </div>
     <p class="muted">The library and subtitles stay in:</p>
     <p class="muted mono path">{status?.dataDir}</p>

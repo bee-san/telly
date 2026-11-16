@@ -48,6 +48,20 @@ pub struct Dirs {
     pub roaming: PathBuf,
 }
 
+/// The folder Telly's copies go in when you choose `chosen` for them: one of
+/// its own inside it, as Telly deletes a show's copies by the folder, and a
+/// folder you chose may hold your own files too (your rips, even).
+pub fn copies_in(chosen: &Path) -> PathBuf {
+    if chosen.file_name().is_some_and(|name| name == COPIES) {
+        return chosen.to_path_buf();
+    }
+    chosen.join(COPIES)
+}
+
+const COPIES: &str = "Telly copies";
+/// Setting: the copies in a folder you chose are in `copies_in` of it (they were in the folder itself once).
+const COPIES_APART: &str = "media.apart";
+
 impl Dirs {
     pub fn media(&self) -> PathBuf {
         self.local.join("media")
@@ -640,10 +654,11 @@ impl Backend {
         let _ = self.mining.set(m);
     }
 
-    /// Where Telly's copies of episodes go: the folder Settings chose
-    /// ("media.folder", on an external drive, say), else Telly's own. Kept
-    /// once asked for: the workers ask for it for each episode they rank,
-    /// thousands of times a pass, which took a database query each.
+    /// Where Telly's copies of episodes go: a folder of Telly's own
+    /// (`copies_in`) in the one Settings chose ("media.folder", on an external
+    /// drive, say), else Telly's own. Kept once asked for: the workers ask
+    /// for it for each episode they rank, thousands of times a pass, which
+    /// took a database query each.
     pub fn media_dir(&self) -> PathBuf {
         if let Some(dir) = self.media_folder.read().ok().and_then(|d| d.clone()) {
             return dir;
@@ -651,10 +666,22 @@ impl Backend {
         let mut kept = self.media_folder.write().unwrap_or_else(|e| e.into_inner());
         let dir = match self.db.setting_str("media.folder") {
             folder if folder.is_empty() => self.dirs.media(),
-            folder => PathBuf::from(folder),
+            folder => copies_in(Path::new(&folder)),
         };
         *kept = Some(dir.clone());
         dir
+    }
+
+    /// Moves copies made in the very folder you chose into Telly's own folder
+    /// inside it, once: Telly used to keep them in the folder itself.
+    pub fn set_copies_apart(self: &Arc<Self>) {
+        let chosen = self.db.setting_str("media.folder");
+        if chosen.is_empty() || self.db.setting_bool(COPIES_APART, false) {
+            return;
+        }
+        if self.db.set_setting(COPIES_APART, &json!(true)).is_ok() && PathBuf::from(&chosen) != self.media_dir() {
+            jobs::move_copies(self.clone(), PathBuf::from(chosen));
+        }
     }
 
     /// Sets the copies folder, and forgets the one kept.
@@ -674,6 +701,7 @@ impl Backend {
         let before = self.media_dir();
         forget_space_used();
         self.set_media_dir(&folder.map(Value::String).unwrap_or(Value::Null))?;
+        self.db.set_setting(COPIES_APART, &json!(true))?;
         jobs::move_copies(self.clone(), before);
         Ok(self.status())
     }
@@ -2810,7 +2838,8 @@ mod tests {
         std::fs::write(&sheet, b"jpg").unwrap();
         backend.set_media_folder(Some(dir.join("elsewhere").to_string_lossy().into_owned())).unwrap();
         let moved = jobs::sheet_path(&backend, show, id);
-        assert!(moved.starts_with(dir.join("elsewhere")));
+        // In a folder of Telly's own there: the folder you choose may hold your files too.
+        assert!(moved.starts_with(dir.join("elsewhere").join("Telly copies")));
         let deadline = Instant::now() + Duration::from_secs(5);
         while !moved.is_file() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));

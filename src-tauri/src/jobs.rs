@@ -592,6 +592,7 @@ fn task(show: &Show, episode: &Episode, doing: &str) -> Task {
 }
 
 pub fn start(backend: Arc<Backend>) {
+    backend.set_copies_apart();
     let start = |name: String, work: fn(&Backend, usize), n: usize| {
         let backend = backend.clone();
         std::thread::Builder::new().name(name).spawn(move || work(&backend, n)).ok();
@@ -842,6 +843,13 @@ pub fn sheet_path(backend: &Backend, show_id: i64, episode_id: i64) -> PathBuf {
     copy_path(backend, show_id, episode_id).with_extension("jpg")
 }
 
+/// Removes the show's folder a copy was moved out of, once nothing is left in it.
+fn tidy(moved: &Path) {
+    if let Some(folder) = moved.parent() {
+        let _ = std::fs::remove_dir(folder);
+    }
+}
+
 /// Moves Telly's copies of episodes, and every episode's seek-bar pictures,
 /// from the copies folder `before` into the one Settings just chose, in the
 /// background. A file on another drive is copied across, then deleted where
@@ -856,6 +864,7 @@ pub fn move_copies(backend: Arc<Backend>, before: PathBuf) {
                 if std::fs::rename(&from, &to).is_err() && std::fs::copy(&from, &to).is_ok() {
                     let _ = std::fs::remove_file(&from);
                 }
+                tidy(&from);
             }
         }
         let copies: Vec<Episode> = backend.db.all_episodes().unwrap_or_default().into_iter().filter(|e| !e.play_path.is_empty() && e.play_path != e.path).collect();
@@ -878,8 +887,10 @@ pub fn move_copies(backend: Arc<Backend>, before: PathBuf) {
                     backend.db.set_play_path(e.id, &to.to_string_lossy())?;
                     // An episode playing stays open; its old copy goes with Free up space, or by hand.
                     let _ = std::fs::remove_file(&from);
+                    tidy(&from);
                     return Ok(());
                 }
+                tidy(&from);
                 backend.db.set_play_path(e.id, &to.to_string_lossy())
             })();
             if let Err(error) = moved {

@@ -107,6 +107,32 @@ pub fn episode_number(stem: &str) -> Option<(Option<i64>, i64)> {
     found.map(|n| (None, n))
 }
 
+/// Whether a file name numbers it between two episodes ("Show - 12.5"): a
+/// recap or special that the show's entry doesn't count. Read as episode 12
+/// it would be a second one, and the whole folder would be numbered by its
+/// order instead, every episode after it one too high.
+pub fn half_episode(stem: &str) -> bool {
+    static NAMED: OnceLock<Regex> = OnceLock::new();
+    static HALF: OnceLock<Regex> = OnceLock::new();
+    static WHOLE: OnceLock<Regex> = OnceLock::new();
+    let stem = half_width(stem);
+    // A name that says its episode outright (S01E12, 第12話) is that episode.
+    if re(&NAMED, r"(?i)\bS[0-9]{1,2}\s*[ ._-]?\s*E[0-9]{1,4}|第\s*[0-9]{1,4}\s*[話话回]|[0-9]{1,4}\s*[話话]").is_match(&stem) {
+        return false;
+    }
+    let bare = strip_brackets(&stem).replace('_', " ");
+    // The last number in the name is the episode's: a half only if that one is ("2.5 Dimensional Seduction - 03" is episode 3).
+    let Some(half) = re(&HALF, r"[\s#-](?:(?i:ep|episode|e)\s*\.?\s*)?([0-9]{1,4})\.5(?:v[0-9])?(?:$|\s|「|『)").captures_iter(&bare).last() else { return false };
+    let after = &bare[half.get(0).expect("the match").end()..];
+    !re(&WHOLE, r"(?:^|[\s.#-])[0-9]{1,3}(?:v[0-9])?(?:$|[\s.-]|「|『)").is_match(after)
+}
+
+/// Which upload of its episode a file name says it is: 2 for "Show - 05v2", 1 when it doesn't say.
+fn version(stem: &str) -> i64 {
+    static R: OnceLock<Regex> = OnceLock::new();
+    re(&R, r"(?i)[0-9]v([2-9])(?:$|[\s.\[(_-])").captures(&half_width(stem)).and_then(|c| c[1].parse().ok()).unwrap_or(1)
+}
+
 /// MakeMKV's title number: "title_t03" or "NARUTO_DISC1_t03" gives 3.
 pub fn makemkv_title(stem: &str) -> Option<i64> {
     static R: OnceLock<Regex> = OnceLock::new();
@@ -289,6 +315,8 @@ pub fn scan(folder: &Path, durations: impl Fn(&[PathBuf]) -> Vec<Option<f64>>) -
             let duration = duration.unwrap_or(0.0);
             let reason = if let Some(why) = extra_reason(&rel, &title_words) {
                 why.to_string()
+            } else if half_episode(&stem) {
+                "Its number is between two episodes (a recap or special)".to_string()
             } else if duration <= 0.0 {
                 "Telly couldn’t read it (still downloading?)".to_string()
             } else if duration < MIN_SECONDS {
@@ -310,6 +338,17 @@ pub fn scan(folder: &Path, durations: impl Fn(&[PathBuf]) -> Vec<Option<f64>>) -
         })
         .collect();
 
+    // Two uploads of one episode in the same folder ("05" and "05v2"): the later is the episode.
+    let versions: Vec<i64> = paths.iter().map(|p| version(&p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default())).collect();
+    for i in 0..files.len() {
+        let folder = |rel: &str| rel.rsplit_once('/').map_or(String::new(), |(folder, _)| folder.to_string());
+        let newer = (0..files.len()).any(|j| {
+            files[j].reason.is_empty() && files[j].parsed == files[i].parsed && versions[j] > versions[i] && folder(&files[j].rel) == folder(&files[i].rel)
+        });
+        if files[i].reason.is_empty() && files[i].parsed.is_some() && newer {
+            files[i].reason = "An earlier upload of an episode that has a newer one here (a v2)".to_string();
+        }
+    }
     let episodes: Vec<usize> = (0..files.len()).filter(|&i| files[i].reason.is_empty()).collect();
     let parsed: Vec<i64> = episodes.iter().filter_map(|&i| files[i].parsed).collect();
     let unique: HashSet<i64> = parsed.iter().copied().collect();
@@ -389,9 +428,35 @@ mod tests {
         assert_eq!(n("Show.05.1080p.WEB.DDP5.1.H.264"), Some(5));
         assert_eq!(n("Show 05 1080p FLAC 2.0"), Some(5));
         assert_eq!(n("今日から3回目"), None);
+        // A number between two episodes is a recap or special, not a second episode 12.
+        assert!(half_episode("[SubsPlease] Show - 12.5 (1080p) [ABCD1234]") && half_episode("Show - 12.5v2") && half_episode("Show Episode 6.5"));
+        assert!(half_episode("Show 12.5 [1080p]") && half_episode("Show #12.5「総集編」"));
+        assert!(!half_episode("Show - 12 (1080p)") && !half_episode("Show.05.1080p.WEB.DDP5.1.H.264") && !half_episode("Show 05 1080p FLAC 2.0"));
+        // A title with one in it isn't.
+        assert!(!half_episode("2.5 Dimensional Seduction - 03") && !half_episode("2.5 Dimensional Seduction") && !half_episode("Show 2.5 S01E03"));
+        assert_eq!((version("Naruto - 04v2 [1080p]"), version("Naruto - 04"), version("Show.S01E04v3.1080p")), (2, 1, 3));
         assert_eq!(makemkv_title("title_t03"), Some(3));
         assert_eq!(makemkv_title("NARUTO_DISC1_t12"), Some(12));
         assert_eq!(makemkv_title("Naruto - 03"), None);
+    }
+
+    #[test]
+    fn a_half_episode_or_an_earlier_upload_doesn_t_renumber_the_folder() {
+        let dir = std::env::temp_dir().join(format!("telly-scan-half-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let names = ["Show - 11.mkv", "Show - 12.mkv", "Show - 12.5.mkv", "Show - 13.mkv", "Show - 13v2.mkv", "Show - 14.mkv"];
+        for name in names {
+            std::fs::write(dir.join(name), b"video").unwrap();
+        }
+        let scan = scan(&dir, |paths| vec![Some(1400.0); paths.len()]).unwrap();
+        let numbered: Vec<(&str, Option<i64>)> = scan.files.iter().map(|f| (f.rel.as_str(), f.number)).collect();
+        assert_eq!(scan.numbering, "names");
+        assert_eq!(
+            numbered,
+            [("Show - 11.mkv", Some(11)), ("Show - 12.mkv", Some(12)), ("Show - 13v2.mkv", Some(13)), ("Show - 14.mkv", Some(14)), ("Show - 12.5.mkv", None), ("Show - 13.mkv", None)]
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

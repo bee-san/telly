@@ -1179,14 +1179,26 @@ impl Backend {
                 || in_folder(&show.folder, path).is_some_and(|p| left_out.contains(&p))
                 || others.iter().any(|s| Path::new(&s.folder).starts_with(&show.folder) && Path::new(path).starts_with(&s.folder))
         };
-        let mut new: Vec<crate::db::NewEpisode> = Vec::new();
-        let mut unnumbered = Vec::new();
-        let mut replaced = 0;
-        for f in scan
+        let news: Vec<&scan::ScannedFile> = scan
             .files
             .iter()
             .filter(|f| !shared && f.reason.is_empty() && !known.contains_key(&f.path) && !moved_to.contains(f.path.as_str()) && !not_its_own(&f.path))
-        {
+            .collect();
+        // A folder in the show's own that none of its episodes are in, with two or more files numbered as
+        // episodes it has: another season, whose numbers start again (as parts.rs tells seasons apart when a
+        // folder is added). None of it is this show's, the files numbered past its last episode neither.
+        let top = |path: &str| in_folder(&show.folder, path).and_then(|rel| rel.split_once('/').map(|(top, _)| top.to_string())).unwrap_or_default();
+        let its_folders: std::collections::HashSet<String> = existing.iter().map(|e| top(&e.path)).collect();
+        let there: std::collections::HashSet<i64> = existing.iter().filter(|e| !gone.contains_key(&e.number)).map(|e| e.number).collect();
+        let mut again: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for f in news.iter().filter(|f| by_names && f.parsed.is_some_and(|n| there.contains(&n))) {
+            *again.entry(top(&f.path)).or_default() += 1;
+        }
+        let another_season = |path: &str| !its_folders.contains(&top(path)) && again.get(&top(path)).is_some_and(|&count| count >= 2);
+        let mut new: Vec<crate::db::NewEpisode> = Vec::new();
+        let mut unnumbered = Vec::new();
+        let mut replaced = 0;
+        for f in news.into_iter().filter(|f| !another_season(&f.path)) {
             match f.parsed {
                 Some(n) if by_names => {
                     if let Some(episode) = gone.remove(&n) {
@@ -2550,6 +2562,53 @@ mod tests {
         // The second season, removed, doesn't hand its rips to the first.
         backend.remove_show(season_two).unwrap();
         assert_eq!(backend.rescan(show).unwrap(), 0);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_new_season_s_folder_isn_t_more_of_the_season_before() {
+        let dir = std::env::temp_dir().join(format!("telly-new-season-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let Some(ffmpeg) = backend.tools().ffmpeg else { return }; // making rips to scan needs ffmpeg
+        let folder = dir.join("K-On!");
+        let path = |name: &str| folder.join(name).to_string_lossy().into_owned();
+        let rip = |name: &str| {
+            std::fs::create_dir_all(Path::new(&path(name)).parent().unwrap()).unwrap();
+            let made = std::process::Command::new(&ffmpeg)
+                .args(["-v", "quiet", "-f", "lavfi", "-i", "color=c=black:s=64x36:r=1", "-t", "400", "-c:v", "mpeg4", "-y"])
+                .arg(path(name))
+                .status()
+                .unwrap();
+            assert!(made.success());
+        };
+        let episodes = (1..=3)
+            .map(|n| {
+                rip(&format!("Season 01/K-On! - S01E0{n}.mkv"));
+                crate::db::NewEpisode { number: n, path: path(&format!("Season 01/K-On! - S01E0{n}.mkv")), size: 1, duration: 400.0 }
+            })
+            .collect();
+        let show = backend.db.add_show(&crate::db::NewShow { folder: folder.to_string_lossy().into_owned(), title: "K-On!".into(), episodes, ..Default::default() }).unwrap();
+        // The second season's numbers start again: its fourth and fifth episodes aren't the first season's.
+        for n in 1..=5 {
+            rip(&format!("Season 02/K-On! - S02E0{n}.mkv"));
+        }
+        assert_eq!(backend.rescan(show).unwrap(), 0);
+        assert_eq!(backend.db.episodes(show).unwrap().len(), 3);
+        // A folder that carries on from the show's last episode is more of it.
+        rip("Part 2/K-On! - 04.mkv");
+        rip("Part 2/K-On! - 05.mkv");
+        assert_eq!(backend.rescan(show).unwrap(), 2);
+        let numbers: Vec<(i64, String)> = backend.db.episodes(show).unwrap().into_iter().map(|e| (e.number, e.path)).collect();
+        assert_eq!(numbers[3..], [(4, path("Part 2/K-On! - 04.mkv")), (5, path("Part 2/K-On! - 05.mkv"))]);
+        // A new release of episodes whose rips are gone, in a folder of its own, still takes their place.
+        for n in 1..=3 {
+            std::fs::remove_file(path(&format!("Season 01/K-On! - S01E0{n}.mkv"))).unwrap();
+            rip(&format!("[BD] K-On!/K-On! - 0{n}.mkv"));
+        }
+        assert_eq!(backend.rescan(show).unwrap(), 3);
+        assert_eq!(backend.db.episodes(show).unwrap()[0].path, path("[BD] K-On!/K-On! - 01.mkv"));
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

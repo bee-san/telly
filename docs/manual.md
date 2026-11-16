@@ -234,6 +234,7 @@ AniList keeps each season, movie and OVA of an anime as an entry of its own, and
   - **OVAs and specials:** a folder of OVAs is one part, and so are the OVA files lying loose beside the seasons (the specials likewise). It goes to the anime's entry of that kind with as many episodes; three OVA series in one folder are split between their entries.
   - **What can't be placed** is listed as not matched, and added under the anime without an entry: better none than the wrong one.
   - A part whose folder holds other parts' rips too (one of several movies, a loose OVA, half a season folder) isn't looked in for new episodes.
+  - A folder that turns up in a show's folder later with episode numbers that start again (a `Season 02` beside the `Season 01` the show's episodes are in) is another season, so **Look for new episodes** adds none of it to the show. One that carries on from the show's last episode is more of it.
 - **Move to another anime…**, on a show's page, lists it under another anime in your library, or on its own, and your choice is kept. **Put back where AniList has it** undoes it.
 
 ## 🔎 Searching shows and lines

@@ -22,7 +22,7 @@ use std::sync::OnceLock;
 pub const VIDEO_EXTENSIONS: &[&str] = &[
     "mkv", "mp4", "m4v", "avi", "webm", "ts", "m2ts", "mts", "mov", "wmv", "flv", "ogm", "mpg", "mpeg",
 ];
-const MIN_SECONDS: f64 = 5.0 * 60.0;
+pub(crate) const MIN_SECONDS: f64 = 5.0 * 60.0;
 const MAX_SECONDS: f64 = 2.0 * 3600.0;
 /// How deep to look below the chosen folder.
 const MAX_DEPTH: usize = 4;

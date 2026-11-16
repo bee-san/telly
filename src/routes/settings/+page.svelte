@@ -113,6 +113,8 @@
       relay = await relayStatus().catch(() => relay);
       names = await call<NamesStatus>("namesStatus").catch(() => names);
       own = await call<OwnHachidori>("ownHachidori").catch(() => own);
+      // A library being read: its count goes up as its shows are added.
+      if (libraries.some((l) => l.adding)) libraries = await call<LibraryView[]>("libraries").catch(() => libraries);
       if (status?.anki && !ankiHas) ankiHas = await askAnki(settings);
     }, 5000);
     return () => {
@@ -751,13 +753,13 @@
       <h2>Libraries</h2>
       <button type="button" class="btn quiet" onclick={() => (editing = { at: null })}><Icon name="plus" /><span>Add library…</span></button>
     </div>
-    <p class="lede">Where a download goes once you’ve said which show it is. Telly makes the folders and the release keeps its file names; nothing already there is moved.</p>
+    <p class="lede">Telly adds the shows in a library’s folders when it’s added. A download goes there once you’ve said which show it is: Telly makes the folders and the release keeps its file names; nothing already there is moved.</p>
     {#if libraries.length}
       <ul class="libraries">
         {#each libraries as l, i (i)}
           <li>
             <div class="library">
-              <span><b>{l.name}</b> <span class="muted">{l.kind === "movies" ? "Movies" : "Series"} · {plural(l.shows, "show")}</span></span>
+              <span><b>{l.name}</b> <span class="muted">{l.kind === "movies" ? "Movies" : "Series"} · {plural(l.shows, "show")}{#if l.adding} · Adding shows…{/if}</span></span>
               {#each l.folders as folder (folder)}
                 <span class="path"><span class="mono">{folder}</span>{#if l.folders.length > 1 && folder === l.downloads} <span class="muted">Downloads go here</span>{/if}</span>
               {/each}

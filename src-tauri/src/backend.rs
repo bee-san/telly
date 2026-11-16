@@ -143,6 +143,54 @@ pub struct Backend {
     /// Held while a show's folder is looked in for new episodes, so two looks
     /// at once (a download finishing, the 10-minute look) don't both add one.
     rescanning: Mutex<()>,
+    /// Whether the folders new to your libraries are being read for shows (library.rs).
+    pub adding_libraries: Mutex<bool>,
+}
+
+/// A folder Add media read, and what AniList makes of it.
+struct Found {
+    scan: scan::Scan,
+    /// The anime its name finds on AniList, the likeliest first.
+    matches: Vec<Anime>,
+    /// Its parts, when it holds more than one show (parts.rs).
+    parts: Vec<parts::Part>,
+    /// Every season, movie and OVA of the anime.
+    entries: Vec<Anime>,
+    /// The anime its parts are listed under.
+    anime: Option<Anime>,
+    /// Why AniList couldn't be asked.
+    error: Option<String>,
+}
+
+impl Found {
+    /// The shows the folder is when nothing is changed in Add media's sheet,
+    /// each with whether its folder holds other parts' rips too: its parts,
+    /// or the folder as one show. What has no episodes isn't one.
+    fn shows(&self) -> Vec<(NewShow, bool)> {
+        let episodes = |files: &[scan::ScannedFile]| -> Vec<crate::db::NewEpisode> {
+            files.iter().filter_map(|f| f.number.map(|number| crate::db::NewEpisode { number, path: f.path.clone(), size: f.size, duration: f.duration })).collect()
+        };
+        let mut shows: Vec<(NewShow, bool)> = self
+            .parts
+            .iter()
+            .map(|p| {
+                let title = if p.anime.is_some() { String::new() } else { p.title.clone() };
+                (NewShow { folder: p.folder.clone(), title, anilist_id: p.anime.as_ref().map(|a| a.id), episodes: episodes(&p.files), ..Default::default() }, p.shared)
+            })
+            .collect();
+        if self.parts.is_empty() {
+            let mut episodes = episodes(&self.scan.files);
+            // A folder with no episodes, but videos left out only for running past two hours, is a film (or one in parts).
+            if episodes.is_empty() {
+                let long = self.scan.files.iter().filter(|f| f.reason.starts_with("Over 2 hours"));
+                episodes = long.zip(1..).map(|(f, number)| crate::db::NewEpisode { number, path: f.path.clone(), size: f.size, duration: f.duration }).collect();
+            }
+            let title = if self.matches.is_empty() { self.scan.guess.clone() } else { String::new() };
+            shows.push((NewShow { folder: self.scan.folder.clone(), title, anilist_id: self.matches.first().map(|a| a.id), episodes, ..Default::default() }, false));
+        }
+        shows.retain(|(show, _)| !show.episodes.is_empty());
+        shows
+    }
 }
 
 /// Where "Earlier/Later from here" last moved an episode's lines from, so
@@ -540,6 +588,7 @@ impl Backend {
             series: series::Kept::default(),
             scanned: Mutex::new(None),
             rescanning: Mutex::new(()),
+            adding_libraries: Mutex::new(false),
         })
     }
 
@@ -557,6 +606,7 @@ impl Backend {
             torrents::start(backend.clone());
             follow::start(backend.clone());
             backend.watch_folders();
+            crate::library::carry_on(&backend);
             backend.fill_covers();
             series::gather(&backend);
             recommend::gather(&backend);
@@ -977,23 +1027,43 @@ impl Backend {
     /// `base`, the anime is the one you chose, and the folder just read isn't
     /// read again.
     fn scan(&self, folder: &str, base: Option<i64>) -> Result<Value> {
-        let tools = self.tools();
         let kept = self.scanned.lock().ok().and_then(|s| s.clone()).filter(|s| base.is_some() && s.folder == folder);
         let scan = match kept {
             Some(scan) => scan,
-            None => scan::scan(Path::new(folder), |paths| {
-                self.downloads.unless_downloading(paths, |paths| scan::probe_durations(tools.ffprobe.as_deref(), paths))
-            })?,
+            None => self.read_folder(folder)?,
         };
         if let Ok(mut kept) = self.scanned.lock() {
             *kept = Some(scan.clone());
         }
+        let found = self.matched(scan, base, false)?;
+        Ok(json!({ "scan": found.scan, "matches": found.matches, "parts": found.parts, "entries": found.entries, "anime": found.anime, "error": found.error, "ffprobe": self.tools().ffprobe.is_some() }))
+    }
+
+    /// The length of each video, through ffprobe. One still downloading has none.
+    pub(crate) fn lengths(&self, paths: &[PathBuf]) -> Vec<Option<f64>> {
+        let tools = self.tools();
+        self.downloads.unless_downloading(paths, |paths| scan::probe_durations(tools.ffprobe.as_deref(), paths))
+    }
+
+    /// Reads a folder's videos: which are episodes, and the show's name.
+    pub(crate) fn read_folder(&self, folder: &str) -> Result<scan::Scan> {
+        scan::scan(Path::new(folder), |paths| self.lengths(paths))
+    }
+
+    /// The anime a folder that's been read is, and its parts with the AniList
+    /// entry of each. With `base`, the anime is the one you chose. With
+    /// `sure`, an anime none of whose names is much like the folder's isn't
+    /// taken for it.
+    fn matched(&self, scan: scan::Scan, base: Option<i64>, sure: bool) -> Result<Found> {
         let split = parts::split(&scan);
         // Of several seasons, the first one's episodes say which entry the folder's name means.
         let count = if split.len() > 1 { split.iter().find(|p| p.kind == parts::Kind::Season).map_or(0, parts::episodes) } else { scan.files.iter().filter(|f| f.number.is_some()).count() };
         let (mut matches, mut error) = match anilist::search_loosely(&scan.guess) {
             Ok(mut found) => {
                 anilist::rank(&mut found, &scan.guess, count);
+                if sure && !found.first().is_some_and(|a| a.is_called(&scan.guess)) {
+                    found.clear();
+                }
                 let error = anilist::follow_sequels(&mut found, &scan.guess).err().map(|e| format!("{e:#}"));
                 (found, error)
             }
@@ -1015,14 +1085,33 @@ impl Backend {
         let (parts, entries, anime) = match (&graph, matches.first()) {
             (Some(graph), Some(found)) => {
                 let root = graph.root(found.id).unwrap_or(found.id);
-                let entries: Vec<&Anime> = graph.parts(root).into_iter().map(|e| &e.anime).collect();
-                (parts::assign(split, graph, found), json!(entries), json!(graph.entry(root).map_or(found, |e| &e.anime)))
+                let entries: Vec<Anime> = graph.parts(root).into_iter().map(|e| e.anime.clone()).collect();
+                (parts::assign(split, graph, found), entries, Some(graph.entry(root).map_or(found, |e| &e.anime).clone()))
             }
-            _ => (parts::unassigned(split, &scan.guess), json!([]), json!(matches.first())),
+            _ => (parts::unassigned(split, &scan.guess), Vec::new(), matches.first().cloned()),
         };
         // One part is one show, added as ever.
         let parts = if parts.len() > 1 { parts } else { Vec::new() };
-        Ok(json!({ "scan": scan, "matches": matches, "parts": parts, "entries": entries, "anime": anime, "error": error, "ffprobe": tools.ffprobe.is_some() }))
+        Ok(Found { scan, matches, parts, entries, anime, error })
+    }
+
+    /// Adds a folder that's been read as Add media… does when nothing in its
+    /// sheet is changed: one show, or each of its parts as a show, with the
+    /// AniList entries its name finds. Nobody checks these, so an anime whose
+    /// names aren't much like the folder's isn't taken for it: the folder is
+    /// added under its own name, better that than as the wrong show. Returns
+    /// the shows added (none when the folder has no episodes), or why AniList
+    /// couldn't be asked.
+    pub(crate) fn add_as_read(self: &Arc<Self>, scan: &scan::Scan) -> Result<Vec<i64>> {
+        let found = self.matched(scan.clone(), None, true)?;
+        if let Some(error) = &found.error {
+            return Err(anyhow!("{error}"));
+        }
+        let shows = found.shows();
+        if shows.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.add_parts(shows, found.anime.map(|a| a.id), Some(scan))
     }
 
     /// Looks in a show's folder again for episodes that weren't there, or
@@ -1214,7 +1303,7 @@ impl Backend {
         }
         let new = Self::new_show_from(anime.as_ref(), new);
         let id = self.db.add_show(&new)?;
-        self.keep_left_out(id, &new);
+        self.keep_left_out(id, &new, self.scanned.lock().ok().and_then(|s| s.clone()).as_ref());
         self.fetch_cover(id, new.cover_url.clone());
         series::gather(self);
         recommend::gather(self);
@@ -1224,8 +1313,8 @@ impl Backend {
 
     /// Notes the files Add media listed in a new show's folder that you left
     /// out, so Look for new episodes doesn't add them after all.
-    fn keep_left_out(&self, id: i64, show: &NewShow) {
-        let Some(scan) = self.scanned.lock().ok().and_then(|s| s.clone()) else { return };
+    fn keep_left_out(&self, id: i64, show: &NewShow, scan: Option<&scan::Scan>) {
+        let Some(scan) = scan else { return };
         let chosen: std::collections::HashSet<&str> = show.episodes.iter().map(|e| e.path.as_str()).collect();
         let left: Vec<String> = scan.files.iter().filter(|f| f.reason.is_empty() && !chosen.contains(f.path.as_str())).map(|f| f.path.clone()).collect();
         self.leave_out(id, &show.folder, &left);
@@ -1300,21 +1389,31 @@ impl Backend {
         if parts.is_empty() || parts.iter().any(|p| p.show.episodes.is_empty()) {
             return Err(anyhow!("There are no episodes to add"));
         }
-        let ids: Vec<i64> = parts.iter().filter_map(|p| p.show.anilist_id).collect();
+        let scan = self.scanned.lock().ok().and_then(|s| s.clone());
+        let added = self.add_parts(parts.into_iter().map(|p| (p.show, p.shared)).collect(), anime, scan.as_ref())?;
+        Ok(json!({ "ids": added }))
+    }
+
+    /// Adds each of `parts` as a show, with whether its folder holds other
+    /// parts' rips too. `scan` is the folder as it was read: what's in a
+    /// part's folder and isn't its own is left out of later looks for new
+    /// episodes.
+    pub(crate) fn add_parts(self: &Arc<Self>, parts: Vec<(NewShow, bool)>, anime: Option<i64>, scan: Option<&scan::Scan>) -> Result<Vec<i64>> {
+        let ids: Vec<i64> = parts.iter().filter_map(|(show, _)| show.anilist_id).collect();
         let entries = anilist::by_ids(&ids)?;
         if let Some(missing) = ids.iter().find(|id| !entries.iter().any(|a| a.id == **id)) {
             return Err(anyhow!("AniList has no anime {missing}"));
         }
         let mut added = Vec::new();
-        for mut part in parts {
-            if part.show.title.trim().is_empty() {
-                part.show.title = scan::clean_title(Path::new(&part.show.folder).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default().as_str());
+        for (mut show, shared) in parts {
+            if show.title.trim().is_empty() {
+                show.title = scan::clean_title(Path::new(&show.folder).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default().as_str());
             }
-            let entry = part.show.anilist_id.and_then(|id| entries.iter().find(|a| a.id == id));
-            let new = Self::new_show_from(entry, part.show);
+            let entry = show.anilist_id.and_then(|id| entries.iter().find(|a| a.id == id));
+            let new = Self::new_show_from(entry, show);
             let id = self.db.add_show(&new)?;
-            self.keep_left_out(id, &new);
-            if part.shared {
+            self.keep_left_out(id, &new, scan);
+            if shared {
                 self.db.set_setting(&shared_setting(id), &json!(true))?;
             }
             if let (None, Some(key)) = (new.anilist_id, anime) {
@@ -1326,7 +1425,7 @@ impl Backend {
         series::gather(self);
         recommend::gather(self);
         self.jobs.poke();
-        Ok(json!({ "ids": added }))
+        Ok(added)
     }
 
     fn rematch(self: &Arc<Self>, id: i64, anilist_id: i64) -> Result<Value> {
@@ -1917,10 +2016,15 @@ impl Backend {
             "settings" => Ok(Value::Object(self.db.settings()?)),
             "setSetting" => {
                 let key: String = arg(&args, "key")?;
+                let libraries = if key == "libraries" { crate::library::libraries(self)? } else { Vec::new() };
                 let done = self.set_setting(&key, &args.get("value").cloned().unwrap_or(Value::Null))?;
                 // Which cards count as known changed: every share is worked out again.
                 if key.starts_with("known.") {
                     premine::start_shares(self, None);
+                }
+                // A folder new to your libraries is read for shows.
+                if key == "libraries" {
+                    crate::library::saved(self, &libraries)?;
                 }
                 Ok(done)
             }
@@ -2654,6 +2758,37 @@ mod tests {
         assert!(backend.db.episode(id).unwrap().unwrap().watched_at.is_some());
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_folder_added_unchecked_is_its_episodes_or_the_film_that_s_all_it_holds() {
+        let file = |name: &str, number: Option<i64>, reason: &str| scan::ScannedFile {
+            path: format!(r"D:\Films\Film\{name}"),
+            rel: name.into(),
+            size: 1,
+            duration: 9000.0,
+            parsed: None,
+            number,
+            reason: reason.into(),
+        };
+        let found = |files: Vec<scan::ScannedFile>| Found {
+            scan: scan::Scan { folder: r"D:\Films\Film".into(), guess: "Film".into(), files, numbering: "order".into() },
+            matches: Vec::new(),
+            parts: Vec::new(),
+            entries: Vec::new(),
+            anime: None,
+            error: None,
+        };
+        let paths = |found: &Found| found.shows().iter().map(|(show, _)| show.episodes.iter().map(|e| (e.number, e.path.rsplit('\\').next().unwrap_or_default().to_string())).collect::<Vec<_>>()).collect::<Vec<_>>();
+        // A film past two hours is left out of a show's episodes, but it's the show when it's all there is.
+        let film = found(vec![file("Film.mkv", None, "Over 2 hours (a play-all title)"), file("Trailer.mkv", None, "Under 5 minutes")]);
+        assert_eq!(paths(&film), [[(1, "Film.mkv".to_string())]]);
+        assert_eq!(film.shows()[0].0.title, "Film");
+        // Beside episodes, it's the disc's play-all title, left out as ever.
+        let disc = found(vec![file("01.mkv", Some(1), ""), file("02.mkv", Some(2), ""), file("All.mkv", None, "Over 2 hours (a play-all title)")]);
+        assert_eq!(paths(&disc), [[(1, "01.mkv".to_string()), (2, "02.mkv".to_string())]]);
+        // A folder with nothing to watch is no show.
+        assert!(found(vec![file("Trailer.mkv", None, "Under 5 minutes")]).shows().is_empty());
     }
 
     #[test]

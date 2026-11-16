@@ -651,7 +651,7 @@ export interface DownloadDestination {
   library: number | null;
 }
 
-/** A library: where downloads of its kind go, chosen in Settings. */
+/** A library: the folders its shows are in and where downloads of its kind go, chosen in Settings. */
 export interface DownloadLibrary {
   name: string;
   kind: "series" | "movies";
@@ -664,6 +664,8 @@ export interface DownloadLibrary {
 export interface LibraryView extends DownloadLibrary {
   /** How many shows in the library are in its folders. */
   shows: number;
+  /** Whether a folder of it is still being read for shows to add. */
+  adding: boolean;
 }
 
 /** What a release's sheet shows before it downloads. */

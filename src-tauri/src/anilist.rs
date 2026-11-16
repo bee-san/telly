@@ -77,6 +77,13 @@ impl Anime {
             .chain(self.synonyms.iter().map(String::as_str))
     }
 
+    /// Whether a folder or file called `title` is fairly surely this anime:
+    /// one of its names shares half its words or more with it, as parts.rs
+    /// asks of a film's name.
+    pub(crate) fn is_called(&self, title: &str) -> bool {
+        self.names().any(|name| likeness(title, name) >= 0.5)
+    }
+
     /// The season its titles name. A first season's name none.
     pub(crate) fn season(&self) -> i64 {
         self.names().find_map(season).unwrap_or(1)

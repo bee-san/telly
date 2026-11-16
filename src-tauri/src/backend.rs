@@ -2026,6 +2026,9 @@ impl Backend {
                 if key == "libraries" {
                     crate::library::saved(self, &libraries)?;
                 }
+                if key.starts_with("downloads.") {
+                    torrents::setting_changed(self, &key);
+                }
                 Ok(done)
             }
             "knownSources" => known::sources(self),
@@ -2224,6 +2227,7 @@ impl Backend {
             }
             "follow" => follow::set(self, arg(&args, "show")?, arg(&args, "on")?),
             "downloads" => Ok(torrents::view(self)),
+            "connections" => Ok(json!(torrents::connections().into_iter().map(|(name, connected)| json!({ "name": name, "connected": connected })).collect::<Vec<_>>())),
             "libraries" => crate::library::view(self),
             "pauseDownload" => {
                 torrents::pause(self, arg(&args, "id")?, arg(&args, "paused")?)?;

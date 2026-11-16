@@ -61,6 +61,8 @@
   let movedTo = $state("");
   let moved = $state<ShowMove[] | null>(null);
   let libraries = $state<LibraryView[]>(kept<LibraryView[]>("libraries") ?? []);
+  /** The computer's network connections, for Downloads to choose the one to download through. */
+  let connections = $state<{ name: string; connected: boolean }[]>([]);
   /** The library being added (at: null) or edited in its sheet. */
   let editing = $state<{ at: number | null } | null>(null);
 
@@ -83,6 +85,7 @@
         callKept<KnownSources>("knownSources").then((k) => (sources = k)).catch(() => (sources = null)),
         callKept<DownloadsView>("downloads").then((d) => (downloadsFolder = d.folder)).catch(() => {}),
         callKept<LibraryView[]>("libraries").then((l) => (libraries = l)),
+        call<{ name: string; connected: boolean }[]>("connections").then((c) => (connections = c)).catch(() => {}),
         loadAway(),
       ]);
     } catch (e) {
@@ -116,6 +119,8 @@
       // A library being read: its count goes up as its shows are added.
       if (libraries.some((l) => l.adding)) libraries = await call<LibraryView[]>("libraries").catch(() => libraries);
       if (status?.anki && !ankiHas) ankiHas = await askAnki(settings);
+      // A VPN connecting or dropping shows in the list of connections.
+      if (pane === "library") connections = await call<{ name: string; connected: boolean }[]>("connections").catch(() => connections);
     }, 5000);
     return () => {
       left = true;
@@ -156,6 +161,8 @@
   }
 
   const str = (k: string, d = "") => String(settings[k] ?? d);
+  /** A speed limit as typed, in whole KB a second: 0 (no limit) for nothing or less. */
+  const speed = (typed: string) => Math.max(0, Math.round(Number(typed) || 0));
   const bool = (k: string, d: boolean) => (typeof settings[k] === "boolean" ? (settings[k] as boolean) : d);
 
   /** Settings' pages, as the list at its side has them. */
@@ -177,6 +184,11 @@
     { label: "Libraries", page: "library", group: "libraries", words: "folders series movies add library" },
     { label: "Folder for new shows", page: "library", group: "downloads", words: "downloads" },
     { label: "nyaa address", page: "library", group: "downloads", words: "blocked provider" },
+    { label: "Download and upload speed, at most", page: "library", group: "downloads", words: "torrent limit rate bandwidth" },
+    { label: "Keep sharing a download once it’s finished", page: "library", group: "downloads", words: "torrent seeding upload stop" },
+    { label: "Ask the router to let others connect", page: "library", group: "downloads", words: "torrent upnp port forwarding" },
+    { label: "Download only through one connection", page: "library", group: "downloads", words: "torrent vpn network adapter bind" },
+    { label: "Keep free on the drive", page: "library", group: "downloads", words: "torrent disk space room" },
     { label: "Moved rips", page: "library", group: "moved", words: "drive letter folder find" },
     { label: "Free up space", page: "library", group: "disk", words: "disk copies" },
     { label: "Copies folder", page: "library", group: "disk", words: "disk space" },
@@ -731,6 +743,33 @@
             <label class="row">
               <span class="what"><b>nyaa address</b><small>Another address for nyaa, if your internet provider blocks nyaa.si.</small></span>
               <input class="input mono ctl" value={str("nyaa.site")} placeholder="https://nyaa.si" onchange={(e) => set("nyaa.site", e.currentTarget.value.trim())} />
+            </label>
+          </div>
+          <div class="card">
+            <label class="row">
+              <span class="what"><b>Download speed, at most</b><small>In KB a second. Empty for no limit.</small></span>
+              <input class="input ctl" type="number" min="0" step="100" placeholder="No limit" value={Number(settings["downloads.downLimit"]) || ""} onchange={(e) => set("downloads.downLimit", speed(e.currentTarget.value))} />
+            </label>
+            <label class="row">
+              <span class="what"><b>Upload speed, at most</b><small>In KB a second. Empty for no limit. Telly shares what it has of a release with the others getting it.</small></span>
+              <input class="input ctl" type="number" min="0" step="100" placeholder="No limit" value={Number(settings["downloads.upLimit"]) || ""} onchange={(e) => set("downloads.upLimit", speed(e.currentTarget.value))} />
+            </label>
+            {@render toggle("downloads.share", true, "Keep sharing a download once it’s finished", "While Telly is open, others get it from you as you got it from them. Off, each download stops being shared the moment it finishes. One still downloading shares what it has, as torrents do: the upload limit slows that.")}
+            {@render toggle("downloads.upnp", true, "Ask the router to let others connect to Telly", "With UPnP, your router opens a port to Telly, so the people sharing a release can connect to Telly as well as Telly to them, which makes downloads faster. Off, Telly only connects out. Changing this stops the downloads for a moment.")}
+            <label class="row">
+              <span class="what"><b>Download only through</b><small>For a VPN: choose its connection, and Telly downloads and shares only while it’s connected. Within a second of it dropping, Telly’s downloader stops altogether, and it starts again when the connection is back.</small></span>
+              <select class="input ctl" value={str("downloads.adapter")} onchange={(e) => set("downloads.adapter", e.currentTarget.value)}>
+                <option value="">Any connection</option>
+                {#if str("downloads.adapter") && !connections.some((c) => c.name === str("downloads.adapter"))}<option value={str("downloads.adapter")}>{str("downloads.adapter")} (not connected)</option>{/if}
+                {#each connections as c (c.name)}<option value={c.name}>{c.name}{c.connected ? "" : " (not connected)"}</option>{/each}
+              </select>
+            </label>
+            <label class="row">
+              <span class="what"><b>Keep free on the drive</b><small>Telly doesn’t start a download there isn’t room for, counting what your other downloads on that drive still need.</small></span>
+              <select class="input ctl" value={String(settings["downloads.keepFree"] ?? 1)} onchange={(e) => set("downloads.keepFree", Number(e.currentTarget.value))}>
+                <option value="0">Nothing</option>
+                {#each [1, 5, 10, 20, 50] as gb}<option value={String(gb)}>{gb} GB</option>{/each}
+              </select>
             </label>
           </div>
         </section>

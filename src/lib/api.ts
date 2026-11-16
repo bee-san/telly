@@ -136,6 +136,17 @@ export interface Activity {
   /** Downloads finished that wait to be added (Processing offers them), and downloads stopped on an error. */
   downloadsToAdd: number;
   downloadsStopped: number;
+  /** A newer Telly that's out, once GitHub has said so. */
+  newer: Newer | null;
+}
+
+/** A release of Telly newer than this one. */
+export interface Newer {
+  version: string;
+  /** Its page on GitHub. */
+  page: string;
+  /** Its installer, once it's built. */
+  installer: string | null;
 }
 
 export interface DownloadSummary {
@@ -767,6 +778,8 @@ export interface Status {
   anki: boolean;
   ankiUrl: string;
   dataDir: string;
+  /** This Telly's version: "0.10.2". */
+  version: string;
   /** Where Telly's copies of episodes go. */
   mediaDir: string;
   logPath: string;

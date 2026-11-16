@@ -62,6 +62,10 @@ Download the installer, `Telly_<version>_x64-setup.exe`, from the [latest releas
 > [!TIP]
 > Run it as `Telly_<version>_x64-setup.exe /P /D=%LOCALAPPDATA%\Programs\Telly` to keep the app apart from Telly's data: without `/D` it installs to `%LOCALAPPDATA%\Telly`, the folder that also holds your library. Later installs reuse the folder the first one used.
 
+### 🔔 When a newer Telly is out
+
+Telly doesn't update itself. Once a day it asks GitHub what the latest release is, and when that's newer than the one you have, the title bar says **Telly 0.10.3 is out**: press it for the release's page, or **Download its installer** in Settings → Updates, and run the installer over this one. Your library stays as it is. Nothing about you or your library is sent, and Settings → Updates turns the asking off.
+
 ### 🧭 The first time it opens
 
 A few screens set Telly up, finding out what they can before asking:

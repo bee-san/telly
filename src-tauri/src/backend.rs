@@ -157,6 +157,8 @@ pub struct Backend {
     /// Held while a show's folder is looked in for new episodes, so two looks
     /// at once (a download finishing, the 10-minute look) don't both add one.
     rescanning: Mutex<()>,
+    /// A newer Telly that's out, as GitHub last said (update.rs).
+    newer: Mutex<Option<crate::update::Newer>>,
     /// The lengths of videos a look for new episodes read that aren't episodes (`lengths_once`).
     looked_at: Mutex<std::collections::HashMap<PathBuf, (u64, Option<std::time::SystemTime>, f64)>>,
     /// Whether your libraries' folders are being read for shows (library.rs).
@@ -336,6 +338,8 @@ pub struct Activity {
     /// them), and downloads stopped on an error: the title bar says so.
     pub downloads_to_add: usize,
     pub downloads_stopped: usize,
+    /// A newer Telly that's out (update.rs).
+    pub newer: Option<crate::update::Newer>,
 }
 
 /// What the title bar's list shows: what each worker is doing, and the work
@@ -610,6 +614,7 @@ impl Backend {
             series: series::Kept::default(),
             scanned: Mutex::new(None),
             rescanning: Mutex::new(()),
+            newer: Mutex::new(None),
             looked_at: Mutex::new(std::collections::HashMap::new()),
             adding_libraries: Mutex::new(false),
             library_looks: Mutex::new(Vec::new()),
@@ -631,6 +636,7 @@ impl Backend {
             std::thread::Builder::new().name("telly-cards".into()).spawn(move || cards::worker(&for_cards)).ok();
             torrents::start(backend.clone());
             follow::start(backend.clone());
+            crate::update::start(backend.clone());
             backend.watch_folders();
             backend.fill_covers();
             series::gather(&backend);
@@ -673,6 +679,11 @@ impl Backend {
         };
         *kept = Some(dir.clone());
         dir
+    }
+
+    /// Keeps what GitHub said of a newer Telly, for the title bar and Settings.
+    pub fn set_newer(&self, newer: Option<crate::update::Newer>) {
+        *self.newer.lock().unwrap_or_else(|e| e.into_inner()) = newer;
     }
 
     /// Moves copies made in the very folder you chose into Telly's own folder
@@ -936,6 +947,7 @@ impl Backend {
             downloading: self.downloads.summary(),
             downloads_to_add: torrents::offers(self).iter().filter(|o| !o.downloading).count(),
             downloads_stopped: self.downloads.stopped(),
+            newer: self.newer.lock().ok().and_then(|n| n.clone()),
             ..Default::default()
         };
         // Several episodes are worked on at once, often of different shows.
@@ -2057,6 +2069,7 @@ impl Backend {
             "anki": anki,
             "ankiUrl": url,
             "dataDir": self.dirs.local,
+            "version": env!("CARGO_PKG_VERSION"),
             "mediaDir": self.media_dir(),
             "logPath": self.log.path,
             "spaceUsed": self.space_used(),

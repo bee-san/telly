@@ -44,6 +44,7 @@ pub mod subs;
 pub mod sync;
 pub mod tools;
 pub mod torrents;
+pub mod update;
 pub mod util;
 
 use backend::{Backend, Dirs};

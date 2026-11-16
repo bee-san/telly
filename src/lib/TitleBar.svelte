@@ -7,6 +7,20 @@
   import { app } from "./state.svelte";
 
   const act = $derived(app.activity);
+  /** A newer Telly that's out: said beside the window's buttons, but not over the player. */
+  const newer = $derived(app.dark ? null : (act?.newer ?? null));
+
+  async function openNewer() {
+    if (!newer) return;
+    try {
+      if (inTauri) {
+        const { openUrl } = await import("@tauri-apps/plugin-opener");
+        await openUrl(newer.page);
+      } else window.open(newer.page);
+    } catch {
+      goto("/settings#updates");
+    }
+  }
   const task = $derived(act?.tasks[0] ?? null);
   /** With no other work, the title bar shows the downloads, and goes to Processing. */
   const downloads = $derived(act?.downloading ?? null);
@@ -217,6 +231,9 @@
   </span>
   <SearchBox dark={app.dark} />
   <span class="wt-right" data-tauri-drag-region>
+  {#if newer}
+    <button type="button" class="wt-new" title="Open its page, to download it" onclick={openNewer}>Telly {newer.version} is out</button>
+  {/if}
   {#if inTauri}
     <span class="wt-caps">
       <button type="button" aria-label="Minimise" title="Minimise" onclick={() => win("minimize")}><Icon name="min" /></button>
@@ -254,6 +271,8 @@
   .wq-kind span:first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .wq-more { padding: 3px 10px 6px; font-size: 12px; color: var(--ink-3); }
   .wt-menu .wq-all { margin-top: 4px; border-top: 1px solid var(--rule); border-radius: 0 0 5px 5px; font-weight: 600; }
+  .wt-new { align-self: center; margin-right: 8px; font: 500 12px/1 var(--font-ui); color: var(--ink); background: var(--sunk); border: 0; padding: 5px 9px; border-radius: 4px; cursor: pointer; white-space: nowrap; }
+  .wt-new:hover { background: var(--rule-2); }
   .wt-caps { display: flex; height: 100%; }
   .wt-caps button { width: 46px; height: 100%; display: grid; place-items: center; color: var(--ink-2); background: none; border: 0; cursor: default; }
   .wt-caps button:hover { background: var(--sunk); color: var(--ink); }

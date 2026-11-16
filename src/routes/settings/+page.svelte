@@ -882,6 +882,22 @@
     <p class="muted mono path">{status?.logPath}</p>
   </section>
 
+  <section id="updates">
+    <h2>Updates</h2>
+    {#if app.activity?.newer}
+      {@const newer = app.activity.newer}
+      <p class="lede"><b>Telly {newer.version} is out.</b> This is Telly {status?.version ?? ""}.</p>
+      <div class="actions">
+        <button type="button" class="btn" onclick={() => openLink(newer.installer ?? newer.page)}>{newer.installer ? "Download its installer" : "Open its page"}</button>
+        {#if newer.installer}<button type="button" class="btn quiet" onclick={() => openLink(newer.page)}>What’s new</button>{/if}
+      </div>
+      <p class="muted">Run the installer and it takes this Telly’s place. Your library stays as it is.</p>
+    {:else}
+      <p class="lede">This is Telly {status?.version ?? ""}.</p>
+    {/if}
+    <label class="check"><input type="checkbox" checked={bool("updates.check", true)} onchange={(e) => set("updates.check", e.currentTarget.checked)} /><span>Say when a newer Telly is out<small>Telly asks GitHub once a day what the latest release is. Nothing about you or your library is sent, and nothing is downloaded until you press the button.</small></span></label>
+  </section>
+
   <section id="backup">
     <h2>Backup</h2>
     <p class="lede">A backup is one file with what Telly can’t make again: your shows, where you are in each and what you watched, your settings, the subtitles and your nudges to their timing, Tidepool’s log, the words you know and your AniList list. Restore it on a new computer or after reinstalling. Telly’s copies of episodes, covers and the seek bar’s pictures aren’t in it, as Telly makes them again, and nor are your rips.</p>

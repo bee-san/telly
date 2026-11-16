@@ -29,6 +29,7 @@ use crate::media::{self, Plan};
 use crate::subs::{self, Line};
 use crate::sync;
 use crate::jimaku;
+use crate::util::Helper;
 use crate::{anilist, aniskip, games, heard, matching, openrouter, scan};
 use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
@@ -230,6 +231,10 @@ pub struct Jobs {
     /// Held while Jimaku is asked, so it's asked by one worker at a time: it
     /// answers 429 when asked too fast, and what one worker fetched the next finds kept.
     jimaku: Mutex<()>,
+    /// When Jimaku can be asked again, after it couldn't answer (`jimaku::Later`).
+    jimaku_after: Mutex<Option<Instant>>,
+    /// Why no copy of an episode can be made now (the copies folder isn't there, or is full), for the title bar.
+    copies_wait: Mutex<Option<String>>,
     /// Turns at each drive rips are on (see `drive`).
     drives: Mutex<HashMap<PathBuf, Arc<Turns>>>,
     /// The game running, by its program's name, as `games::watch` last found it.
@@ -258,6 +263,8 @@ impl Default for Jobs {
             jimaku_files: Mutex::new(HashMap::new()),
             jimaku_entries: Mutex::new(HashMap::new()),
             jimaku: Mutex::new(()),
+            jimaku_after: Mutex::new(None),
+            copies_wait: Mutex::new(None),
             drives: Mutex::new(HashMap::new()),
             game: Mutex::new(None),
             held: AtomicUsize::new(0),
@@ -317,6 +324,8 @@ impl Jobs {
         if let Ok(mut cache) = self.jimaku_files.lock() {
             cache.clear();
         }
+        // A new key, or another match: asked again at once.
+        *self.jimaku_after.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     /// Episodes whose rips were just found where they are now (relink.rs):
@@ -355,6 +364,23 @@ impl Jobs {
     /// Measured on a USB hard drive, with 8 episodes of four shows: 38 and
     /// 48 MB/s one at a time, 23 MB/s two at a time, 21 and 23 MB/s four at a
     /// time. A drive without a seek penalty gives a few turns at once (see `Turns`).
+    /// Leaves Jimaku alone for `wait`, and wakes the workers when it's over.
+    fn rest_jimaku(&self, wait: Duration) {
+        *self.jimaku_after.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now() + wait);
+    }
+
+    /// Whether Jimaku is being left alone after it couldn't answer.
+    fn jimaku_resting(&self) -> bool {
+        let mut after = self.jimaku_after.lock().unwrap_or_else(|e| e.into_inner());
+        match *after {
+            Some(until) if Instant::now() < until => true,
+            _ => {
+                *after = None;
+                false
+            }
+        }
+    }
+
     fn drive(&self, rip: &Path) -> Arc<Turns> {
         let root = rip.ancestors().last().unwrap_or(rip).to_path_buf();
         let drives = || self.drives.lock().unwrap_or_else(|e| e.into_inner());
@@ -580,6 +606,10 @@ fn after_the_game(backend: &Backend) -> bool {
 /// and the other looks again.
 fn take(backend: &Backend, kind: &str) -> Option<(Show, Episode, usize)> {
     loop {
+        // While Jimaku can't be asked, no episode is taken to find subtitles for: it would only wait too.
+        if kind == "subs" && backend.jobs.jimaku_resting() {
+            return None;
+        }
         let (show, episode, count) = pick(backend, kind)?;
         if after_the_game(backend) {
             continue;
@@ -1033,7 +1063,17 @@ fn subs_worker(backend: &Backend, n: usize) {
             set_task(slot, Some(task(&show, &episode, "Finding subtitles for")));
             let result = find_subtitles(backend, slot, &ffmpeg, &ffprobe, &show, &episode, count);
             if let Err(e) = result {
-                let _ = backend.db.fail_subs(episode.id, &format!("{e:#}"));
+                match e.chain().find_map(|cause| cause.downcast_ref::<jimaku::Later>()) {
+                    // Jimaku can't be asked now: nothing's wrong with the episode, which waits with the
+                    // rest until it can be. Failing it would fail every episode waiting, one after another.
+                    Some(later) => {
+                        let _ = backend.db.subs_later(episode.id, &format!("{later}: asking again in {} seconds", later.after.as_secs()));
+                        backend.jobs.rest_jimaku(later.after);
+                    }
+                    None => {
+                        let _ = backend.db.fail_subs(episode.id, &format!("{e:#}"));
+                    }
+                }
             }
             pictures_after(backend, slot, &ffmpeg, &show, &episode);
             set_task(slot, None);

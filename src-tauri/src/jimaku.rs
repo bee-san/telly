@@ -56,6 +56,49 @@ pub struct RemoteFile {
     pub size: u64,
 }
 
+/// Jimaku can't answer now (it's asking Telly to slow down, it's down, or
+/// the connection is): nothing's wrong with the episode, which is tried
+/// again after `after` rather than given up on.
+#[derive(Debug)]
+pub struct Later {
+    pub after: Duration,
+    why: String,
+}
+
+impl std::fmt::Display for Later {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.why)
+    }
+}
+
+impl std::error::Error for Later {}
+
+/// How long Telly leaves Jimaku alone when it's down or can't be reached.
+const DOWN_WAIT: Duration = Duration::from_secs(120);
+
+/// A request Jimaku didn't answer, as the error that says to ask later.
+fn unreachable(e: ureq::Error) -> anyhow::Error {
+    Later { after: DOWN_WAIT, why: format!("Jimaku isn’t reachable ({e})") }.into()
+}
+
+/// What an answer that isn't 200 means: a key Jimaku won't take, or (`Later`) to ask again after a while.
+fn refused(status: u16, retry_after: Option<&str>) -> anyhow::Error {
+    match status {
+        401 | 403 => anyhow!("Jimaku didn’t accept the API key. Check it in Settings."),
+        // As long as it says (Retry-After, in seconds), within reason; a minute when it doesn't.
+        429 => {
+            let seconds = retry_after.and_then(|s| s.trim().parse::<u64>().ok()).unwrap_or(60).clamp(5, 600);
+            Later { after: Duration::from_secs(seconds), why: "Jimaku asked Telly to slow down".into() }.into()
+        }
+        500..=599 => Later { after: DOWN_WAIT, why: format!("Jimaku answered {status}") }.into(),
+        code => anyhow!("Jimaku answered {code}"),
+    }
+}
+
+fn retry_after(response: &ureq::http::Response<ureq::Body>) -> Option<&str> {
+    response.headers().get("retry-after").and_then(|v| v.to_str().ok())
+}
+
 fn get_json(key: &str, url: &str) -> Result<Value> {
     let mut response = agent()
         .get(url)
@@ -63,12 +106,10 @@ fn get_json(key: &str, url: &str) -> Result<Value> {
         .header("User-Agent", USER_AGENT)
         .header("Accept", "application/json")
         .call()
-        .map_err(|e| anyhow!("Jimaku isn’t reachable ({e})"))?;
+        .map_err(unreachable)?;
     match response.status().as_u16() {
         200 => {}
-        401 | 403 => return Err(anyhow!("Jimaku didn’t accept the API key. Check it in Settings.")),
-        429 => return Err(anyhow!("Jimaku asked Telly to slow down")),
-        code => return Err(anyhow!("Jimaku answered {code}")),
+        status => return Err(refused(status, retry_after(&response))),
     }
     response.body_mut().with_config().limit(16 * 1024 * 1024).read_json().context("Jimaku sent something unexpected")
 }
@@ -138,9 +179,11 @@ fn download(key: &str, url: &str, limit: u64) -> Result<Vec<u8>> {
         .header("Authorization", key)
         .header("User-Agent", USER_AGENT)
         .call()
-        .map_err(|e| anyhow!("Jimaku isn’t reachable ({e})"))?;
-    if response.status().as_u16() != 200 {
-        return Err(anyhow!("Jimaku answered {} for {url}", response.status().as_u16()));
+        .map_err(unreachable)?;
+    match response.status().as_u16() {
+        200 => {}
+        status @ (429 | 500..=599) => return Err(refused(status, retry_after(&response))),
+        status => return Err(anyhow!("Jimaku answered {status} for {url}")),
     }
     Ok(response.body_mut().with_config().limit(limit).read_to_vec()?)
 }
@@ -331,6 +374,19 @@ pub fn candidates(all: &[Local], episode: i64, episodes_in_show: usize) -> Vec<L
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_busy_or_broken_jimaku_is_asked_again_later_and_a_bad_key_isn_t() {
+        let later = |status, retry: Option<&str>| refused(status, retry).downcast_ref::<Later>().map(|l| l.after.as_secs());
+        assert_eq!(later(429, Some("30")), Some(30));
+        // Without a time, a minute; and never a silly one.
+        assert_eq!((later(429, None), later(429, Some("soon")), later(429, Some("0")), later(429, Some("86400"))), (Some(60), Some(60), Some(5), Some(600)));
+        assert_eq!((later(503, None), later(500, None)), (Some(120), Some(120)));
+        assert_eq!((later(401, None), later(404, None)), (None, None));
+        // Still found under what another part of Telly says of it.
+        let wrapped = refused(429, None).context("Finding subtitles for episode 3");
+        assert!(wrapped.chain().any(|cause| cause.downcast_ref::<Later>().is_some()));
+    }
 
     #[test]
     fn reads_episode_numbers_from_jimaku_names() {

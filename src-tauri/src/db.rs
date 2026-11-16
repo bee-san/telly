@@ -848,6 +848,16 @@ impl Db {
         Ok(())
     }
 
+    /// An episode whose subtitles couldn't be looked for now (Jimaku can't be
+    /// asked) waits to be taken again, unless it was settled meanwhile.
+    pub fn subs_later(&self, id: i64, detail: &str) -> Result<()> {
+        self.conn()?.execute(
+            "UPDATE episodes SET subs_state = 'pending', subs_detail = ?2 WHERE id = ?1 AND subs_state = 'working'",
+            params![id, detail],
+        )?;
+        Ok(())
+    }
+
     /// Whisper couldn't listen to an episode it took now (OpenRouter is busy):
     /// it waits for Whisper again, unless you picked a file for it meanwhile.
     pub fn listen_later(&self, id: i64, detail: &str) -> Result<()> {

@@ -305,25 +305,27 @@ fn limit(backend: &Backend, key: &str) -> Option<NonZeroU32> {
     NonZeroU32::new((backend.db.setting_i64(key, 0).clamp(0, 4_000_000) as u32) * 1024)
 }
 
-/// The computer's network connections by name, each with whether it's
-/// connected now: it's up, with an address of its own.
+/// The computer's network connections by the names Windows gives them
+/// ("Wi-Fi", "Mullvad"), each with whether it's connected now: it has an
+/// address of its own. A VPN's tunnel is one of them, though it's no piece
+/// of hardware; many VPNs make theirs when they connect and take it away
+/// when they drop.
 pub fn connections() -> Vec<(String, bool)> {
-    use sysinfo::InterfaceOperationalState::{Down, Up};
-    let Ok(networks) = sysinfo::Networks::new_with_refreshed_list() else { return Vec::new() };
-    let own = |ip: &std::net::IpAddr| match ip {
+    use network_interface::{NetworkInterface, NetworkInterfaceConfig};
+    let own = |ip: std::net::IpAddr| match ip {
         std::net::IpAddr::V4(v4) => !v4.is_link_local() && !v4.is_unspecified(),
         std::net::IpAddr::V6(v6) => !v6.is_unicast_link_local() && !v6.is_unspecified(),
     };
-    let mut all: Vec<(String, bool)> = networks
-        .iter()
-        // The computer's connection to itself isn't one to download through.
-        .filter(|(_, data)| !data.ip_networks().iter().any(|n| n.addr.is_loopback()))
-        .map(|(name, data)| {
-            // Linux says of some that it doesn't know (a WireGuard tunnel, the loopback): an address then says it's up.
-            let up = data.operational_state() == Up || (data.operational_state() != Down && cfg!(not(windows)));
-            (name.to_string_lossy().into_owned(), up && data.ip_networks().iter().any(|n| own(&n.addr)))
-        })
-        .collect();
+    let mut all: Vec<(String, bool)> = Vec::new();
+    // The computer's connection to itself isn't one to download through.
+    for interface in NetworkInterface::show().unwrap_or_default().into_iter().filter(|i| !i.internal && !i.addr.iter().any(|a| a.ip().is_loopback())) {
+        let connected = interface.addr.iter().any(|a| own(a.ip()));
+        // Listed once, though some systems list a connection once for each of its addresses.
+        match all.iter_mut().find(|(name, _)| *name == interface.name) {
+            Some(listed) => listed.1 |= connected,
+            None => all.push((interface.name, connected)),
+        }
+    }
     all.sort();
     all
 }

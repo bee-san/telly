@@ -5908,6 +5908,7 @@ dependencies = [
  "image",
  "librqbit",
  "lindera",
+ "network-interface",
  "percent-encoding",
  "regex",
  "rusqlite",

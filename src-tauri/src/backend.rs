@@ -1555,7 +1555,7 @@ impl Backend {
         to_value(lines)
     }
 
-    fn remove_show(&self, id: i64) -> Result<Value> {
+    pub(crate) fn remove_show(&self, id: i64) -> Result<Value> {
         self.jobs.cancel_show(id);
         let episodes = self.db.episodes(id)?;
         let removed = self.db.show(id)?;
@@ -2323,6 +2323,10 @@ impl Backend {
             "follow" => follow::set(self, arg(&args, "show")?, arg(&args, "on")?),
             "downloads" => Ok(torrents::view(self)),
             "libraries" => crate::library::view(self),
+            "showsLeaving" => {
+                let now: Vec<crate::library::Library> = arg(&args, "libraries")?;
+                Ok(json!(crate::library::leaving(self, &crate::library::libraries(self)?, &now)?.len()))
+            }
             "lookInLibrary" => {
                 crate::library::look_now(self, arg(&args, "at")?)?;
                 crate::library::view(self)

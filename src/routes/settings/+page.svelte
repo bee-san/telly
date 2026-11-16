@@ -408,10 +408,13 @@
   let showRouterKey = $state(false);
   /** Where new shows are downloaded when no folder is chosen. */
   let downloadsFolder = $state("");
-  /** Saves the list of libraries, then lists them again with what's in them. */
+  /** Saves the list of libraries, then lists them again with what's in them. The shows in a folder no library has any more leave Telly, so it asks first. */
   async function saveLibraries(list: DownloadLibrary[]) {
+    const value = list.map(({ name, kind, folders, downloads }) => ({ name, kind, folders, downloads }));
+    const leaving = await call<number>("showsLeaving", { libraries: value }).catch(() => 0);
+    if (leaving && !confirm(`Remove ${plural(leaving, "show")} from Telly? They’re in the folders you’re taking out of your libraries. The video files stay where they are. Telly’s copies and subtitles are deleted.`)) return;
     editing = null;
-    await set("libraries", list.map(({ name, kind, folders, downloads }) => ({ name, kind, folders, downloads })));
+    await set("libraries", value);
     libraries = await call<LibraryView[]>("libraries").catch(() => libraries);
   }
   /** Looks in a library's folders for new shows now; its count goes up as they're added. */
@@ -761,7 +764,7 @@
       <h2>Libraries</h2>
       <button type="button" class="btn quiet" onclick={() => (editing = { at: null })}><Icon name="plus" /><span>Add library…</span></button>
     </div>
-    <p class="lede">Telly adds the shows in a library’s folders, and looks there again every 10 minutes for new ones: an anime, or a season or film of one you have. A download goes there once you’ve said which show it is: Telly makes the folders and the release keeps its file names; nothing already there is moved.</p>
+    <p class="lede">Telly adds the shows in a library’s folders, and looks there again every 10 minutes for new ones: an anime, or a season or film of one you have. A download goes there once you’ve said which show it is: Telly makes the folders and the release keeps its file names; nothing already there is moved. A show whose folder you delete from a library leaves Telly, and so do the shows in a library you remove.</p>
     {#if libraries.length}
       <ul class="libraries">
         {#each libraries as l, i (i)}

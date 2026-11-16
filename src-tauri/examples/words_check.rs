@@ -140,7 +140,7 @@ fn main() -> anyhow::Result<()> {
 /// The files as a new show's episodes, and the Library's pass over the shares.
 fn time_shares(backend: &Arc<Backend>, files: &[PathBuf]) -> anyhow::Result<()> {
     for show in backend.db.shows()?.into_iter().filter(|s| s.title == SHOW) {
-        backend.db.remove_show(show.id)?;
+        backend.db.remove_show(show.id, None)?;
     }
     let folder = backend.dirs.local.join(SHOW);
     let episodes = (1..=files.len() as i64)

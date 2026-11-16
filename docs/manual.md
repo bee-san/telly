@@ -478,6 +478,8 @@ The design, plans and build order are in the [design artifact](https://claude.ai
 
 - `cargo test --manifest-path src-tauri/Cargo.toml --lib` runs the backend's tests.
 - `npm run check` type-checks the frontend.
+- `npm test` runs the frontend's tests (Vitest): the parts of the pages that are plain functions, in `src/lib/*.test.ts`.
+- Every push to `main` runs all three on GitHub Actions (`.github/workflows/checks.yml`), the backend's on Windows, where its tests' paths are from.
 - `npm run devserver -- dev-data` runs the backend over HTTP on port 1430, and `npm run dev` then works in an ordinary browser, so the UI can be driven without the app (no Hachidori there).
 - `TELLY_YOMITAN_API` points premining at a stand-in for Hachidori's API, `TELLY_CLAUDE` Explain and Previously on at a stand-in for Claude Code, and `TELLY_JIMAKU_API` the subtitle search at a stand-in for Jimaku, for testing without your own.
 - `--profile measure` builds optimised but without the release build's link-time optimisation, for the measuring examples: `sync_real` (subtitle matching over a library), `recap_check` (one Previously on from real subtitles), `explain_check` (how soon Explain answers in the warm session), `names_check` (one show's character dictionary) and `jobs_check` (the background work over a scratch library).

@@ -2542,7 +2542,8 @@ mod tests {
             ..Default::default()
         };
         let other_id = backend.db.add_show(&chosen).unwrap();
-        backend.keep_left_out(other_id, &chosen);
+        let read = backend.scanned.lock().unwrap().clone();
+        backend.keep_left_out(other_id, &chosen, read.as_ref());
         assert_eq!(backend.rescan(other_id).unwrap(), 0);
         // Kept by its place in the show's folder, so it's left out wherever the folder goes.
         assert_eq!(backend.db.setting(&left_out_setting(other_id)).unwrap(), Some(json!(["Other - 02.mkv"])));

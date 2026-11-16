@@ -220,7 +220,7 @@ fn downloads_folder(backend: &Backend) -> PathBuf {
 }
 
 /// The magnet link's info hash, in lower case.
-fn magnet_hash(magnet: &str) -> Option<String> {
+pub(crate) fn magnet_hash(magnet: &str) -> Option<String> {
     let at = magnet.find("btih:")? + 5;
     let hash: String = magnet[at..].chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
     (hash.len() == 40).then(|| hash.to_lowercase())
@@ -263,6 +263,13 @@ impl Downloads {
     }
 
     /// How the downloads are going, all together, from the last look.
+    /// The info hashes of the downloads Telly has: those in the client, however they're
+    /// doing, and those whose files are still being asked for. None until Telly has looked.
+    pub fn there(&self) -> Option<HashSet<String>> {
+        let seen = self.seen.lock().ok()?;
+        seen.looked.then(|| seen.torrents.iter().filter(|t| t.id.is_some() || t.error.is_none()).map(|t| t.hash.clone()).collect())
+    }
+
     pub fn summary(&self) -> Option<Summary> {
         let seen = self.seen.lock().ok()?;
         let going: Vec<&Torrent> = seen.torrents.iter().filter(|t| t.state != "done" && t.state != "error").collect();
@@ -508,7 +515,11 @@ pub fn add(backend: &Arc<Backend>, magnet: &str, torrent: &str, title: &str, sho
         Err(_) => {
             let hash = magnet_hash(magnet).ok_or_else(|| anyhow!("That magnet link has no info hash"))?;
             let finding = Finding { hash: hash.clone(), name: title.to_string(), folder: folder.clone(), error: None };
-            backend.downloads.finding.lock().map_err(|_| anyhow!("Telly’s downloader stopped"))?.push(finding);
+            let mut waiting = backend.downloads.finding.lock().map_err(|_| anyhow!("Telly’s downloader stopped"))?;
+            // Asked for again after nobody answered: the one that failed gives way.
+            waiting.retain(|f| f.hash != hash);
+            waiting.push(finding);
+            drop(waiting);
             let (magnet, backend, folder) = (magnet.to_string(), backend.clone(), folder.clone());
             let (list, options) = (options(true), options(false));
             runtime().spawn(async move {

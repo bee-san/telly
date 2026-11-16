@@ -13,10 +13,16 @@
 //! nothing is downloaded for it: better none than the wrong one.
 //!
 //! Settings: follow.<show> (the show is followed), follow.got.<show> (the
-//! last episode Telly started a download of, so none is started twice) and
+//! last episode Telly started a download of, so none is started twice),
+//! follow.started.<show> (each episode it started and its download's info
+//! hash, so one whose download is gone is started again) and
 //! follow.like.<show> (the title of the last release downloaded for the show,
 //! which is how nyaa names its episodes when the files inside are named
 //! another way).
+//!
+//! Nobody is looking when these download, and anyone can upload under a
+//! release's name, so a release is taken only when it's like the episodes
+//! before it (`later`): the same kind of uploader, about the same size.
 
 use crate::backend::Backend;
 use crate::db::Show;
@@ -41,6 +47,11 @@ pub(crate) fn setting(show: i64) -> String {
 /// The setting with the last episode of a show Telly started a download of.
 pub(crate) fn got_setting(show: i64) -> String {
     format!("follow.got.{show}")
+}
+
+/// The setting with the downloads Telly started for a show: each episode's number and its info hash.
+pub(crate) fn started_setting(show: i64) -> String {
+    format!("follow.started.{show}")
 }
 
 /// The setting with the title of the last release downloaded for a show, as nyaa lists it.
@@ -101,13 +112,35 @@ fn query(name: &str, shape: &Shape) -> String {
     group.map(String::as_str).into_iter().chain(title).collect::<Vec<_>>().join(" ")
 }
 
-/// The releases among `found` that are later episodes of the release `like` is of, after episode
-/// `after`: one for each episode, the newest upload of it (a v2 over the first), earliest episode first.
-fn later<'a>(like: &Shape, after: i64, found: &'a [nyaa::Release]) -> Vec<(i64, &'a nyaa::Release)> {
+/// The releases among `found` that are episodes `wanted` of the release
+/// `like` is of: one for each episode, earliest episode first.
+///
+/// Anyone can upload under a release's name, and Telly downloads these with
+/// nobody looking, so a release is only taken when it's like the episodes of
+/// it that came before (those in `found` that aren't `wanted`):
+/// - from a trusted uploader, when every one of those was, and not a remake when none of them was;
+/// - between a third of and three times their usual size, or the size `rip` of your latest rip;
+/// - with someone sharing it.
+///
+/// Of two uploads of an episode, the later version is taken (a v2 over the
+/// first); of two of the same version, the first one up, which a copy of its
+/// name comes after.
+fn later<'a>(like: &Shape, wanted: impl Fn(i64) -> bool, rip: Option<u64>, found: &'a [nyaa::Release]) -> Vec<(i64, &'a nyaa::Release)> {
+    let of_it: Vec<(Shape, &nyaa::Release)> = found.iter().filter_map(|r| Some((shape(&r.title)?, r))).filter(|(named, _)| named.same_release(like)).collect();
+    let before: Vec<&nyaa::Release> = of_it.iter().filter(|(named, _)| !wanted(named.number)).map(|(_, r)| *r).collect();
+    let mut sizes: Vec<u64> = before.iter().map(|r| r.bytes).filter(|b| *b > 0).collect();
+    sizes.sort_unstable();
+    let usual = sizes.get(sizes.len() / 2).copied().or(rip).filter(|b| *b > 0);
+    let trusted = !before.is_empty() && before.iter().all(|r| r.trusted);
+    let no_remakes = !before.is_empty() && before.iter().all(|r| !r.remake);
+    let like_them = |r: &nyaa::Release| {
+        let size = usual.is_none_or(|usual| r.bytes == 0 || (r.bytes >= usual / 3 && r.bytes <= usual.saturating_mul(3)));
+        r.seeders > 0 && size && (r.trusted || !trusted) && (!r.remake || !no_remakes)
+    };
     let mut picked: Vec<(i64, &nyaa::Release)> = Vec::new();
-    for release in found {
-        let Some(named) = shape(&release.title) else { continue };
-        if named.same_release(like) && named.number > after && !picked.iter().any(|(n, r)| *n == named.number && r.id >= release.id) {
+    for (named, release) in of_it.iter().filter(|(named, r)| wanted(named.number) && like_them(r)) {
+        let better = |other: &nyaa::Release| (scan::version(&other.title), -other.id) >= (scan::version(&release.title), -release.id);
+        if !picked.iter().any(|(n, r)| *n == named.number && better(r)) {
             picked.retain(|(n, _)| *n != named.number);
             picked.push((named.number, release));
         }
@@ -136,22 +169,53 @@ fn latest(backend: &Backend, show: i64) -> Result<Option<(String, Shape)>> {
     Ok(named.max_by_key(|(shape, _)| shape.number).map(|(shape, name)| (name, shape)))
 }
 
-/// Looks on nyaa for episodes of `show` after its latest, from the same release, and starts downloading each.
+/// The downloads Telly started for a show that haven't been seen to finish: each episode's number and its info hash.
+fn started(backend: &Backend, show: i64) -> Vec<(i64, String)> {
+    backend.db.setting(&started_setting(show)).ok().flatten().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
+}
+
+/// The episodes among `started` to download again: those whose download isn't
+/// among the downloads `there` any more (removed in Processing, or nobody
+/// ever answered for its magnet link). One that finished and was then
+/// removed is found on disk when it's tried, and left at that.
+fn to_retry(started: &[(i64, String)], there: Option<&std::collections::HashSet<String>>) -> Vec<i64> {
+    let Some(there) = there else { return Vec::new() };
+    started.iter().filter(|(_, hash)| !there.contains(hash)).map(|(number, _)| *number).collect()
+}
+
+/// Looks on nyaa for episodes of `show` after its latest, from the same
+/// release, and starts downloading each; and again those it started before
+/// whose download is gone without the episode.
 pub fn look(backend: &Arc<Backend>, show: &Show) -> Result<Looked> {
     let Some((file, like)) = latest(backend, show.id)? else { return Ok(Looked::default()) };
     let after = like.number.max(backend.db.setting_i64(&got_setting(show.id), 0));
+    let mut going = started(backend, show.id);
+    let retry = to_retry(&going, backend.downloads.there().as_ref());
+    let rip = backend.db.episodes(show.id)?.iter().map(|e| e.size.max(0) as u64).max();
     let found = nyaa::search(&backend.db.setting_str("nyaa.site"), &query(&file, &like), "all", false, "newest", 1)?;
-    let mut started = Vec::new();
-    for (number, release) in later(&like, after, &found.releases) {
+    let mut begun = Vec::new();
+    let mut failed = None;
+    for (number, release) in later(&like, |n| n > after || retry.contains(&n), rip, &found.releases) {
+        going.retain(|(n, _)| *n != number);
         match torrents::add(backend, &release.magnet, &release.torrent, &release.title, Some(show.id), None, None) {
-            Ok(_) => started.push(number),
-            // It's downloading already, or its file is here under another episode's number.
+            Ok(_) => {
+                begun.push(number);
+                going.extend(torrents::magnet_hash(&release.magnet).map(|hash| (number, hash)));
+            }
+            // It's downloading already, or its file is here: there's nothing more to start.
             Err(e) if e.to_string().contains("already") => {}
-            Err(e) => return Err(e),
+            Err(e) => {
+                failed = Some(e);
+                break;
+            }
         }
-        backend.db.set_setting(&got_setting(show.id), &json!(number))?;
+        backend.db.set_setting(&got_setting(show.id), &json!(number.max(after)))?;
     }
-    Ok(Looked { like: Some(file), started })
+    backend.db.set_setting(&started_setting(show.id), &json!(going))?;
+    match failed {
+        Some(e) => Err(e),
+        None => Ok(Looked { like: Some(file), started: begun }),
+    }
 }
 
 /// Whether Telly has every episode AniList lists for a show, so there are none to come.
@@ -166,6 +230,7 @@ pub fn set(backend: &Arc<Backend>, show: i64, on: bool) -> Result<Value> {
     if !on {
         backend.db.set_setting(&setting(show), &Value::Null)?;
         backend.db.set_setting(&got_setting(show), &Value::Null)?;
+        backend.db.set_setting(&started_setting(show), &Value::Null)?;
         return Ok(json!({ "following": false }));
     }
     backend.db.set_setting(&setting(show), &Value::Bool(true))?;
@@ -213,7 +278,7 @@ mod tests {
             torrent: String::new(),
             size: String::new(),
             bytes: 0,
-            seeders: 0,
+            seeders: 10,
             leechers: 0,
             completed: 0,
             date: 0,
@@ -225,7 +290,7 @@ mod tests {
 
     fn numbers(like: &str, after: i64, titles: &[&str]) -> Vec<(i64, i64)> {
         let found: Vec<nyaa::Release> = titles.iter().enumerate().map(|(i, t)| release(100 - i as i64, t)).collect();
-        later(&shape(like).unwrap(), after, &found).into_iter().map(|(n, r)| (n, r.id)).collect()
+        later(&shape(like).unwrap(), |n| n > after, None, &found).into_iter().map(|(n, r)| (n, r.id)).collect()
     }
 
     #[test]
@@ -264,11 +329,55 @@ mod tests {
             "[SubsPlease] Sousou no Frieren - 05 (1080p) [1A2B3C4D].mkv",
             "[SubsPlease] Sousou no Frieren 2nd Season - 01 (1080p) [EEEEEEEE].mkv",
         ];
-        // Episode 6 is its v2, the newer upload.
+        // Episode 6 is its v2, the later version.
         assert_eq!(numbers(like, 5, &found), [(6, 97), (7, 100)]);
         // One already started isn't started again.
         assert_eq!(numbers(like, 6, &found), [(7, 100)]);
         assert_eq!(numbers(like, 7, &found), []);
+    }
+
+    #[test]
+    fn a_release_under_the_same_name_is_only_taken_when_it_s_like_the_ones_before() {
+        let like = shape("[SubsPlease] Sousou no Frieren - 05 (1080p) [1A2B3C4D].mkv").unwrap();
+        let mb = 1024 * 1024;
+        let upload = |id: i64, number: &str, trusted: bool, bytes: u64, seeders: i64| nyaa::Release {
+            trusted,
+            bytes,
+            seeders,
+            ..release(id, &format!("[SubsPlease] Sousou no Frieren - {number} (1080p) [AAAAAAAA].mkv"))
+        };
+        let before = [upload(1, "04", true, 1400 * mb, 300), upload(2, "05", true, 1380 * mb, 400)];
+        let picked = |sixes: &[nyaa::Release]| -> Vec<i64> {
+            let found: Vec<nyaa::Release> = sixes.iter().chain(&before).cloned().collect();
+            later(&like, |n| n > 5, None, &found).into_iter().map(|(_, r)| r.id).collect()
+        };
+        // The group's own upload, and someone's copy of its name uploaded after: the first one up is taken.
+        assert_eq!(picked(&[upload(4, "06", true, 1390 * mb, 80), upload(3, "06", true, 1390 * mb, 500)]), [3]);
+        // Not one from an uploader nyaa doesn't trust, when the episodes before were from one it does.
+        assert_eq!(picked(&[upload(3, "06", false, 1390 * mb, 500)]), [] as [i64; 0]);
+        // Nor one nothing like an episode's size, nor one nobody shares.
+        assert_eq!(picked(&[upload(3, "06", true, 3 * mb, 500)]), [] as [i64; 0]);
+        assert_eq!(picked(&[upload(3, "06", true, 1390 * mb, 0)]), [] as [i64; 0]);
+        // A v2 is taken over the first upload, though it came later.
+        assert_eq!(picked(&[upload(4, "06v2", true, 1390 * mb, 80), upload(3, "06", true, 1390 * mb, 500)]), [4]);
+        // With no earlier episode listed, your latest rip's size is what an episode's is.
+        let alone = [upload(3, "06", false, 3 * mb, 500), upload(4, "07", false, 1300 * mb, 500)];
+        assert_eq!(later(&like, |n| n > 5, Some(1400 * mb), &alone).into_iter().map(|(_, r)| r.id).collect::<Vec<_>>(), [4]);
+    }
+
+    #[test]
+    fn an_episode_whose_download_is_gone_is_started_again() {
+        let started = [(6, "aaaa".to_string()), (7, "bbbb".to_string())];
+        let there: std::collections::HashSet<String> = ["bbbb".to_string()].into();
+        // Episode 6's download was removed, or nobody answered for it; 7's is still there.
+        assert_eq!(to_retry(&started, Some(&there)), [6]);
+        // Before Telly has looked at its downloads, none counts as gone.
+        assert_eq!(to_retry(&started, None), [] as [i64; 0]);
+        let like = "[SubsPlease] Sousou no Frieren - 07 (1080p) [1A2B3C4D].mkv";
+        let found = ["[SubsPlease] Sousou no Frieren - 08 (1080p)", "[SubsPlease] Sousou no Frieren - 07 (1080p)", "[SubsPlease] Sousou no Frieren - 06 (1080p)"];
+        let found: Vec<nyaa::Release> = found.iter().enumerate().map(|(i, t)| release(100 - i as i64, t)).collect();
+        let numbers: Vec<i64> = later(&shape(like).unwrap(), |n| n > 7 || n == 6, None, &found).into_iter().map(|(n, _)| n).collect();
+        assert_eq!(numbers, [6, 8]);
     }
 
     #[test]

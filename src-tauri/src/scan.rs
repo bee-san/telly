@@ -128,7 +128,7 @@ pub fn half_episode(stem: &str) -> bool {
 }
 
 /// Which upload of its episode a file name says it is: 2 for "Show - 05v2", 1 when it doesn't say.
-fn version(stem: &str) -> i64 {
+pub(crate) fn version(stem: &str) -> i64 {
     static R: OnceLock<Regex> = OnceLock::new();
     re(&R, r"(?i)[0-9]v([2-9])(?:$|[\s.\[(_-])").captures(&half_width(stem)).and_then(|c| c[1].parse().ok()).unwrap_or(1)
 }

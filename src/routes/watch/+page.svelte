@@ -4,8 +4,10 @@
   import { onDestroy, onMount, tick as nextTick } from "svelte";
   import Icon from "$lib/Icon.svelte";
   import { afterCredits } from "$lib/ending";
+  import EndCard from "$lib/player/EndCard.svelte";
+  import Shortcuts from "$lib/player/Shortcuts.svelte";
   import { lineHtml as subtitleHtml, namesIndex } from "$lib/subtitle-html";
-  import { call, callKept, errorText, kept, mediaUrl, setFullscreen, setWindowTitle, type AskProgress, type CardEvent, type CastName, type ClaudeStatus, type EpisodeLite, type Line, type Moment, type PlayerView, type Recap, type SeekSheet } from "$lib/api";
+  import { call, callKept, errorText, kept, mediaUrl, setFullscreen, setWindowTitle, type AskProgress, type CardEvent, type CastName, type ClaudeStatus, type Line, type Moment, type PlayerView, type Recap, type SeekSheet } from "$lib/api";
   import { arrange, createRenderer, drawTiles, filters, toggle } from "$lib/filters";
   import { dragWindow, enterCompact, leaveCompact, setCompactShape } from "$lib/compact";
   import { clock, ownFile } from "$lib/format";
@@ -1323,12 +1325,6 @@
     stopCountdown();
   }
 
-  /** What's next, by name: "Episode 5", or the next season's first ("Overlord II · Episode 1") after a show's last. */
-  function nextName(next: EpisodeLite): string {
-    if (!next.show) return `Episode ${next.number}`;
-    return next.movie ? next.show : `${next.show} · Episode ${next.number}`;
-  }
-
   async function playNext() {
     stopWaiting();
     const next = view?.next;
@@ -1525,30 +1521,6 @@
     if (e.key === "Tab") showTranslation = false;
   }
   const dropTranslation = () => (showTranslation = false);
-
-  /** The keys, for the list ? shows. */
-  const SHORTCUTS: [string, string][] = [
-    ["Space or K", "Play or pause"],
-    ["← and →", "Previous and next line"],
-    ["↓", "Replay the line"],
-    ["- and =", "Volume down and up"],
-    ["0", "Mute"],
-    ["D", "Boost dialogue"],
-    ["[ and ]", "Slower and faster"],
-    ["S", "Show subtitles"],
-    ["B", "Blur subtitles until hovered"],
-    ["Hold Tab", "Show the rip’s English subtitles"],
-    ["Z and X", "Subtitles earlier and later"],
-    ["T", "Show transcript"],
-    ["V", "Show filters"],
-    ["M", "Add the line to the last card"],
-    ["E", "Explain the line"],
-    ["P", "Show Previously on"],
-    ["F", "Fullscreen"],
-    ["I", "Small player, on top of other windows"],
-    ["Esc", "Close, or leave fullscreen or the small player"],
-    ["?", "Show shortcuts"],
-  ];
 
   // Keep the transcript on the line playing.
   $effect(() => {
@@ -1883,20 +1855,7 @@
     </aside>
   {/if}
 
-  {#if help}
-    <div class="endov" role="presentation" onclick={(e) => e.target === e.currentTarget && (help = false)}>
-      <div class="end-card keys-card" role="dialog" aria-label="Shortcuts">
-        <h3>Shortcuts</h3>
-        <dl class="keys">
-          {#each SHORTCUTS as [key, what] (key)}
-            <dt>{key}</dt>
-            <dd>{what}</dd>
-          {/each}
-        </dl>
-        <div class="end-actions"><button type="button" class="btn quiet" onclick={() => (help = false)}>Close</button></div>
-      </div>
-    </div>
-  {/if}
+  {#if help}<Shortcuts onclose={() => (help = false)} />{/if}
 
   {#if recap && view && !montage}
     <div class="endov recapov">
@@ -1982,37 +1941,16 @@
   {/if}
 
   {#if ended && view}
-    <div class="endov">
-      <div class="end-card">
-        <span class="small">{view.movie ? view.show.title : `Episode ${view.episode.number}`} done{sat.seconds > 30 ? ` · logged to Tidepool` : ""}</span>
-        <h3>{view.next ? `Next: ${nextName(view.next)}` : `That’s the last episode here`}</h3>
-        <div class="end-stats">
-          <div><b>{Math.round(sat.seconds / 60)}</b><span>minutes</span></div>
-          <div><b>{sat.lines}</b><span>lines</span></div>
-          <div><b>{sat.chars}</b><span>characters</span></div>
-          <div><b>{sat.cards}</b><span>cards</span></div>
-        </div>
-        {#if view.next && !view.next.ready}
-          <p class="small">{nextName(view.next)} is getting ready{view.next.mediaState === "working" ? ` · ${Math.round(view.next.mediaProgress * 100)}%` : ""}. It’ll start when it can.</p>
-        {/if}
-        <div class="end-actions">
-          <button type="button" class="btn quiet" onclick={() => leave("/")}>Open library</button>
-          {#if moreToWatch && after}
-            <button type="button" class="btn quiet" onclick={keepWatching}>{after.preview ? "Watch the preview" : "Watch the scene after the credits"}</button>
-          {/if}
-          {#if view.next}
-            <button type="button" class="btn quiet" onclick={holdCountdown} disabled={countdown === null}>Stop</button>
-            <button type="button" class="btn" onclick={playNext} disabled={!view.next.ready}><Icon name="play" /><span>Play now</span></button>
-          {/if}
-        </div>
-        {#if countdown !== null}
-          <span class="cd" aria-label="Next episode in {countdown} seconds">
-            <svg viewBox="0 0 44 44"><circle class="cd-bg" cx="22" cy="22" r="18" /><circle class="cd-fg" cx="22" cy="22" r="18" /></svg>
-            <b>{countdown}</b>
-          </span>
-        {/if}
-      </div>
-    </div>
+    <EndCard
+      {view}
+      {sat}
+      {countdown}
+      more={moreToWatch ? after : null}
+      onlibrary={() => leave("/")}
+      onkeepwatching={keepWatching}
+      onstop={holdCountdown}
+      onplaynext={playNext}
+    />
   {/if}
 </div>
 
@@ -2059,11 +1997,6 @@
   .skip:hover { background: #2a2a2e; }
   .skip.aside { right: 388px; }
   .tr-line { pointer-events: none; max-width: 86%; margin: 0 0 4px; padding: 4px 12px; border-radius: 6px; font: 500 calc(var(--sub-size, 36px) * .62)/1.35 var(--font-ui); color: var(--vid-ink); background: rgba(0, 0, 0, .72); text-align: center; white-space: pre-line; visibility: visible; }
-  .keys-card { width: min(460px, 92%); max-height: 88vh; overflow: auto; }
-  .keys-card h3 { padding-right: 0; }
-  .keys { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 7px 22px; font-size: 14px; }
-  .keys dt { font: 600 13px/1.5 var(--font-mono); white-space: nowrap; }
-  .keys dd { margin: 0; color: var(--vid-ink-2); }
   .ex-q { margin: 8px 0 0; padding-top: 12px; border-top: 1px solid var(--vid-edge); font: 600 14px/1.45 var(--font-ui); user-select: text; -webkit-user-select: text; }
   .ex-a { margin: 0; font: 400 14px/1.55 var(--font-ui); white-space: pre-line; user-select: text; -webkit-user-select: text; cursor: text; }
   .ex-ask { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--vid-edge); }
@@ -2108,25 +2041,16 @@
   .ln :global(rt) { font-size: .5em; }
   .tx-empty { display: block !important; font-size: 13px; color: var(--vid-ink-2); }
   .perr { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 7; width: min(520px, 90%); display: grid; gap: 16px; padding: 22px; background: var(--vid-panel); border: 1px solid var(--vid-edge); border-radius: 12px; }
-  .endov { position: absolute; inset: 0; z-index: 7; display: grid; place-items: center; background: rgba(0, 0, 0, .6); }
-  .end-card { position: relative; width: min(540px, 92%); display: grid; gap: 16px; padding: 24px; background: var(--vid-panel); border: 1px solid var(--vid-edge); border-radius: 12px; color: var(--vid-ink); }
-  .small { font-size: 13px; color: var(--vid-ink-2); }
-  .end-card h3 { font: 600 22px/1.25 var(--font-display); padding-right: 60px; }
-  .end-stats { display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid var(--vid-edge); border-bottom: 1px solid var(--vid-edge); }
-  .end-stats div { display: grid; gap: 2px; padding: 12px 0; }
-  .end-stats b { font: 600 20px/1.1 var(--font-ui); font-variant-numeric: tabular-nums; }
-  .end-stats span { font-size: 12px; color: var(--vid-ink-2); }
-  .end-actions { display: flex; justify-content: flex-end; gap: 10px; }
-  .end-actions :global(.btn) { color: var(--vid); background: var(--vid-ink); border-color: var(--vid-ink); }
-  .end-actions :global(.btn.quiet) { color: var(--vid-ink); background: transparent; border-color: var(--vid-edge); }
-  .end-actions :global(.btn.quiet:hover) { background: var(--vid-hover); }
-  .cd { position: absolute; top: 22px; right: 24px; width: 44px; height: 44px; }
-  .cd svg { width: 44px; height: 44px; transform: rotate(-90deg); }
-  .cd circle { fill: none; stroke-width: 3; }
-  .cd .cd-bg { stroke: rgba(255, 255, 255, .14); }
-  .cd .cd-fg { stroke: var(--vid-ink); stroke-linecap: round; stroke-dasharray: 113.1; animation: cd 8s linear forwards; }
-  @keyframes cd { to { stroke-dashoffset: 113.1; } }
-  .cd b { position: absolute; inset: 0; display: grid; place-items: center; font: 600 15px/1 var(--font-ui); font-variant-numeric: tabular-nums; }
+  /* The cards over the picture (the end card, the shortcuts, Previously on): the first two are
+     components of their own (src/lib/player), so these reach inside them. */
+  :global(:where(.player) .endov) { position: absolute; inset: 0; z-index: 7; display: grid; place-items: center; background: rgba(0, 0, 0, .6); }
+  :global(:where(.player) .end-card) { position: relative; width: min(540px, 92%); display: grid; gap: 16px; padding: 24px; background: var(--vid-panel); border: 1px solid var(--vid-edge); border-radius: 12px; color: var(--vid-ink); }
+  :global(:where(.player) .small) { font-size: 13px; color: var(--vid-ink-2); }
+  :global(:where(.player) .end-card h3) { font: 600 22px/1.25 var(--font-display); padding-right: 60px; }
+  :global(:where(.player) .end-actions) { display: flex; justify-content: flex-end; gap: 10px; }
+  :global(.player .end-actions .btn) { color: var(--vid); background: var(--vid-ink); border-color: var(--vid-ink); }
+  :global(.player .end-actions .btn.quiet) { color: var(--vid-ink); background: transparent; border-color: var(--vid-edge); }
+  :global(.player .end-actions .btn.quiet:hover) { background: var(--vid-hover); }
   /* Characters' names, from the names dictionary. */
   .sub-line :global(.nm), .ln :global(.nm), .ex-line :global(.nm) { color: var(--sub-name, #9fd0ff); }
   .tx-list li { grid-template-columns: 46px 1fr auto; }
@@ -2215,9 +2139,6 @@
   .player.compact .flash { top: 44px; padding: 7px 11px; font-size: 13px; }
   .player.compact .skip { top: 44px; right: 8px; bottom: auto; height: 32px; padding: 0 12px; font-size: 13px; }
   .player.compact .tx { inset: 6px; width: auto; }
-  .player.compact .end-card { width: calc(100% - 24px); max-height: calc(100% - 24px); overflow: auto; gap: 10px; padding: 14px 16px; }
-  .player.compact .end-card h3 { font-size: 17px; }
-  .player.compact .end-stats div { padding: 6px 0; }
-  .player.compact .end-stats b { font-size: 16px; }
-  .player.compact .cd { top: 10px; right: 14px; }
+  .player.compact :global(.end-card) { width: calc(100% - 24px); max-height: calc(100% - 24px); overflow: auto; gap: 10px; padding: 14px 16px; }
+  .player.compact :global(.end-card h3) { font-size: 17px; }
 </style>

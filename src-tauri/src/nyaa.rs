@@ -706,6 +706,16 @@ mod tests {
     }
 
     #[test]
+    fn episodes_with_their_own_titles_make_a_set() {
+        let found = [
+            (1, "Show S01E01 The Journey's End 1080p CR WEB-DL AAC2.0 H 264-VARYG", 20),
+            (2, "Show S01E02 It Didn't Have to Be Magic 1080p CR WEB-DL AAC2.0 H 264-VARYG", 20),
+            (3, "Show S01E03 Killing Magic 1080p CR WEB-DL AAC2.0 H 264-VARYG", 20),
+        ];
+        assert_eq!(picked(&found, "Show", &Wanted::alone(Some(3))), Some((vec![1, 2, 3], vec![], false)));
+    }
+
+    #[test]
     fn a_set_with_an_episode_missing_says_which() {
         let found = [
             (1, "Show.S01E01.1080p.WEB.H264-GRP", 9),

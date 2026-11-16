@@ -1133,8 +1133,9 @@ impl Backend {
         let tools = self.tools();
         // A file still downloading is left for the next look.
         let scan = scan::scan(Path::new(&show.folder), |paths| self.downloads.unless_downloading(paths, |paths| {
-            // Only files Telly doesn't know yet need ffprobe.
-            let unknown: Vec<PathBuf> = paths.iter().filter(|p| !known.contains_key(p.to_string_lossy().as_ref())).cloned().collect();
+            // Only files Telly doesn't know yet need ffprobe, and none where the folder holds other shows' rips:
+            // nothing new there is this show's, and a rip of its own that moved is found by its name and size.
+            let unknown: Vec<PathBuf> = paths.iter().filter(|p| !shared && !known.contains_key(p.to_string_lossy().as_ref())).cloned().collect();
             let probed = scan::probe_durations(tools.ffprobe.as_deref(), &unknown);
             let mut by_path: std::collections::HashMap<PathBuf, Option<f64>> = unknown.into_iter().zip(probed).collect();
             paths

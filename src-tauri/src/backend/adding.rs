@@ -10,8 +10,11 @@ impl Backend {
     /// holds more than one show (a folder for each season, one of movies, a
     /// loose OVA), its parts with the AniList entry of each (parts.rs). With
     /// `base`, the anime is the one you chose, and the folder just read isn't
-    /// read again.
-    pub(super) fn scan(&self, folder: &str, base: Option<i64>) -> Result<Value> {
+    /// read again. With `sure` (the first-time setup, where many folders are
+    /// read and few looked at), an anime whose names aren't much like the
+    /// folder's isn't taken for it. `asRead` is the shows it's added as when
+    /// nothing is changed.
+    pub(super) fn scan(&self, folder: &str, base: Option<i64>, sure: bool) -> Result<Value> {
         let kept = self.scanned.lock().ok().and_then(|s| s.clone()).filter(|s| base.is_some() && s.folder == folder);
         let scan = match kept {
             Some(scan) => scan,
@@ -23,8 +26,9 @@ impl Backend {
         if let Ok(mut sheet) = self.sheet.lock() {
             *sheet = Some((folder.to_string(), std::time::Instant::now()));
         }
-        let found = self.matched(scan, base, false)?;
-        Ok(json!({ "scan": found.scan, "matches": found.matches, "parts": found.parts, "entries": found.entries, "anime": found.anime, "error": found.error, "ffprobe": self.tools().ffprobe.is_some() }))
+        let found = self.matched(scan, base, sure)?;
+        let as_read: Vec<Value> = found.shows().iter().map(|(show, shared)| as_read(show, *shared)).collect();
+        Ok(json!({ "scan": found.scan, "matches": found.matches, "parts": found.parts, "entries": found.entries, "anime": found.anime, "error": found.error, "ffprobe": self.tools().ffprobe.is_some(), "asRead": as_read }))
     }
 
     /// Whether Add media's sheet has been open on `path`, a folder in it or one
@@ -449,7 +453,9 @@ impl Backend {
         }
         let scan = self.scanned.lock().ok().and_then(|s| s.clone());
         let rips: Vec<String> = parts.iter().flat_map(|p| p.show.episodes.iter().map(|e| e.path.clone())).collect();
-        let added = self.add_parts(parts.into_iter().map(|p| (p.show, p.shared)).collect(), anime, scan.as_ref(), false)?;
+        // The first-time setup adds from folders that are libraries by then: what a look there added meanwhile isn't added twice.
+        let new_only = arg::<Option<bool>>(args, "newOnly")?.unwrap_or(false);
+        let added = self.add_parts(parts.into_iter().map(|p| (p.show, p.shared)).collect(), anime, scan.as_ref(), new_only)?;
         self.sheet_done(scan.as_ref(), &rips.iter().map(String::as_str).collect::<Vec<_>>());
         Ok(json!({ "ids": added }))
     }

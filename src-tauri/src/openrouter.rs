@@ -49,6 +49,24 @@ pub fn api_address() -> String {
     std::env::var("TELLY_OPENROUTER_API").unwrap_or_else(|_| API.to_string())
 }
 
+/// Whether OpenRouter takes `key`: it's asked about the key itself, which costs nothing.
+pub fn check_key(key: &str) -> Result<()> {
+    check_key_at(&api_address(), key)
+}
+
+fn check_key_at(api: &str, key: &str) -> Result<()> {
+    if key.trim().is_empty() {
+        return Err(anyhow!("There’s no OpenRouter API key yet"));
+    }
+    let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(30))).http_status_as_error(false).build().into();
+    let response = agent.get(format!("{api}/key")).header("Authorization", format!("Bearer {}", key.trim())).call().map_err(|e| anyhow!("OpenRouter isn’t reachable ({e})"))?;
+    match response.status().as_u16() {
+        200 => Ok(()),
+        401 | 403 => Err(anyhow!("OpenRouter didn’t accept the API key. Check that all of it was copied.")),
+        code => Err(anyhow!("OpenRouter answered {code}")),
+    }
+}
+
 /// OpenRouter's key and the model picked in Settings, when there's a key: it
 /// then makes the subtitles, and not whisper.cpp on this computer.
 pub fn chosen(backend: &Backend) -> Option<(String, String)> {

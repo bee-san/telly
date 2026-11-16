@@ -44,7 +44,7 @@ Anime4K upscaling, denoising and sharpening, stacked in the order you pick and r
 
 ## 📚 Pick what you're ready for
 
-Your library shows how much of each show's vocabulary you already know, so you can sort by it and start with what you can follow.
+Your library shows how much of each show's vocabulary you already know, so you can sort or filter by it and start with what you can follow.
 
 ![The Library: what you're watching, then every show with the share of its words you know](docs/library.webp)
 

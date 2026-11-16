@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-/// Settings: the dictionaries folder, the note type (Settings → Cards, also
+/// Settings: the dictionaries folder, the note type (Settings → Cards and Anki, also
 /// what Check its fields reads), and the deck ({show} is the show's title).
 pub const FOLDER: &str = "hachidori.dictionaries";
 pub const MODEL: &str = "anki.noteType";

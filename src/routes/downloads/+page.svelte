@@ -266,7 +266,7 @@
   {#if view?.error}
     <p class="note">
       <span>{view.error}</span>
-      <a href="/settings#downloads" class="link-btn">Settings → Downloads</a>
+      <a href="/settings#downloads" class="link-btn">Settings → Library and downloads</a>
     </p>
   {/if}
 

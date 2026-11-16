@@ -1,6 +1,6 @@
 //! A newer Telly: whether one is out, and installing it. Once a day Telly
 //! asks GitHub for the latest release, and when that's newer than this one
-//! the title bar and Settings say so. Install, in Settings → Updates,
+//! the title bar and Settings say so. Install, in Settings → Backup and your data,
 //! downloads the release's installer and runs it: it puts the newer Telly in
 //! this one's place and opens it. Nothing is installed until you press it.
 //!
@@ -10,7 +10,7 @@
 //! from: only a file on this project's own releases page, fetched over
 //! HTTPS, of the size GitHub lists for it, is run. Nothing about you or your
 //! library is sent: the request is the same from every Telly but for its
-//! version, in the User-Agent GitHub asks for. Settings → Updates turns the
+//! version, in the User-Agent GitHub asks for. Settings → Backup and your data turns the
 //! asking off (updates.check).
 
 use crate::backend::Backend;

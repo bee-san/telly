@@ -3,6 +3,7 @@
   import { page } from "$app/state";
   import { onDestroy, onMount, tick as nextTick } from "svelte";
   import Icon from "$lib/Icon.svelte";
+  import { afterCredits } from "$lib/ending";
   import { call, callKept, errorText, kept, mediaUrl, setFullscreen, setWindowTitle, type AskProgress, type CardEvent, type CastName, type ClaudeStatus, type EpisodeLite, type Line, type Moment, type PlayerView, type Recap, type SeekSheet } from "$lib/api";
   import { arrange, createRenderer, drawTiles, filters, toggle } from "$lib/filters";
   import { dragWindow, enterCompact, leaveCompact, setCompactShape } from "$lib/compact";
@@ -165,6 +166,8 @@
     }
     return found;
   });
+  /** What's after the ending: a scene, or a preview of the next episode. */
+  const after = $derived(afterCredits(view?.ending, duration, view?.chapters ?? []));
   const autoplay = $derived(settings["player.autoplay"] !== false);
   const skipEndings = $derived(settings["player.skipEndings"] === true);
   const subSize = $derived(Number(settings["player.subtitleSize"] ?? 36) || 36);
@@ -423,9 +426,15 @@
     const intoEnding = d > 0 && d < 1.5 && cur - d < (endingStart ?? 0) && cur >= (endingStart ?? 0);
     if (skipEndings && !endingFired && endingStart && duration > 0 && endingStart > duration * 0.5 && intoEnding) {
       endingFired = true;
-      // Skipped: it doesn't play on behind the card.
-      video.pause();
-      finish();
+      if (after && !after.preview) {
+        // A scene after the credits is part of the episode: only the ending is skipped.
+        seekTo(after.at);
+        flash("Skipped the ending: there’s a scene after the credits", 5000);
+      } else {
+        // Skipped: it doesn't play on behind the card.
+        video.pause();
+        finish();
+      }
     }
   }
 
@@ -1316,6 +1325,19 @@
     finish();
   }
 
+  /** Whether the end card opened before the episode's end, with something after the credits still to see. */
+  const moreToWatch = $derived(ended && !!after && now < after.at + 1);
+
+  /** From the end card: plays what comes after the credits, and the card comes back at the episode's end. */
+  function keepWatching() {
+    if (!video || !after) return;
+    stopWaiting();
+    ended = false;
+    endingFired = true;
+    seekTo(after.at);
+    video.play().catch(() => {});
+  }
+
   function finish() {
     if (ended) return;
     ended = true;
@@ -1729,7 +1751,9 @@
   {#if inOpening && view?.opening && !recap && !ended}
     <button type="button" class="skip" class:aside={transcript || filterPanel || !!explaining} onclick={() => view?.opening && seekTo(view.opening.end)}>Skip opening</button>
   {:else if inEnding && view?.ending && !recap && !ended}
-    <button type="button" class="skip" class:aside={transcript || filterPanel || !!explaining} onclick={skipOutro}>Skip outro</button>
+    <button type="button" class="skip" class:aside={transcript || filterPanel || !!explaining} onclick={skipOutro} title={after ? (after.preview ? "The next episode’s preview comes after the credits" : "This episode has a scene after the credits") : undefined}>
+      {after ? (after.preview ? "Skip to the preview" : "Skip to the scene after the credits") : "Skip outro"}
+    </button>
   {/if}
 
   <div class="ptop">
@@ -2038,6 +2062,9 @@
         {/if}
         <div class="end-actions">
           <button type="button" class="btn quiet" onclick={() => leave("/")}>Open library</button>
+          {#if moreToWatch && after}
+            <button type="button" class="btn quiet" onclick={keepWatching}>{after.preview ? "Watch the preview" : "Watch the scene after the credits"}</button>
+          {/if}
           {#if view.next}
             <button type="button" class="btn quiet" onclick={holdCountdown} disabled={countdown === null}>Stop</button>
             <button type="button" class="btn" onclick={playNext} disabled={!view.next.ready}><Icon name="play" /><span>Play now</span></button>

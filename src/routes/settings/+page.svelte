@@ -666,7 +666,7 @@
     <h2>Playing</h2>
     <div class="rows">
       <label class="check"><input type="checkbox" checked={bool("player.autoplay", true)} onchange={(e) => set("player.autoplay", e.currentTarget.checked)} /><span>Play the next episode when one ends<small>After an 8-second countdown. Esc stops it.</small></span></label>
-      <label class="check"><input type="checkbox" checked={bool("player.skipEndings", false)} onchange={(e) => set("player.skipEndings", e.currentTarget.checked)} /><span>Skip endings<small>The countdown starts when the ending does, from the disc’s chapters, else where AniSkip’s users marked it.</small></span></label>
+      <label class="check"><input type="checkbox" checked={bool("player.skipEndings", false)} onchange={(e) => set("player.skipEndings", e.currentTarget.checked)} /><span>Skip endings<small>The countdown starts when the ending does, from the disc’s chapters, else where AniSkip’s users marked it. A scene after the credits plays first.</small></span></label>
       <label class="field narrow"><span>Convert ahead</span>
         <select class="input" value={String(settings["convert.ahead"] ?? 10)} onchange={(e) => set("convert.ahead", Number(e.currentTarget.value))}>
           {#each [3, 5, 10, 20, 50] as n}<option value={String(n)}>{n} episodes</option>{/each}

@@ -252,7 +252,7 @@ fn resolution(text: &str) -> Option<String> {
 }
 
 /// Whether a release's title says it has several episodes: "(01-28)", "01 ~ 12", "E01-E12", "Batch", "Complete".
-fn several_episodes(title: &str) -> bool {
+pub(crate) fn several_episodes(title: &str) -> bool {
     static WORD: OnceLock<Regex> = OnceLock::new();
     static RANGE: OnceLock<Regex> = OnceLock::new();
     if WORD.get_or_init(|| Regex::new(r"(?i)\b(?:batch|complete)\b").expect("a valid pattern")).is_match(title) {

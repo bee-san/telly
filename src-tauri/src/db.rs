@@ -386,11 +386,47 @@ fn mine_job_from_row(r: &Row) -> rusqlite::Result<MineJob> {
 
 const MINE_COLUMNS: &str = "id, note_id, episode_id, start, end, sentence, state, detail, tries, created_at, updated_at";
 
+/// Opens the database at `path`, brought up to date by the `migrations` it
+/// hasn't had. One a newer Telly has changed isn't opened: this Telly doesn't
+/// know what's in it, and writing to it as if it did could spoil it.
 pub fn open_migrated(path: &Path, migrations: &[&str]) -> Result<Connection> {
+    open_with(path, migrations, false)
+}
+
+/// As `open_migrated`, for a database Telly can't make again (the library,
+/// the log): before it's changed, a copy of it as it was is kept beside it
+/// (`before_update`), in place of the copy from the update before.
+pub fn open_migrated_kept(path: &Path, migrations: &[&str]) -> Result<Connection> {
+    open_with(path, migrations, true)
+}
+
+/// Where the copy of a database from before its last update is kept: telly-before-update.sqlite beside telly.sqlite.
+pub fn before_update(path: &Path) -> std::path::PathBuf {
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    path.with_file_name(format!("{stem}-before-update.sqlite"))
+}
+
+fn open_with(path: &Path, migrations: &[&str], keep: bool) -> Result<Connection> {
     let conn = Connection::open(path)?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL;")?;
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version > migrations.len() as i64 {
+        return Err(anyhow!(
+            "{} was last opened by a newer Telly than this one (it’s at version {version}, and this Telly reads up to {}). Install the latest Telly to open it. Nothing in it was changed.",
+            path.display(),
+            migrations.len()
+        ));
+    }
+    // A new database has nothing to keep; nor has one that's up to date already.
+    if keep && version > 0 && (version as usize) < migrations.len() {
+        let copy = before_update(path);
+        let _ = std::fs::remove_file(&copy);
+        // Without the copy the update still goes ahead: each step is all or nothing.
+        if let Err(e) = conn.execute("VACUUM INTO ?1", [copy.to_string_lossy()]) {
+            eprintln!("db: no copy of {} was kept before updating it: {e}", path.display());
+        }
+    }
     for (i, migration) in migrations.iter().enumerate().skip(version.max(0) as usize) {
         conn.execute_batch(&format!("BEGIN; {migration} PRAGMA user_version = {}; COMMIT;", i + 1))
             .map_err(|e| anyhow!("updating {} to version {}: {e}", path.display(), i + 1))?;
@@ -412,7 +448,7 @@ pub struct Db {
 
 impl Db {
     pub fn open(path: &Path) -> Result<Self> {
-        let mut conn = open_migrated(path, MIGRATIONS)?;
+        let mut conn = open_migrated_kept(path, MIGRATIONS)?;
         Self::backfill_show_completions(&mut conn)?;
         // The Library, the workers' choice of work and every page ask the same
         // few queries again and again: each is parsed once.
@@ -1340,6 +1376,40 @@ mod tests {
         let states: Vec<(String, String)> = db.episodes(show).unwrap().into_iter().map(|e| (e.subs_state, e.subs_file)).collect();
         assert_eq!(states, [("synced".to_string(), "mine.srt".to_string()), ("pending".to_string(), "theirs.srt".to_string())]);
         drop(db);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_library_from_a_newer_telly_isn_t_opened_and_one_from_an_older_is_copied_first() {
+        let dir = std::env::temp_dir().join(format!("telly-db-versions-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("telly.sqlite");
+        // A new library has nothing to keep a copy of.
+        drop(Db::open(&path).unwrap());
+        assert!(!before_update(&path).exists());
+
+        // One a newer Telly has changed is left alone, and Telly says why.
+        let newer = Connection::open(&path).unwrap();
+        newer.execute_batch(&format!("PRAGMA user_version = {}; CREATE TABLE from_the_future (x);", VERSION + 1)).unwrap();
+        drop(newer);
+        let error = Db::open(&path).err().expect("not opened").to_string();
+        assert!(error.contains("newer Telly") && error.contains(&format!("version {}", VERSION + 1)), "{error}");
+        let version: i64 = Connection::open(&path).unwrap().query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, VERSION + 1);
+        std::fs::remove_file(&path).unwrap();
+
+        // One from the Telly before this is copied as it was, then brought up to date.
+        let old = open_migrated(&path, &MIGRATIONS[..MIGRATIONS.len() - 1]).unwrap();
+        old.execute_batch("INSERT INTO shows (id, folder, title, format, added_at) VALUES (1, 'Show', 'Show', 'TV', 0);").unwrap();
+        drop(old);
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.shows().unwrap().len(), 1);
+        drop(db);
+        let copy = Connection::open(before_update(&path)).unwrap();
+        let kept: (i64, i64) = copy.query_row("SELECT (SELECT COUNT(*) FROM shows), (SELECT user_version FROM pragma_user_version)", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(kept, (1, VERSION - 1));
+        drop(copy);
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -275,6 +275,24 @@ fn data_dirs(app: &tauri::App) -> Result<Dirs, Box<dyn std::error::Error>> {
     Ok(Dirs { local: app.path().local_data_dir()?.join("Telly"), roaming: app.path().data_dir()?.join("Telly") })
 }
 
+/// Says in a message box why Telly can't open.
+#[cfg(windows)]
+fn say_why_not(why: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+    let wide = |text: &str| text.encode_utf16().chain([0]).collect::<Vec<u16>>();
+    let (text, title) = (wide(why), wide("Telly can’t open your library"));
+    // SAFETY: both are NUL-terminated UTF-16 strings that outlive the call, and the box has no owner window.
+    unsafe {
+        MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR);
+    }
+}
+
+/// Elsewhere than Windows (where Telly is only developed), it's said where Telly was started from.
+#[cfg(not(windows))]
+fn say_why_not(why: &str) {
+    eprintln!("Telly can’t open your library: {why}");
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -301,7 +319,9 @@ pub fn run() {
             tauri::async_runtime::spawn_blocking(move || responder.respond(serve_media(&backend, &format!("{path}{query}"), range.as_deref())));
         })
         .setup(|app| {
-            let backend = Arc::new(Backend::open(data_dirs(app)?)?);
+            // A library that can't be opened (a newer Telly's, a disk that can't be written) is said
+            // in a box: without a window there's nowhere else to say it, and Telly would just not open.
+            let backend = Arc::new(Backend::open(data_dirs(app)?).inspect_err(|e| say_why_not(&format!("{e:#}")))?);
             backend.start();
             backend.start_mining();
             let for_relay = backend.clone();

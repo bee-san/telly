@@ -20,7 +20,7 @@
 //! seek over it (the player decides that). Characters are counted as
 //! GameSentenceMiner and Tidepool count them: letters and numbers only.
 
-use crate::db::open_migrated;
+use crate::db::open_migrated_kept;
 use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection};
 use serde::Serialize;
@@ -156,7 +156,7 @@ impl Log {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        Ok(Self { conn: Mutex::new(open_migrated(path, MIGRATIONS)?), path: path.to_path_buf() })
+        Ok(Self { conn: Mutex::new(open_migrated_kept(path, MIGRATIONS)?), path: path.to_path_buf() })
     }
 
     fn conn(&self) -> Result<MutexGuard<'_, Connection>> {

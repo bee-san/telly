@@ -465,6 +465,8 @@ Telly knows a show's episodes by where their rips are. When the rips aren't ther
 | `Downloads\Telly` in your home folder | new shows' downloads that no library takes, a folder each (Settings → Downloads can choose another) |
 | `%APPDATA%\Telly\telly-log.sqlite` | what you watched, for Tidepool (counts only, never the text) |
 
+When a new Telly changes how `telly.sqlite` or `telly-log.sqlite` is laid out, it first keeps a copy of each as it was beside it (`telly-before-update.sqlite`, `telly-log-before-update.sqlite`), in place of the copy from the update before. A library a newer Telly has opened isn't opened by an older one: it says so, and to install the latest, and changes nothing.
+
 A backup (Settings → Backup) has `telly.sqlite`, `telly-log.sqlite`, `subtitles`, `known-words.json`, `anilist-list.json` and `libraries-passed-over.json`; Telly makes the rest again. A backup being restored waits in `%LOCALAPPDATA%\Telly\backup-to-restore` until Telly starts again.
 
 > [!NOTE]

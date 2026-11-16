@@ -157,6 +157,8 @@ pub struct Backend {
     /// Held while a show's folder is looked in for new episodes, so two looks
     /// at once (a download finishing, the 10-minute look) don't both add one.
     rescanning: Mutex<()>,
+    /// The lengths of videos a look for new episodes read that aren't episodes (`lengths_once`).
+    looked_at: Mutex<std::collections::HashMap<PathBuf, (u64, Option<std::time::SystemTime>, f64)>>,
     /// Whether your libraries' folders are being read for shows (library.rs).
     pub adding_libraries: Mutex<bool>,
     /// The libraries' folders to look in again for shows that aren't in Telly yet (library.rs).
@@ -608,6 +610,7 @@ impl Backend {
             series: series::Kept::default(),
             scanned: Mutex::new(None),
             rescanning: Mutex::new(()),
+            looked_at: Mutex::new(std::collections::HashMap::new()),
             adding_libraries: Mutex::new(false),
             library_looks: Mutex::new(Vec::new()),
             passed_over: Mutex::new(None),
@@ -1179,6 +1182,35 @@ impl Backend {
         self.add_parts(shows, found.anime.map(|a| a.id), Some(scan), true)
     }
 
+    /// The lengths of videos as ffprobe reads them, each read once while
+    /// Telly is open and it stays the size and age it was. A show's folder is
+    /// looked in every 10 minutes, and what isn't an episode there (an extra,
+    /// a second copy, a file you left out) would be read again each time. One
+    /// that can't be read yet (still being copied there) is read again.
+    fn lengths_once(&self, ffprobe: Option<&Path>, paths: &[PathBuf]) -> Vec<Option<f64>> {
+        self.lengths_once_read(paths, |unread| scan::probe_durations(ffprobe, unread))
+    }
+
+    /// `lengths_once`, with `read` reading the lengths of those not kept.
+    fn lengths_once_read(&self, paths: &[PathBuf], read: impl FnOnce(&[PathBuf]) -> Vec<Option<f64>>) -> Vec<Option<f64>> {
+        let stamp = |p: &PathBuf| std::fs::metadata(p).ok().map(|m| (m.len(), m.modified().ok()));
+        let stamps: Vec<_> = paths.iter().map(stamp).collect();
+        let mut lengths: Vec<Option<f64>> = {
+            let kept = self.looked_at.lock().unwrap_or_else(|e| e.into_inner());
+            paths.iter().zip(&stamps).map(|(p, stamp)| kept.get(p).filter(|(size, age, _)| Some((*size, *age)) == *stamp).map(|k| k.2)).collect()
+        };
+        let unread: Vec<usize> = (0..paths.len()).filter(|i| lengths[*i].is_none()).collect();
+        let read = if unread.is_empty() { Vec::new() } else { read(&unread.iter().map(|i| paths[*i].clone()).collect::<Vec<_>>()) };
+        let mut kept = self.looked_at.lock().unwrap_or_else(|e| e.into_inner());
+        for (i, length) in unread.into_iter().zip(read) {
+            if let (Some(length), Some((size, age))) = (length, stamps[i]) {
+                kept.insert(paths[i].clone(), (size, age, length));
+            }
+            lengths[i] = length;
+        }
+        lengths
+    }
+
     /// Looks in a show's folder again for episodes that weren't there, or
     /// couldn't be read (still downloading), when it was added. Returns how
     /// many it added. An episode's rip moved within the folder is found where
@@ -1201,7 +1233,7 @@ impl Backend {
             // Only files Telly doesn't know yet need ffprobe, and none where the folder holds other shows' rips:
             // nothing new there is this show's, and a rip of its own that moved is found by its name and size.
             let unknown: Vec<PathBuf> = paths.iter().filter(|p| !shared && !known.contains_key(p.to_string_lossy().as_ref())).cloned().collect();
-            let probed = scan::probe_durations(tools.ffprobe.as_deref(), &unknown);
+            let probed = self.lengths_once(tools.ffprobe.as_deref(), &unknown);
             let mut by_path: std::collections::HashMap<PathBuf, Option<f64>> = unknown.into_iter().zip(probed).collect();
             paths
                 .iter()
@@ -2820,6 +2852,37 @@ mod tests {
         rip(&seasons.join("S2").join("Show - S02E01.mkv"));
         rip(&seasons.join("S2").join("Show - S02E02.mkv"));
         assert!(backend.show_in_download(&seasons.to_string_lossy(), &film).unwrap().is_none());
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_video_that_isn_t_an_episode_is_read_once_not_at_every_look() {
+        let dir = std::env::temp_dir().join(format!("telly-looked-at-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let backend = Backend::open(Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let (extra, copying) = (dir.join("NCOP.mkv"), dir.join("Show - 02.mkv"));
+        std::fs::write(&extra, b"an opening").unwrap();
+        std::fs::write(&copying, b"half").unwrap();
+        let paths = [extra.clone(), copying.clone()];
+        let reads = std::cell::RefCell::new(Vec::new());
+        let look = |lengths: &[Option<f64>]| {
+            backend.lengths_once_read(&paths, |unread| {
+                reads.borrow_mut().push(unread.to_vec());
+                lengths.to_vec()
+            })
+        };
+        // The first look reads both; the one still being copied can't be read yet.
+        assert_eq!(look(&[Some(90.0), None]), [Some(90.0), None]);
+        // The next reads only that one again.
+        assert_eq!(look(&[Some(1400.0)]), [Some(90.0), Some(1400.0)]);
+        // And the one after, neither.
+        assert_eq!(look(&[]), [Some(90.0), Some(1400.0)]);
+        // A file that changed is read again.
+        std::fs::write(&extra, b"another opening, longer").unwrap();
+        assert_eq!(look(&[Some(95.0)]), [Some(95.0), Some(1400.0)]);
+        assert_eq!(*reads.borrow(), [vec![extra.clone(), copying.clone()], vec![copying], vec![extra]]);
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

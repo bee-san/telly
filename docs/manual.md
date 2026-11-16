@@ -64,19 +64,21 @@ Download the installer, `Telly_<version>_x64-setup.exe`, from the [latest releas
 
 ### 🧭 The first time it opens
 
-A few screens set Telly up, finding out what they can before asking:
+Four screens set Telly up. It asks for two things, where your anime is and your keys, and finds out the rest itself:
 
-| Screen | What it sets up |
+| Screen | What happens on it |
 |---|---|
-| 📁 **Your rips** | the folders of your rips (read while you go on, then checked and added) |
-| 🎞️ **ffmpeg** | the one you choose, else one on PATH, else GameSentenceMiner's copy; cards need its libsvtav1 and libopus |
-| 🔑 **Jimaku** | your Jimaku API key |
-| 🃏 **Anki** | the deck, the note type and its card fields, and Anki Beacon's address, so cards are finished the moment you add them |
-| 📖 **Dictionaries** | the folder of your Yomitan dictionaries |
-| 🧠 **Claude Code** | checked with a test question; without it, gpt-oss on OpenRouter answers, with your OpenRouter key |
-| 📈 **AniList** | optional: signed in, each episode you watch goes on your AniList list |
+| 📁 **Your anime** | you choose the folders your rips are in, or drop them on the window: a folder of anime, a folder of films, or one show's own. Telly reads them while you go on, and never moves or changes them |
+| 🔑 **Your keys** | your Jimaku API key, your AniList token and your OpenRouter key. **Get a key** opens the page that has each, **Paste** takes it from the clipboard, and Telly checks it with the service it's for |
+| 🔎 **The rest** | Telly looks for ffmpeg, Anki, your dictionaries and Claude Code, and lists what it found |
+| 📚 **Your library** | everything Telly found in your folders, each with its AniList entry, for you to untick what you don't want. **Add all and open Telly** adds the rest |
 
-Each screen says whether its part works and can be skipped. Settings opens on an **Overview** of what isn't working and what is, found by the same checks, each with a button to the page of Settings that sets it right, and **Run setup again** opens the setup again. Settings' pages are listed down its side, and **Find a setting** above them finds one by name. A library set up before there was a setup (one with shows or a Jimaku key) doesn't go through it.
+- **The keys are needed:** **Next** waits until Jimaku and AniList have each taken theirs. OpenRouter's is needed too unless Claude Code is on this computer, which then answers Explain and Previously on: the key is marked **Optional**, and without it Whisper on this computer makes the subtitles Jimaku has nothing for.
+- **Telly asks only what it can't work out.** On **The rest**, that's where ffmpeg is when it isn't on PATH or with GameSentenceMiner; which note type, fields or deck your cards use when Anki has none of the names Telly expects (kiku_typed, with Sentence, Picture, SentenceAudio and MiscInfo, in 例文マイニング); and where your dictionaries are when `Documents\dictionaries` has none. Anki Beacon and the rest can wait for Settings.
+- **How a folder is read:** each folder in a folder you chose is an anime, with its seasons, movies and OVAs, and each video lying loose in it is a film, as [a library's folder is read](#%EF%B8%8F-downloading). A folder is one anime's own, and read whole, when most of the folders in it are named as an anime's parts (`Season 2`, `OVA`, `Specials`) or the videos lying in it are episodes, not films. What's in Telly already is left out.
+- **What Telly isn't sure of** comes first on **Your library**: a folder whose name is much like no anime's on AniList. **Choose show…** finds it there; left as it is, it's added under its own name, without an entry, and **Change match…** on its page gives it one later. Nothing is added until you press **Add all and open Telly**; **Stop reading** goes on with what's been read so far.
+
+Settings opens on an **Overview** of what isn't working and what is, found by the same checks, each with a button to the page of Settings that sets it right, and **Run setup again** opens the setup again (**Close setup** leaves it). Settings' pages are listed down its side, and **Find a setting** above them finds one by name. A library set up before there was a setup (one with shows or a Jimaku key) doesn't go through it.
 
 ### 💻 Running it from source
 

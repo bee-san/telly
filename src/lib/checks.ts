@@ -1,20 +1,10 @@
-// What works and what doesn't: the checks the first-time setup shows on its
-// screens, and Settings lists when one fails, so both find a missing key or a
-// broken Anki the same way. Each is worked out from what the backend says and,
+// What works and what doesn't: the checks the first-time setup makes and
+// Settings' Overview lists, so both find a missing key or a broken Anki the
+// same way. Each is worked out from what the backend says and,
 // in the app, from Hachidori's own status.
 import { call, errorText, inTauri, type AnkiNames, type ClaudeStatus, type HachidoriInfo, type OwnHachidori, type Settings, type Status } from "./api";
 
-/** The setup's screens, in order. */
-export const STEPS = [
-  { id: "rips", name: "Your rips" },
-  { id: "subtitles", name: "Subtitles" },
-  { id: "anki", name: "Anki" },
-  { id: "lookups", name: "Lookups" },
-  { id: "claude", name: "Explain and Previously on" },
-  { id: "anilist", name: "AniList" },
-] as const;
-
-/** What Settings' Overview calls each check, and the page of Settings that sets it right. */
+/** What Settings' Overview and the setup call each check, and the page of Settings that sets it right. */
 export const IN_SETTINGS: Record<string, { name: string; page: string }> = {
   ffmpeg: { name: "ffmpeg", page: "playing" },
   clip: { name: "Pictures and audio for cards", page: "playing" },
@@ -29,14 +19,11 @@ export const IN_SETTINGS: Record<string, { name: string; page: string }> = {
   anilist: { name: "AniList", page: "keys" },
 };
 
-export type Step = (typeof STEPS)[number]["id"];
-
 /** It works (ok), works less well than it could (warn), doesn't work (bad), is being found out or starting (wait), or is optional and not set up (off). */
 export type CheckState = "ok" | "warn" | "bad" | "wait" | "off";
 
 export interface Check {
   id: string;
-  step: Step;
   state: CheckState;
   text: string;
 }
@@ -90,7 +77,7 @@ export const linked = (hd: HachidoriInfo | null) => hd?.status?.state === "linke
 
 /** What Telly's Hachidori is doing. */
 export function hachidoriCheck(hd: HachidoriInfo | null): Check {
-  const check = (state: CheckState, text: string): Check => ({ id: "hachidori", step: "lookups", state, text });
+  const check = (state: CheckState, text: string): Check => ({ id: "hachidori", state, text });
   if (!inTauri) return check("off", "Hachidori runs in the app only.");
   if (!hd) return check("wait", "Starting…");
   if (!hd.prepared) return check("bad", "Not set up. Run npm run prepare:hachidori, then restart Telly.");
@@ -114,7 +101,7 @@ export function hachidoriCheck(hd: HachidoriInfo | null): Check {
 
 /** Your dictionaries going into Telly's Hachidori. */
 export function dictionariesCheck(own: OwnHachidori, hd: HachidoriInfo | null): Check {
-  const check = (state: CheckState, text: string): Check => ({ id: "dictionaries", step: "lookups", state, text });
+  const check = (state: CheckState, text: string): Check => ({ id: "dictionaries", state, text });
   if (linked(hd)) return check("ok", "Linked, so the dictionaries are the browser Hachidori’s.");
   if (!own.folder) return check("bad", "Choose the folder your Yomitan dictionaries (.zip files) are in.");
   if (!own.total) return check("bad", "There are no dictionaries (.zip files) in this folder.");
@@ -124,52 +111,52 @@ export function dictionariesCheck(own: OwnHachidori, hd: HachidoriInfo | null): 
   return check(failed ? "warn" : "wait", `${own.installed} of ${own.total} installed; the rest go in while Telly is open.${failed}`);
 }
 
-/** Every check, in the setup's order. */
+/** Every check. */
 export function checks(f: Facts): Check[] {
   const out: Check[] = [];
-  const add = (step: Step, id: string, state: CheckState, text: string) => out.push({ id, step, state, text });
+  const add = (id: string, state: CheckState, text: string) => out.push({ id, state, text });
   const { settings, status } = f;
 
   // Your rips
   if (status) {
     const tools = status.tools;
-    if (!tools.ffmpeg) add("rips", "ffmpeg", "bad", "Telly can’t find ffmpeg, which it needs to play and convert rips. It looks on PATH and where GameSentenceMiner keeps it. Choose ffmpeg.exe (its folder needs ffprobe.exe too).");
+    if (!tools.ffmpeg) add("ffmpeg", "bad", "Telly can’t find ffmpeg, which it needs to play and convert rips. It looks on PATH and where GameSentenceMiner keeps it. Choose ffmpeg.exe (its folder needs ffprobe.exe too).");
     else {
-      add("rips", "ffmpeg", "ok", `Using ${tools.ffmpeg}`);
-      add("rips", "clip", tools.canClip ? "ok" : "warn", tools.canClip ? "ffmpeg can make animated AVIF and Opus." : "This ffmpeg can’t make AVIF and Opus for cards (it needs libsvtav1 and libopus).");
+      add("ffmpeg", "ok", `Using ${tools.ffmpeg}`);
+      add("clip", tools.canClip ? "ok" : "warn", tools.canClip ? "ffmpeg can make animated AVIF and Opus." : "This ffmpeg can’t make AVIF and Opus for cards (it needs libsvtav1 and libopus).");
     }
   }
 
   // Subtitles
-  if (!String(settings["jimaku.key"] ?? "").trim()) add("subtitles", "jimaku", "bad", "Add a Jimaku API key so Telly can find subtitles.");
-  else if (f.jimaku === null) add("subtitles", "jimaku", "wait", "Checking the Jimaku API key…");
-  else if (f.jimaku === "") add("subtitles", "jimaku", "ok", "Jimaku takes the API key.");
-  else add("subtitles", "jimaku", "bad", f.jimaku);
+  if (!String(settings["jimaku.key"] ?? "").trim()) add("jimaku", "bad", "Add a Jimaku API key so Telly can find subtitles.");
+  else if (f.jimaku === null) add("jimaku", "wait", "Checking the Jimaku API key…");
+  else if (f.jimaku === "") add("jimaku", "ok", "Jimaku takes the API key.");
+  else add("jimaku", "bad", f.jimaku);
 
   // Anki
   if (status) {
     const open = status.anki;
-    add("anki", "anki", open ? "ok" : "warn", open ? `Anki is open (AnkiConnect at ${status.ankiUrl}).` : "Anki isn’t open, or AnkiConnect isn’t installed.");
+    add("anki", open ? "ok" : "warn", open ? `Anki is open (AnkiConnect at ${status.ankiUrl}).` : "Anki isn’t open, or AnkiConnect isn’t installed.");
     const model = noteType(settings);
-    if (!open) add("anki", "fields", "off", "Open Anki to check the note type and its fields.");
-    else if (!f.anki) add("anki", "fields", "wait", "Asking Anki about the note type…");
-    else if (!f.anki.noteTypes.includes(model)) add("anki", "fields", "bad", `Anki has no note type called ${model}.`);
+    if (!open) add("fields", "off", "Open Anki to check the note type and its fields.");
+    else if (!f.anki) add("fields", "wait", "Asking Anki about the note type…");
+    else if (!f.anki.noteTypes.includes(model)) add("fields", "bad", `Anki has no note type called ${model}.`);
     else {
       const wanted = [status.fields.sentence, status.fields.picture, status.fields.audio, status.fields.info];
       const missing = wanted.filter((name) => !f.anki?.fields.includes(name));
-      if (missing.length) add("anki", "fields", "bad", `${model} has no ${list(missing, "or")} field.`);
-      else add("anki", "fields", "ok", `${model} has the fields cards use: ${list(wanted, "and")}.`);
+      if (missing.length) add("fields", "bad", `${model} has no ${list(missing, "or")} field.`);
+      else add("fields", "ok", `${model} has the fields cards use: ${list(wanted, "and")}.`);
     }
     const into = deck(settings);
     if (open && f.anki && !into.includes("{show}")) {
-      if (f.anki.decks.includes(into)) add("anki", "deck", "ok", `Cards go in ${into}.`);
-      else add("anki", "deck", "warn", `Anki has no deck called ${into}. Make it in Anki, or choose another.`);
+      if (f.anki.decks.includes(into)) add("deck", "ok", `Cards go in ${into}.`);
+      else add("deck", "warn", `Anki has no deck called ${into}. Make it in Anki, or choose another.`);
     }
     const m = status.mining;
-    if (m?.beacon) add("anki", "beacon", "ok", "Anki Beacon is telling Telly about new cards.");
+    if (m?.beacon) add("beacon", "ok", "Anki Beacon is telling Telly about new cards.");
     else if (m?.listening)
-      add("anki", "beacon", open ? "warn" : "off", `Listening for Anki Beacon at ${status.beaconAddress}. Add that address to Beacon’s config in Anki (Tools → Add-ons → Anki Beacon → Config). Until then, Telly asks AnkiConnect every 2 seconds during playback.`);
-    else add("anki", "beacon", m?.listenError ? "bad" : "off", m?.listenError ?? "Not listening for Anki Beacon.");
+      add("beacon", open ? "warn" : "off", `Listening for Anki Beacon at ${status.beaconAddress}. Add that address to Beacon’s config in Anki (Tools → Add-ons → Anki Beacon → Config). Until then, Telly asks AnkiConnect every 2 seconds during playback.`);
+    else add("beacon", m?.listenError ? "bad" : "off", m?.listenError ?? "Not listening for Anki Beacon.");
   }
 
   // Lookups
@@ -177,23 +164,17 @@ export function checks(f: Facts): Check[] {
   if (f.own) out.push(dictionariesCheck(f.own, f.hd));
 
   // Explain and Previously on
-  if (!f.claude) add("claude", "claude", "wait", "Looking for Claude Code…");
-  else if (f.claude.openrouter) add("claude", "claude", "ok", f.claude.detail);
-  else if (f.claude.available) add("claude", "claude", "ok", `Claude Code ${f.claude.version.replace(/\s*\(Claude Code\)$/, "")} is installed.`);
-  else add("claude", "claude", "bad", `Telly can’t find Claude Code: ${f.claude.detail} Install Claude Code, sign in, and check again, or add an OpenRouter API key and gpt-oss on OpenRouter answers instead.`);
+  if (!f.claude) add("claude", "wait", "Looking for Claude Code…");
+  else if (f.claude.openrouter) add("claude", "ok", f.claude.detail);
+  else if (f.claude.available) add("claude", "ok", `Claude Code ${f.claude.version.replace(/\s*\(Claude Code\)$/, "")} is installed.`);
+  else add("claude", "bad", `Telly can’t find Claude Code: ${f.claude.detail} Install Claude Code, sign in, and check again, or add an OpenRouter API key and gpt-oss on OpenRouter answers instead.`);
 
   // AniList
   const user = String(settings["anilist.user"] ?? "");
   const anilistError = String(settings["anilist.error"] ?? "");
-  if (!user) add("anilist", "anilist", "off", "Not signed in, so what you watch doesn’t go on an AniList list.");
-  else if (anilistError) add("anilist", "anilist", "warn", `Your AniList list wasn’t updated: ${anilistError}. Telly tries again every 10 minutes.`);
-  else add("anilist", "anilist", "ok", `Signed in as ${user}. Episodes you watch go on your AniList list.`);
+  if (!user) add("anilist", "off", "Not signed in, so what you watch doesn’t go on an AniList list.");
+  else if (anilistError) add("anilist", "warn", `Your AniList list wasn’t updated: ${anilistError}. Telly tries again every 10 minutes.`);
+  else add("anilist", "ok", `Signed in as ${user}. Episodes you watch go on your AniList list.`);
 
   return out;
-}
-
-/** How a step stands: its worst check. */
-export function stepState(all: Check[], step: Step): CheckState {
-  const states = all.filter((c) => c.step === step).map((c) => c.state);
-  return (["bad", "warn", "wait", "ok"] as const).find((s) => states.includes(s)) ?? "off";
 }

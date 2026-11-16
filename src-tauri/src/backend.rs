@@ -162,6 +162,11 @@ struct Found {
     error: Option<String>,
 }
 
+/// A show to add as Add shows takes it (`addShows`), with whether its folder holds other parts' rips too.
+pub(crate) fn as_read(show: &NewShow, shared: bool) -> Value {
+    json!({ "folder": show.folder, "title": show.title, "anilistId": show.anilist_id, "shared": shared, "episodes": show.episodes })
+}
+
 impl Found {
     /// The shows the folder is when nothing is changed in Add media's sheet,
     /// each with whether its folder holds other parts' rips too: its parts,
@@ -1025,8 +1030,11 @@ impl Backend {
     /// holds more than one show (a folder for each season, one of movies, a
     /// loose OVA), its parts with the AniList entry of each (parts.rs). With
     /// `base`, the anime is the one you chose, and the folder just read isn't
-    /// read again.
-    fn scan(&self, folder: &str, base: Option<i64>) -> Result<Value> {
+    /// read again. With `sure` (the first-time setup, where many folders are
+    /// read and few looked at), an anime whose names aren't much like the
+    /// folder's isn't taken for it. `asRead` is the shows it's added as when
+    /// nothing is changed.
+    fn scan(&self, folder: &str, base: Option<i64>, sure: bool) -> Result<Value> {
         let kept = self.scanned.lock().ok().and_then(|s| s.clone()).filter(|s| base.is_some() && s.folder == folder);
         let scan = match kept {
             Some(scan) => scan,
@@ -1035,8 +1043,9 @@ impl Backend {
         if let Ok(mut kept) = self.scanned.lock() {
             *kept = Some(scan.clone());
         }
-        let found = self.matched(scan, base, false)?;
-        Ok(json!({ "scan": found.scan, "matches": found.matches, "parts": found.parts, "entries": found.entries, "anime": found.anime, "error": found.error, "ffprobe": self.tools().ffprobe.is_some() }))
+        let found = self.matched(scan, base, sure)?;
+        let as_read: Vec<Value> = found.shows().iter().map(|(show, shared)| as_read(show, *shared)).collect();
+        Ok(json!({ "scan": found.scan, "matches": found.matches, "parts": found.parts, "entries": found.entries, "anime": found.anime, "error": found.error, "ffprobe": self.tools().ffprobe.is_some(), "asRead": as_read }))
     }
 
     /// The length of each video, through ffprobe. One still downloading has none.
@@ -1950,7 +1959,9 @@ impl Backend {
             "activity" => to_value(self.activity()),
             "queue" => to_value(self.queue()),
             "show" => self.show_view(arg(&args, "id")?).map(|v| tagged(v, &args)),
-            "scan" => self.scan(&arg::<String>(&args, "folder")?, arg(&args, "anilistId")?),
+            "scan" => self.scan(&arg::<String>(&args, "folder")?, arg(&args, "anilistId")?, arg::<Option<bool>>(&args, "sure")?.unwrap_or(false)),
+            "chosenFolder" => crate::library::chosen(self, &arg::<String>(&args, "folder")?),
+            "scanFilm" => crate::library::film(self, &arg::<String>(&args, "folder")?, &arg::<String>(&args, "path")?),
             "searchAnilist" => {
                 let mut found = anilist::search_loosely(&arg::<String>(&args, "query")?)?;
                 let count = arg::<Option<usize>>(&args, "count")?.unwrap_or(0);
@@ -2188,6 +2199,10 @@ impl Backend {
             }
             "checkJimaku" => {
                 crate::jimaku::check_key(&self.db.setting_str("jimaku.key"))?;
+                Ok(json!({}))
+            }
+            "checkOpenRouter" => {
+                crate::openrouter::check_key(&self.db.setting_str("openrouter.key"))?;
                 Ok(json!({}))
             }
             "testClaude" => Ok(ask::test(self)),

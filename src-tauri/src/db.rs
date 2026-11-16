@@ -332,7 +332,7 @@ pub struct NewShow {
     pub episodes: Vec<NewEpisode>,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct NewEpisode {
     pub number: i64,

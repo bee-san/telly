@@ -15,6 +15,12 @@
 //!   minute at a time while AniList can't be asked. A folder no library has
 //!   any more isn't read any further.
 //!
+//! The first-time setup reads the folders you choose the same way, but adds
+//! nothing by itself: it lists what's in each (`chosen`), asks about each
+//! folder and film in turn, and adds what you leave ticked at its end. A
+//! folder you choose there may also be one anime's own, which is told from a
+//! folder of them by what's in it (`own_folder`).
+//!
 //! Telly's downloader writes a release straight into its place in the
 //! library you choose, so nothing is moved once it's down:
 //!
@@ -53,12 +59,13 @@ use crate::relink::{below, folder_of, join};
 use crate::scan;
 use crate::series::Graph;
 use crate::util::{natural_cmp, safe_file_name};
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 /// A library: its name, whether it holds series or movies, and its folders.
@@ -276,25 +283,10 @@ pub fn carry_on(backend: &Arc<Backend>) {
 /// an anime and, in a movies library, each loose video as a film. False when
 /// the folder can't be read.
 fn add_folder(backend: &Arc<Backend>, folder: &str) -> bool {
-    let Ok(entries) = std::fs::read_dir(folder) else { return false };
-    let films = libraries(backend).unwrap_or_default().iter().any(|l| l.kind == "movies" && l.folders.iter().any(|f| same(f, folder)));
-    let (mut folders, mut videos): (Vec<PathBuf>, Vec<PathBuf>) = (Vec::new(), Vec::new());
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        // As when a show's folder is read (scan.rs): nothing hidden, nor the Recycle Bin.
-        if name.starts_with('.') || name.starts_with('$') {
-            continue;
-        }
-        let path = entry.path();
-        if path.is_dir() {
-            folders.push(path);
-        } else if films && scan::is_video(&path) {
-            videos.push(path);
-        }
+    let Some((folders, mut videos)) = contents(folder) else { return false };
+    if !libraries(backend).unwrap_or_default().iter().any(|l| l.kind == "movies" && l.folders.iter().any(|f| same(f, folder))) {
+        videos.clear();
     }
-    let by_name = |a: &PathBuf, b: &PathBuf| natural_cmp(&a.to_string_lossy(), &b.to_string_lossy());
-    folders.sort_by(by_name);
-    videos.sort_by(by_name);
     for path in &folders {
         if !adding(backend).iter().any(|f| f == folder) {
             return true;
@@ -308,6 +300,106 @@ fn add_folder(backend: &Arc<Backend>, folder: &str) -> bool {
         add_film(backend, folder, path);
     }
     true
+}
+
+/// The folders in `folder` and the videos lying loose in it, each in the
+/// order Explorer lists them. None when the folder can't be read.
+fn contents(folder: &str) -> Option<(Vec<PathBuf>, Vec<PathBuf>)> {
+    let entries = std::fs::read_dir(folder).ok()?;
+    let (mut folders, mut videos): (Vec<PathBuf>, Vec<PathBuf>) = (Vec::new(), Vec::new());
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // As when a show's folder is read (scan.rs): nothing hidden, nor the Recycle Bin.
+        if name.starts_with('.') || name.starts_with('$') {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            folders.push(path);
+        } else if scan::is_video(&path) {
+            videos.push(path);
+        }
+    }
+    let by_name = |a: &PathBuf, b: &PathBuf| natural_cmp(&a.to_string_lossy(), &b.to_string_lossy());
+    folders.sort_by(by_name);
+    videos.sort_by(by_name);
+    Some((folders, videos))
+}
+
+/// A video shorter than this isn't taken for a film when telling a folder of films from a show's own.
+const FILM_SECONDS: f64 = 40.0 * 60.0;
+
+/// Whether a folder's name is that of a part of an anime, not of an anime: "Season 2", "S01", "OVA", "Specials".
+fn named_as_a_part(name: &str) -> bool {
+    static PART: OnceLock<Regex> = OnceLock::new();
+    let pattern = r"(?i)^(?:(?:season|series|part|cour|disc|disk|volume|vol|cd|dvd|bd|s)[\s._-]*\d{1,3}|\d{1,2}(?:st|nd|rd|th)\s+season|ovas?|oads?|onas?|specials?|movies?|films?|extras?)$";
+    // Without its tags: "Season 1 [BD 1080p]".
+    let bare = name.split(['[', '(']).next().unwrap_or(name).trim();
+    PART.get_or_init(|| Regex::new(pattern).expect("a valid pattern")).is_match(bare)
+}
+
+/// Whether a folder you chose is one anime's own, not a folder of them: most
+/// of the folders in it are named as an anime's parts, or most of the videos
+/// lying loose in it are too short to be films, so they're its episodes.
+fn own_folder(folders: &[PathBuf], lengths: &[Option<f64>]) -> bool {
+    let parts = folders.iter().filter(|f| f.file_name().is_some_and(|n| named_as_a_part(&n.to_string_lossy()))).count();
+    let read: Vec<f64> = lengths.iter().flatten().copied().collect();
+    parts * 2 > folders.len() || read.iter().filter(|d| **d < FILM_SECONDS).count() * 2 > read.len()
+}
+
+/// What the first-time setup reads in a folder you chose, before anything is
+/// added. `show` says it's one anime's own folder, read whole; otherwise
+/// `folders` are the folders in it, an anime each, and `videos` the videos
+/// lying loose in it, a film each. What's in Telly already is left out, and
+/// counted in `have`.
+pub fn chosen(backend: &Backend, folder: &str) -> Result<serde_json::Value> {
+    let (folders, videos) = contents(folder).ok_or_else(|| anyhow!("Telly can’t read {folder}. Is it a folder?"))?;
+    let episodes = backend.db.all_episodes()?;
+    let has = |path: &Path| episodes.iter().any(|e| below(&path.to_string_lossy(), &e.path).is_some());
+    let text = |paths: Vec<&PathBuf>| paths.into_iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>();
+    if own_folder(&folders, &backend.lengths(&videos)) {
+        let have = has(Path::new(folder));
+        return Ok(json!({ "show": true, "folders": if have { vec![] } else { vec![folder] }, "videos": [], "have": have as usize }));
+    }
+    let (had, new): (Vec<&PathBuf>, Vec<&PathBuf>) = folders.iter().partition(|f| has(f));
+    let (had_films, films): (Vec<&PathBuf>, Vec<&PathBuf>) = videos.iter().partition(|v| episodes.iter().any(|e| same(&e.path, &v.to_string_lossy())));
+    Ok(json!({ "show": false, "folders": text(new), "videos": text(films), "have": had.len() + had_films.len() }))
+}
+
+/// A video lying loose in `folder` as the film it is: its name, its size and
+/// its length. None for one Telly can't read (still being copied there) or
+/// shorter than an episode.
+fn film_file(backend: &Backend, path: &Path) -> Option<(String, i64, f64)> {
+    let duration = backend.lengths(&[path.to_path_buf()]).pop().flatten().filter(|d| *d >= scan::MIN_SECONDS)?;
+    let name = scan::clean_title(&path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default());
+    Some((name, std::fs::metadata(path).map_or(0, |m| m.len() as i64), duration))
+}
+
+/// The film a loose video in `folder` is added as, and its entry on AniList.
+/// Nobody checks it, so it's the film AniList finds only when their names
+/// are much alike; else it's added under its own name.
+fn film_show(folder: &str, file: &str, (name, size, duration): &(String, i64, f64)) -> Result<(NewShow, Option<anilist::Anime>)> {
+    let mut found = anilist::search_loosely(name)?;
+    anilist::rank(&mut found, name, 1);
+    let entry = found.into_iter().next().filter(|a| a.is_called(name));
+    let show = NewShow {
+        folder: folder.to_string(),
+        title: if entry.is_some() { String::new() } else { name.clone() },
+        anilist_id: entry.as_ref().map(|a| a.id),
+        episodes: vec![NewEpisode { number: 1, path: file.to_string(), size: *size, duration: *duration }],
+        ..Default::default()
+    };
+    Ok((show, entry))
+}
+
+/// A video lying loose in a folder you chose, as the film the first-time
+/// setup would add: what it's called, the anime AniList has it as, and the
+/// show it's added as. Null for a video that's no film.
+pub fn film(backend: &Backend, folder: &str, path: &str) -> Result<serde_json::Value> {
+    let Some(file) = film_file(backend, Path::new(path)) else { return Ok(serde_json::Value::Null) };
+    let (show, anime) = film_show(folder, path, &file)?;
+    // Its folder holds the other films too.
+    Ok(json!({ "title": file.0, "anime": anime, "asRead": [crate::backend::as_read(&show, true)] }))
 }
 
 /// Does `add` until AniList can be asked, for as long as `library` (a
@@ -340,21 +432,9 @@ fn add_film(backend: &Arc<Backend>, library: &str, path: &Path) {
     if backend.db.all_episodes().map_or(true, |all| all.iter().any(|e| same(&e.path, &file))) {
         return;
     }
-    let Some(duration) = backend.lengths(&[path.to_path_buf()]).pop().flatten().filter(|d| *d >= scan::MIN_SECONDS) else { return };
-    let name = scan::clean_title(&path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default());
-    let size = std::fs::metadata(path).map_or(0, |m| m.len() as i64);
+    let Some(film) = film_file(backend, path) else { return };
     patiently(backend, library, || {
-        let mut found = anilist::search_loosely(&name)?;
-        anilist::rank(&mut found, &name, 1);
-        // Nobody checks it, so it's the film AniList finds only when their names are much alike.
-        let entry = found.first().filter(|a| a.is_called(&name));
-        let show = NewShow {
-            folder: library.to_string(),
-            title: if entry.is_some() { String::new() } else { name.clone() },
-            anilist_id: entry.map(|a| a.id),
-            episodes: vec![NewEpisode { number: 1, path: file.clone(), size, duration }],
-            ..Default::default()
-        };
+        let (show, _) = film_show(library, &file, &film)?;
         // Its folder holds the library's other films too.
         backend.add_parts(vec![(show, true)], None, None).map(|_| ())
     });
@@ -417,6 +497,48 @@ mod tests {
 
     fn show(id: i64, anilist: i64, folder: &str) -> Show {
         crate::series::tests::show(id, "", Some(anilist), folder)
+    }
+
+    #[test]
+    fn a_chosen_folder_is_one_anime_s_own_or_a_folder_of_them() {
+        for name in ["Season 2", "season 01 [BD 1080p]", "S1", "S03", "2nd Season", "Specials", "OVA", "Movies", "Disc 2", "Part 1"] {
+            assert!(named_as_a_part(name), "{name}");
+        }
+        for name in ["Overlord", "Overlord II", "Mob Psycho 100", "Sousou no Frieren 2nd Season", "Movie 3 - The Last", "Steins;Gate 0"] {
+            assert!(!named_as_a_part(name), "{name}");
+        }
+        let folders = |names: &[&str]| names.iter().map(PathBuf::from).collect::<Vec<_>>();
+        // Season folders, with a film beside them: one anime.
+        assert!(own_folder(&folders(&["Season 1", "Season 2"]), &[Some(6300.0)]));
+        // Episodes lying in it: one show, extras folder or no.
+        assert!(own_folder(&folders(&["Extras"]), &[Some(1420.0), Some(1420.0), Some(1380.0)]));
+        // A folder for each anime, one of them a folder of movies.
+        assert!(!own_folder(&folders(&["Frieren", "Overlord", "Movies"]), &[]));
+        // Films, one of them short, and a folder for one of them.
+        assert!(!own_folder(&folders(&["Your Name (2016)"]), &[Some(6400.0), Some(7500.0), Some(1500.0)]));
+        // Nothing Telly can read yet says nothing.
+        assert!(!own_folder(&[], &[None, None]));
+    }
+
+    #[test]
+    fn a_chosen_folder_lists_what_is_new_in_it() {
+        let dir = std::env::temp_dir().join(format!("telly-chosen-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(crate::backend::Dirs { local: dir.join("data"), roaming: dir.join("data") }).unwrap();
+        let anime = dir.join("Anime");
+        for folder in ["Frieren", "Overlord/Season 1", ".hidden"] {
+            std::fs::create_dir_all(anime.join(folder)).unwrap();
+        }
+        let path = |name: &str| anime.join(name).to_string_lossy().into_owned();
+        let episodes = vec![NewEpisode { number: 1, path: path("Frieren/01.mkv"), size: 1, duration: 1400.0 }];
+        backend.db.add_show(&NewShow { folder: path("Frieren"), title: "Frieren".into(), episodes, ..Default::default() }).unwrap();
+        // A folder of anime: the one in Telly already is counted, not listed.
+        assert_eq!(chosen(&backend, &path("")).unwrap(), json!({ "show": false, "folders": [path("Overlord")], "videos": [], "have": 1 }));
+        // One anime's own folder is read whole.
+        assert_eq!(chosen(&backend, &path("Overlord")).unwrap(), json!({ "show": true, "folders": [path("Overlord")], "videos": [], "have": 0 }));
+        assert!(chosen(&backend, &path("Nowhere")).is_err());
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// A library of `kind` whose first folder takes downloads.

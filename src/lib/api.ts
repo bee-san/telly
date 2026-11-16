@@ -611,8 +611,10 @@ export interface NyaaFound {
 /** One release for each episode of an anime, from one group at one resolution: what downloads
  *  all of it when no one release has every episode. */
 export interface EpisodeSet {
-  /** One release for each episode, the first episode first. */
+  /** One release for each episode, or for a few in one, the first episode first. */
   releases: Release[];
+  /** How many of the anime's episodes they have. */
+  episodes: number;
   /** The episodes that are out but nyaa has none of, from this group. */
   missing: number[];
   /** The fewest people sharing any one of them. */

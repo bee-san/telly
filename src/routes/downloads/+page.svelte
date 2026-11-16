@@ -203,10 +203,19 @@
     loadDownloads();
   }
 
-  /** "Episode 7", "Episodes 2, 5 and 9". */
+  /** "Episode 7", "Episodes 2, 5 and 9", "Episodes 1–60, 69 and 77". */
   function episodesText(numbers: number[]): string {
-    if (numbers.length === 1) return `Episode ${numbers[0]}`;
-    return `Episodes ${numbers.slice(0, -1).join(", ")} and ${numbers[numbers.length - 1]}`;
+    const runs: string[] = [];
+    for (let i = 0; i < numbers.length; ) {
+      let j = i;
+      while (j + 1 < numbers.length && numbers[j + 1] === numbers[j] + 1) j++;
+      runs.push(j - i >= 2 ? `${numbers[i]}–${numbers[j]}` : numbers.slice(i, j + 1).join(", "));
+      i = j + 1;
+    }
+    const list = runs.join(", ");
+    const at = list.lastIndexOf(", ");
+    if (numbers.length === 1) return `Episode ${list}`;
+    return `Episodes ${at < 0 ? list : `${list.slice(0, at)} and ${list.slice(at + 2)}`}`;
   }
 
   /** A release is on its way into `folder`. */
@@ -262,15 +271,6 @@
     <h2>Download</h2>
     <span>{show ? `Into ${show.title}’s folder` : entry && plan && !choosesLibrary ? `Into ${plan.to.folder}` : entry && plan ? "" : "Telly asks which show a release is, and puts it in its place"}</span>
   </div>
-
-  {#if view?.error}
-    <p class="note">
-      <span>{view.error}</span>
-      <a href="/settings#downloads" class="link-btn">Settings → Library and downloads</a>
-    </p>
-  {/if}
-
-  <section aria-label="Find on nyaa.si">
   {#if choosesLibrary && plan}
     {@const p = plan}
     <p class="into">
@@ -281,6 +281,15 @@
       <span class="mono">{p.to.folder}</span>
     </p>
   {/if}
+
+  {#if view?.error}
+    <p class="note">
+      <span>{view.error}</span>
+      <a href="/settings#downloads" class="link-btn">Settings → Library and downloads</a>
+    </p>
+  {/if}
+
+  <section aria-label="Find on nyaa.si">
     <form class="find" onsubmit={(e) => { e.preventDefault(); search(); }}>
       <input class="input grow" bind:value={q} placeholder="Sousou no Frieren 1080p" aria-label="Search nyaa.si" />
       <button type="submit" class="btn" disabled={searching || !q.trim()}>{searching && pageNo === 1 ? "Searching…" : "Search"}</button>
@@ -294,6 +303,7 @@
       <select class="input" bind:value={sort} onchange={() => search()} aria-label="Order">
         <option value="seeders">Most shared first</option>
         <option value="newest">Newest first</option>
+        <option value="size">Biggest first</option>
       </select>
       <label class="check"><input type="checkbox" bind:checked={trusted} onchange={() => search()} /><span>Trusted uploaders only</span></label>
     </div>
@@ -303,21 +313,20 @@
     {#if searched && !releases.length && !searching && !searchError}
       <p class="hint">nyaa has nothing for “{searched}”.</p>
     {/if}
-        <option value="size">Biggest first</option>
     {#if set && entry}
       {@const s = set}
       {@const left = s.releases.filter((r) => sent[r.id] !== "sent").length}
       <div class="set" class:first={!s.batch}>
         <div class="row-body">
-          <span class="row-title">{s.missing.length ? `${plural(s.releases.length, "episode")}` : `All ${plural(s.releases.length, "episode")}`}, one torrent each</span>
+          <span class="row-title">{s.missing.length ? plural(s.episodes, "episode") : `All ${plural(s.episodes, "episode")}`}{s.releases.length === s.episodes ? ", one torrent each" : ` in ${plural(s.releases.length, "torrent")}`}</span>
           <span class="row-meta">
             {s.batch ? "" : "No one release on nyaa has every episode, so Telly found one for each. "}Named like {s.releases[0].title} ·
             {bytes(s.bytes)} ·
             <span class:warn={s.seeders === 0}>{s.seeders === 0 ? "One of them no one is sharing" : `At least ${plural(s.seeders, "person", "people")} sharing each`}</span>
           </span>
-          {#if s.missing.length}<span class="row-meta warn">{episodesText(s.missing)} {s.missing.length === 1 ? "isn’t" : "aren’t"} on nyaa from them.</span>{/if}
+          {#if s.missing.length}<span class="row-meta warn">Telly found no release of {episodesText(s.missing).toLowerCase()} from them on nyaa.</span>{/if}
         </div>
-        <button type="button" class="btn small" disabled={sending !== null || left === 0} onclick={() => intoLibrary(`All ${plural(s.releases.length, "episode")}`, (library) => downloadAll(s, library))} title="Telly downloads each episode’s torrent into its place in your library">
+        <button type="button" class="btn small" disabled={sending !== null || left === 0} onclick={() => intoLibrary(`All ${plural(s.episodes, "episode")}`, (library) => downloadAll(s, library))} title="Telly downloads each episode’s torrent into its place in your library">
           {#if sending}<span>Starting {Math.min(sending.done + 1, sending.of)} of {sending.of}…</span>{:else if left === 0}<Icon name="check" /><span>Downloading</span>{:else}<Icon name="download" /><span>Download {left === s.releases.length ? "all" : "the other"} {left}</span>{/if}
         </button>
       </div>

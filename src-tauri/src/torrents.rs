@@ -29,7 +29,12 @@
 //! downloads.used (Telly has downloaded something, so it starts the client
 //! when it opens), downloads.unfinished (the info hashes of the downloads
 //! that weren't finished at the last look) and downloads.entries (the AniList
-//! entry of each new show's download, by its folder, until it's added).
+//! entry of each new show's download, by its folder, until it's added) and
+//! downloads.left (the files of downloads removed before they finished).
+//!
+//! A release is never downloaded over a file that's there already, unless
+//! the file is a download's own: the client writes over what it finds, so
+//! Telly checks the release's files first, once they're known.
 
 use crate::anilist::{self, Anime};
 use crate::backend::Backend;
@@ -320,11 +325,44 @@ fn files_in(torrent: &[u8]) -> Result<Vec<String>> {
     Ok(info.iter_file_details().filter(|f| !f.attrs().padding).map(|f| f.filename.to_vec().join("/")).collect())
 }
 
-/// The first of a release's `files` that, downloaded into `folder`, would be
-/// written over the rip of an episode in Telly.
-fn over_a_rip<'a>(backend: &Backend, folder: &str, files: &'a [String]) -> Option<&'a String> {
-    let rips: HashSet<String> = backend.db.all_episodes().ok()?.iter().map(|e| key(&e.path)).collect();
-    files.iter().find(|f| rips.contains(&key(&format!("{folder}/{f}"))))
+/// The files Telly's downloads write, and those of a download removed before it finished, as `key` writes their paths.
+fn own_files(backend: &Backend, session: &Session) -> HashSet<String> {
+    let mut own: HashSet<String> = session.with_torrents(|all| {
+        all.flat_map(|(_, handle)| {
+            let folder = handle.output_folder().to_path_buf();
+            handle.with_metadata(|m| m.file_infos.iter().map(|f| key(&folder.join(&f.relative_filename).to_string_lossy())).collect::<Vec<_>>()).unwrap_or_default()
+        })
+        .collect()
+    });
+    own.extend(left(backend));
+    own
+}
+
+/// The files of downloads removed before they finished, as `key` writes their paths: a release downloaded again carries on with them.
+fn left(backend: &Backend) -> Vec<String> {
+    backend.db.setting(LEFT).ok().flatten().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
+}
+
+const LEFT: &str = "downloads.left";
+
+/// The first of a release's `files` that's in `folder` already and isn't a
+/// download's `own`: a rip, an extra or a subtitle file of yours, which the
+/// client would write the release's file over.
+fn over_a_file<'a>(folder: &str, files: &'a [String], own: &HashSet<String>) -> Option<&'a String> {
+    files.iter().find(|f| {
+        let path = Path::new(folder).join(f);
+        path.symlink_metadata().is_ok() && !own.contains(&key(&path.to_string_lossy()))
+    })
+}
+
+/// What Processing says of a magnet link nobody answered for.
+fn found_none(e: anyhow::Error) -> String {
+    format!("Its files couldn’t be found ({e:#})")
+}
+
+/// What Telly says rather than download over `file`.
+fn would_write_over(file: &str, folder: &str) -> anyhow::Error {
+    anyhow!("{file} is in {folder} already, and downloading this would write over it")
 }
 
 /// A release's videos that aren't extras.
@@ -441,9 +479,11 @@ pub fn add(backend: &Arc<Backend>, magnet: &str, torrent: &str, title: &str, sho
     let files = fetched.as_ref().ok().and_then(|bytes| files_in(bytes).ok());
     let to = destination(backend, title, files.as_deref(), show, anilist, library)?;
     let folder = to.folder.clone();
-    // The client writes a release's files over any of the same name there: never over your rips.
-    if let Some(rip) = files.as_deref().and_then(|files| over_a_rip(backend, &folder, files)) {
-        return Err(anyhow!("{rip} is in {folder} already, as one of your episodes, and downloading this would write over it"));
+    let session = session(backend)?;
+    // The client writes a release's files over any of the same name there: never over what's yours.
+    let own = own_files(backend, &session);
+    if let Some(file) = files.as_deref().and_then(|files| over_a_file(&folder, files, &own)) {
+        return Err(would_write_over(file, &folder));
     }
     std::fs::create_dir_all(&folder).with_context(|| format!("Telly couldn’t make the folder {folder}"))?;
     if to.sorted {
@@ -452,11 +492,11 @@ pub fn add(backend: &Arc<Backend>, magnet: &str, torrent: &str, title: &str, sho
     if let (None, true, Some(id)) = (to.show, to.joins, anilist) {
         set_entry(backend, &folder, Some(id))?;
     }
-    let session = session(backend)?;
-    let options = AddTorrentOptions { output_folder: Some(folder.clone()), overwrite: true, ..Default::default() };
+    let options = |list_only: bool| AddTorrentOptions { output_folder: Some(folder.clone()), overwrite: true, list_only, ..Default::default() };
     backend.db.set_setting("downloads.used", &Value::Bool(true))?;
     match fetched {
         Ok(bytes) => {
+            let options = options(false);
             let added = run(async move { session.add_torrent(AddTorrent::from_bytes(bytes), Some(options)).await.map(|r| matches!(r, AddTorrentResponse::Added(..))) })?
                 .context("Telly couldn’t start the download")?;
             if !added {
@@ -464,19 +504,31 @@ pub fn add(backend: &Arc<Backend>, magnet: &str, torrent: &str, title: &str, sho
             }
         }
         // The magnet link's list of files comes from the people sharing it, which can take a while.
+        // Nothing is written until the list is here and none of its files is one of yours.
         Err(_) => {
             let hash = magnet_hash(magnet).ok_or_else(|| anyhow!("That magnet link has no info hash"))?;
             let finding = Finding { hash: hash.clone(), name: title.to_string(), folder: folder.clone(), error: None };
             backend.downloads.finding.lock().map_err(|_| anyhow!("Telly’s downloader stopped"))?.push(finding);
-            let (magnet, backend) = (magnet.to_string(), backend.clone());
+            let (magnet, backend, folder) = (magnet.to_string(), backend.clone(), folder.clone());
+            let (list, options) = (options(true), options(false));
             runtime().spawn(async move {
-                let added = session.add_torrent(AddTorrent::Url(Cow::Owned(magnet)), Some(options)).await;
+                let added = match session.add_torrent(AddTorrent::Url(Cow::Owned(magnet)), Some(list)).await {
+                    Ok(AddTorrentResponse::ListOnly(listed)) => {
+                        let files: Vec<String> = listed.info.iter_file_details().filter(|f| !f.attrs().padding).map(|f| f.filename.to_vec().join("/")).collect();
+                        match over_a_file(&folder, &files, &own) {
+                            Some(file) => Err(format!("{:#}", would_write_over(file, &folder))),
+                            None => session.add_torrent(AddTorrent::from_bytes(listed.torrent_bytes), Some(options)).await.map(|_| ()).map_err(found_none),
+                        }
+                    }
+                    Ok(_) => Ok(()),
+                    Err(e) => Err(found_none(e)),
+                };
                 if let Ok(mut finding) = backend.downloads.finding.lock() {
                     match added {
                         Ok(_) => finding.retain(|f| f.hash != hash),
                         Err(e) => {
                             if let Some(f) = finding.iter_mut().find(|f| f.hash == hash) {
-                                f.error = Some(format!("Its files couldn’t be found ({e:#})"));
+                                f.error = Some(e);
                             }
                         }
                     }
@@ -506,6 +558,15 @@ pub fn pause(backend: &Backend, id: usize, paused: bool) -> Result<()> {
 pub fn remove(backend: &Backend, id: usize) -> Result<()> {
     let session = session(backend)?;
     let folder = session.get(id.into()).map(|handle| handle.output_folder().to_string_lossy().into_owned());
+    // What it leaves half there is still a download's: the release downloaded again carries on with it.
+    if let Some(handle) = session.get(id.into()) {
+        let mut kept = left(backend);
+        kept.extend(torrent_now(id, &handle).1);
+        kept.retain(|f| Path::new(f).symlink_metadata().is_ok());
+        kept.sort();
+        kept.dedup();
+        backend.db.set_setting(LEFT, &json!(kept))?;
+    }
     run(async move { session.delete(id.into(), false).await })??;
     // A new show's download that's gone has no show to become.
     if let Some(folder) = folder {
@@ -773,18 +834,25 @@ mod tests {
     }
 
     #[test]
-    fn a_release_isn_t_downloaded_over_your_rips() {
-        let dir = std::env::temp_dir().join(format!("telly-over-rips-{}", std::process::id()));
+    fn a_release_isn_t_downloaded_over_what_s_there() {
+        let dir = std::env::temp_dir().join(format!("telly-over-files-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
-        let folder = dir.join("Show").to_string_lossy().into_owned();
-        let episodes = vec![crate::db::NewEpisode { number: 1, path: format!("{folder}/[Judas] Show - S01E01.mkv"), size: 1, duration: 1400.0 }];
-        backend.db.add_show(&crate::db::NewShow { folder: folder.clone(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        std::fs::create_dir_all(dir.join("Extras")).unwrap();
+        // A rip, and an extra and a subtitle file Telly has no episode for.
+        for name in ["[Judas] Show - S01E01.mkv", "Extras/NCOP.mkv", "[Judas] Show - S01E03.ja.srt", "[Judas] Show - S01E04.mkv"] {
+            std::fs::write(dir.join(name), b"yours").unwrap();
+        }
+        let folder = dir.to_string_lossy().into_owned();
         let files = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        let none = HashSet::new();
         // Their BD batch, named as the WEB one you have.
-        assert_eq!(over_a_rip(&backend, &folder, &files(&["[Judas] Show - S01E02.mkv", "[Judas] Show - S01E01.mkv"])).map(String::as_str), Some("[Judas] Show - S01E01.mkv"));
-        assert_eq!(over_a_rip(&backend, &folder, &files(&["[Judas] Show - S01E02.mkv"])), None);
-        drop(backend);
+        assert_eq!(over_a_file(&folder, &files(&["[Judas] Show - S01E02.mkv", "[Judas] Show - S01E01.mkv"]), &none).map(String::as_str), Some("[Judas] Show - S01E01.mkv"));
+        assert_eq!(over_a_file(&folder, &files(&["Extras/NCOP.mkv"]), &none).map(String::as_str), Some("Extras/NCOP.mkv"));
+        assert_eq!(over_a_file(&folder, &files(&["[Judas] Show - S01E03.ja.srt"]), &none).map(String::as_str), Some("[Judas] Show - S01E03.ja.srt"));
+        assert_eq!(over_a_file(&folder, &files(&["[Judas] Show - S01E02.mkv"]), &none), None);
+        // What a download of Telly's left half there is carried on with.
+        let own: HashSet<String> = [key(&dir.join("[Judas] Show - S01E04.mkv").to_string_lossy())].into();
+        assert_eq!(over_a_file(&folder, &files(&["[Judas] Show - S01E04.mkv"]), &own), None);
         let _ = std::fs::remove_dir_all(dir);
     }
 

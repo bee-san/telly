@@ -880,10 +880,15 @@ impl Db {
         Ok(ids)
     }
 
+    /// Has the subtitles of every episode in one of `states` found again (of
+    /// `show_id`'s, or everyone's), but those whose file you picked yourself
+    /// ("chosen by hand" in its details, jobs.rs): your choice stays until
+    /// you ask for that episode's own to be found again.
     pub fn requeue_subs(&self, show_id: Option<i64>, states: &[&str]) -> Result<usize> {
         let list = states.iter().map(|s| format!("'{}'", s.replace('\'', ""))).collect::<Vec<_>>().join(", ");
         let sql = format!(
-            "UPDATE episodes SET subs_state = 'pending', subs_detail = '' WHERE subs_state IN ({list}) AND (?1 IS NULL OR show_id = ?1)"
+            "UPDATE episodes SET subs_state = 'pending', subs_detail = ''
+             WHERE subs_state IN ({list}) AND subs_detail NOT LIKE '%chosen by hand%' AND (?1 IS NULL OR show_id = ?1)"
         );
         Ok(self.conn()?.execute(&sql, params![show_id])?)
     }
@@ -1319,6 +1324,11 @@ mod tests {
         db.fail_subs(ids[0], "Whisper: stopped").unwrap();
         let e = db.episodes(show).unwrap().remove(0);
         assert_eq!((e.subs_state.as_str(), e.subs_detail.as_str()), ("synced", "chosen by hand"));
+        // And when the show's subtitles are all found again: only the other episode's are.
+        db.set_subs(ids[1], "check", "shifted +1.0 s", "theirs.srt", None, Some(1000)).unwrap();
+        assert_eq!(db.requeue_subs(Some(show), &["synced", "check", "none", "failed"]).unwrap(), 1);
+        let states: Vec<(String, String)> = db.episodes(show).unwrap().into_iter().map(|e| (e.subs_state, e.subs_file)).collect();
+        assert_eq!(states, [("synced".to_string(), "mine.srt".to_string()), ("pending".to_string(), "theirs.srt".to_string())]);
         drop(db);
         let _ = std::fs::remove_dir_all(dir);
     }

@@ -1305,6 +1305,19 @@
     }, 1000);
   }
 
+  /** The episode the next one was read ahead for. */
+  let warmedFor = 0;
+  // Near the end (the last two minutes, or once the ending starts), the start of the next
+  // episode is asked for, so Telly reads it into Windows' file cache and it starts quickly.
+  $effect(() => {
+    const id = view?.episode.id;
+    const next = view?.next;
+    if (!id || !next?.ready || warmedFor === id || !(duration > 0)) return;
+    if (now < Math.min(duration - 120, endingStart ?? Infinity)) return;
+    warmedFor = id;
+    fetch(mediaUrl(`/ep/${next.id}`), { headers: { Range: "bytes=0-0" } }).catch(() => {});
+  });
+
   /** Stop (or Esc) on the countdown: it stays stopped for this episode, though the video reaches its end after. */
   function holdCountdown() {
     stopCountdown();

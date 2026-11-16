@@ -5,8 +5,10 @@
   import AddSheet from "$lib/AddSheet.svelte";
   import Cover from "$lib/Cover.svelte";
   import Icon from "$lib/Icon.svelte";
+  import LibraryFilter from "$lib/LibraryFilter.svelte";
   import { call, callKept, errorText, kept, pickFolder, setWindowTitle, type Library, type Settings, type ShowCard } from "$lib/api";
-  import { animeOf, animeStatus, lastWatched, partsText, watching as isWatching, wordsOf, type AnimeCard } from "$lib/series";
+  import { addedOf, applied, knownOf, libraryChoices, listed as listedBy, listingOf, NO_FILTERS, statusOf, type Status } from "$lib/listing";
+  import { animeOf, animeStatus, lastWatched, partsText, watching as isWatching, type AnimeCard } from "$lib/series";
   import { app } from "$lib/state.svelte";
   import { toast } from "$lib/toast-store.svelte";
 
@@ -61,42 +63,32 @@
   const beingWatched = (list: AnimeCard[]) => list.filter(isWatching).sort((a, b) => lastWatched(b) - lastWatched(a));
   const watching = $derived(beingWatched(shows));
 
-  // Which of the Library's shows are listed, and in what order. Kept in Settings.
-  type Kind = "all" | "series" | "movies";
-  type Sort = "added" | "name" | "released" | "known";
+  // Which of the Library's shows are listed, and in what order: what its Filter chooses (listing.ts). Kept in Settings.
   let settings = $state<Settings>(kept<Settings>("settings") ?? {});
-  const kind = $derived<Kind>(["series", "movies"].includes(settings["library.show"] as string) ? (settings["library.show"] as Kind) : "all");
-  const sort = $derived<Sort>(["name", "released", "known"].includes(settings["library.sort"] as string) ? (settings["library.sort"] as Sort) : "added");
+  const libraries = $derived(lib?.libraries ?? []);
+  /** The libraries the Filter can leave out. */
+  const choices = $derived(libraryChoices(libraries, shows));
+  const listing = $derived(listingOf(settings, choices));
+  const filtered = $derived(applied(listing) > 0);
 
-  function choose(key: string, value: string | boolean) {
+  function choose(key: string, value: unknown) {
     settings = { ...settings, [key]: value };
     call("setSetting", { key, value }).catch(() => {});
   }
 
-  /** The share of an anime's words you know, in per cent; null when none of its episodes is scored yet. */
-  const knownOf = (a: AnimeCard) => {
-    const words = wordsOf(a);
-    return words.uses ? (100 * words.known) / words.uses : null;
-  };
-  /** The year an anime came out: its first part's. */
-  const yearOf = (a: AnimeCard) => a.parts[0].year ?? 0;
-
-  /** `list` (one made for this) in the order Sort chose. */
-  function sorted(list: AnimeCard[]): AnimeCard[] {
-    const byName = (a: AnimeCard, b: AnimeCard) => a.title.localeCompare(b.title);
-    if (sort === "name") return list.sort(byName);
-    // Newest first; an anime with no year goes last.
-    if (sort === "released") return list.sort((a, b) => yearOf(b) - yearOf(a) || byName(a, b));
-    // Most words known first; an anime with no score yet goes last.
-    if (sort === "known") return list.sort((a, b) => (knownOf(b) ?? -1) - (knownOf(a) ?? -1) || byName(a, b));
-    // Recently added: the anime whose newest part was added last first.
-    return list.sort((a, b) => addedOf(b) - addedOf(a) || byName(a, b));
+  /** Everything the Filter left out is listed again; its order stays. */
+  function clear() {
+    for (const [key, value] of Object.entries(NO_FILTERS)) choose(key, value);
   }
-  /** When an anime's newest part was added. */
-  const addedOf = (a: AnimeCard) => Math.max(...a.parts.map((p) => p.addedAt));
 
-  /** Every anime, those in Currently watching too. One that's only movies (ten Pokémon films) is listed under Movies; one with a season under Series. */
-  const listed = $derived(sorted(shows.filter((a) => kind === "all" || (kind === "movies") === a.parts.every((p) => p.movie))));
+  /** Every anime the Filter leaves in, those in Currently watching too. */
+  const listed = $derived(listedBy(shows, listing, libraries));
+  /** How many anime are at each status, for the Filter. */
+  const statuses = $derived.by(() => {
+    const count: Record<Status, number> = { new: 0, watching: 0, finished: 0 };
+    for (const a of shows) count[statusOf(a)]++;
+    return count;
+  });
 
   /** How long an anime stays in Recently added after its newest part was added. */
   const RECENT_MS = 30 * 24 * 3600 * 1000;
@@ -171,10 +163,7 @@
     load();
   }
 
-  function count(n: number, what: Kind = "all") {
-    if (what === "movies") return `${n} ${n === 1 ? "movie" : "movies"}`;
-    return what === "series" ? `${n} series` : `${n} ${n === 1 ? "show" : "shows"}`;
-  }
+  const count = (n: number) => `${n} ${n === 1 ? "show" : "shows"}`;
 </script>
 
 <div class="lib scroll">
@@ -251,29 +240,16 @@
     {/if}
 
     <div class="shelf-head">
-      <h2>Library</h2><span>{count(listed.length, kind)}</span>
+      <h2>Library</h2><span>{filtered ? `${listed.length} of ${count(shows.length)}` : count(shows.length)}</span>
       <span class="grow"></span>
-      <div class="seg" role="group" aria-label="Show">
-        {#each [["all", "All"], ["series", "Series"], ["movies", "Movies"]] as [value, label] (value)}
-          <button type="button" aria-pressed={kind === value} onclick={() => choose("library.show", value)}>{label}</button>
-        {/each}
-      </div>
-      <label class="sort">
-        <span>Sort</span>
-        <select class="input" value={sort} onchange={(e) => choose("library.sort", e.currentTarget.value)}>
-          <option value="added">Recently added</option>
-          <option value="name">Name</option>
-          <option value="released">Released</option>
-          <option value="known">Words known</option>
-        </select>
-      </label>
+      <LibraryFilter {listing} libraries={choices} {statuses} shown={listed.length} total={shows.length} onchoose={choose} onclear={clear} />
     </div>
     {#if listed.length}
       <div class="libgrid">
         {#each listed as a (a.id)}{@render libraryCard(a)}{/each}
       </div>
     {:else}
-      <p class="empty">{kind === "movies" ? "No movies here." : "No series here."}</p>
+      <p class="empty">Nothing in your library matches these filters. <button type="button" class="link-btn" onclick={clear}>Clear filters</button></p>
     {/if}
   {/if}
 </div>
@@ -325,8 +301,6 @@
   .shelf-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-height: 36px; margin: 0 0 14px; }
   .shelf-head h2 { font: 600 17px/1.2 var(--font-ui); }
   .shelf-head > span { font-size: 13px; color: var(--ink-3); }
-  .sort { display: inline-flex; align-items: center; gap: 8px; }
-  .sort span { font: 600 12.5px/1 var(--font-ui); color: var(--ink-2); }
   .pager { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 1px solid var(--rule-2); border-radius: 6px; background: transparent; color: var(--ink); cursor: pointer; }
   .pager:hover:not(:disabled) { background: var(--sunk); }
   .pager:disabled { opacity: .35; cursor: default; }

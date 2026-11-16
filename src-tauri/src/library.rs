@@ -1,8 +1,8 @@
 //! Your libraries: the folders your shows are kept in, and where a download
 //! goes when you've said which show it is. Settings → Libraries lists them,
 //! each a name, a kind (series or movies) and its folders, one of which takes
-//! downloads. They live only in Settings: the Library lists every show
-//! together whatever folder it's in.
+//! downloads. The Library lists every show together whatever folder it's
+//! in, and its Filter can leave a library's shows out.
 //!
 //! Each library's folders are read, and what's in them that isn't in Telly
 //! yet is added: when the library is added (or a folder is added to one),
@@ -224,6 +224,14 @@ pub fn view(backend: &Backend) -> Result<serde_json::Value> {
         })
         .collect();
     Ok(json!(listed))
+}
+
+/// Which of `libraries` a show's folder is in, by its place among them. When
+/// one library's folder is inside another's, it's the one whose folder is
+/// nearest above the show's. None for a show kept outside them all.
+pub fn of(libraries: &[Library], folder: &str) -> Option<usize> {
+    let depth = |l: &Library| l.folders.iter().filter_map(|f| below(f, folder)).map(|rest| rest.len()).min();
+    libraries.iter().enumerate().filter_map(|(i, l)| depth(l).map(|depth| (depth, i))).min().map(|(_, i)| i)
 }
 
 /// How long the adding waits before it asks AniList again.
@@ -854,6 +862,20 @@ mod tests {
         ];
         assert_eq!(kept_in(&graph, &loose, false).as_deref(), Some(r"D:\Anime"));
         assert_eq!(kept_in(&graph, &loose, true), None);
+    }
+
+    #[test]
+    fn a_show_is_in_the_library_whose_folder_is_nearest_above_it() {
+        let dramas = library("series", &[r"D:\Media\Anime\Series\Dramas", r"E:\Dramas"]);
+        let libraries = [series(), movies(), dramas];
+        assert_eq!(of(&libraries, r"D:\Media\Anime\Series\Overlord\Season 01"), Some(0));
+        assert_eq!(of(&libraries, r"d:\media\anime\movies\Paprika (2006)"), Some(1));
+        // A library inside another's folder has what's in its own.
+        assert_eq!(of(&libraries, r"D:\Media\Anime\Series\Dramas\Quartet"), Some(2));
+        assert_eq!(of(&libraries, r"E:\Dramas\Quartet"), Some(2));
+        // Not D:\Media\Anime\Series2, and not a folder above a library's.
+        assert_eq!(of(&libraries, r"D:\Media\Anime\Series2\Overlord"), None);
+        assert_eq!(of(&libraries, r"D:\Media\Anime"), None);
     }
 
     #[test]

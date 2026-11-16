@@ -275,6 +275,8 @@ pub struct ShowCard {
     pub cards: i64,
     /// The anime it's listed under in the Library, with its other seasons and movies.
     pub series: series::Place,
+    /// The library its folder is in, by its place among your libraries; none for a show kept outside them all.
+    pub library: Option<usize>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -880,6 +882,8 @@ impl Backend {
             cover_caption: !cover.is_empty() && self.db.setting_bool(&frame_setting(show.id), false),
             // On its own, until the Library says which anime it's part of (`library`).
             series: series::Place { id: -show.id, title: show.title.clone(), native: show.title_native.clone(), order: 0, parts: 1, next: None },
+            // Which library it's in is the Library's to say too.
+            library: None,
             show,
             cover,
             episodes: episodes.len(),
@@ -988,15 +992,19 @@ impl Backend {
             by_show.entry(e.show_id).or_default().push(e);
         }
         let mut places = series::places(&series::graph(self), &shows, &self.db.settings()?);
+        // Your libraries, for the Library's Filter to leave one out.
+        let libraries = crate::library::libraries(self).unwrap_or_default();
         let mut cards = Vec::with_capacity(shows.len());
         for s in shows {
             let episodes = by_show.remove(&s.id).unwrap_or_default();
             let place = places.remove(&s.id);
             let mut card = self.card(s, &episodes, &cards_by_show, &scores)?;
             card.series = place.unwrap_or(card.series);
+            card.library = crate::library::of(&libraries, &card.show.folder);
             cards.push(card);
         }
-        Ok(json!({ "shows": cards, "activity": self.activity(), "setup": self.setup() }))
+        let libraries: Vec<&str> = libraries.iter().map(|l| l.name.as_str()).collect();
+        Ok(json!({ "shows": cards, "libraries": libraries, "activity": self.activity(), "setup": self.setup() }))
     }
 
     fn show_view(&self, id: i64) -> Result<Value> {
@@ -2846,6 +2854,27 @@ mod tests {
         let changed = tagged(json!({ "episodes": [1, 2, 3] }), &json!({ "id": 1, "tag": tag }));
         assert_eq!(changed["episodes"], json!([1, 2, 3]));
         assert_ne!(changed["tag"], json!(tag));
+    }
+
+    #[test]
+    fn the_library_says_which_library_each_show_is_in() {
+        let dir = std::env::temp_dir().join(format!("telly-library-of-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Arc::new(Backend::open(Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap());
+        for (folder, title) in [(r"D:\Dramas\Quartet", "Quartet"), (r"D:\Anime\K-ON!\Season 01", "K-ON!"), (r"C:\Rips\Paprika", "Paprika")] {
+            backend.db.add_show(&crate::db::NewShow { folder: folder.into(), title: title.into(), ..Default::default() }).unwrap();
+        }
+        let library = |name: &str, folder: &str| json!({ "name": name, "kind": "series", "folders": [folder], "downloads": folder });
+        backend.db.set_setting("libraries", &json!([library("Anime", r"D:\Anime"), library("Dramas", r"D:\Dramas")])).unwrap();
+        let answer = backend.call("library", json!({})).unwrap();
+        assert_eq!(answer["libraries"], json!(["Anime", "Dramas"]));
+        let of = |title: &str| answer["shows"].as_array().unwrap().iter().find(|s| s["title"] == title).unwrap()["library"].clone();
+        assert_eq!(of("K-ON!"), json!(0));
+        assert_eq!(of("Quartet"), json!(1));
+        // One kept outside them all.
+        assert_eq!(of("Paprika"), json!(null));
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

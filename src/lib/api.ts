@@ -112,6 +112,8 @@ export interface ShowCard extends Show {
     /** The show in the library that carries on from this one (its sequel on AniList), by its ID. */
     next: number | null;
   };
+  /** The library its folder is in, by its place in `Library.libraries`; null for a show kept outside them all. */
+  library: number | null;
 }
 
 export interface Task {
@@ -173,6 +175,8 @@ export interface Setup {
 
 export interface Library {
   shows: ShowCard[];
+  /** Your libraries' names, in Settings' order. */
+  libraries: string[];
   activity: Activity;
   setup: Setup;
 }
@@ -664,7 +668,7 @@ export interface DownloadLibrary {
 export interface LibraryView extends DownloadLibrary {
   /** How many shows in the library are in its folders. */
   shows: number;
-  /** Whether a folder of it is still being read for shows to add. */
+  /** Whether its folders are being read for shows to add: it's new, or you pressed Look for new shows. */
   adding: boolean;
 }
 

@@ -36,12 +36,12 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 /// What a backup has in it: what it says about itself, the library, the log,
-/// the subtitles folder and two files.
+/// the subtitles folder and three files.
 const MANIFEST: &str = "telly-backup.json";
 const LIBRARY: &str = "telly.sqlite";
 const LOG: &str = "telly-log.sqlite";
 const SUBTITLES: &str = "subtitles";
-const FILES: [&str; 2] = ["known-words.json", "anilist-list.json"];
+const FILES: [&str; 3] = ["known-words.json", "anilist-list.json", "libraries-passed-over.json"];
 /// In the library's folder: a backup being unpacked, and one unpacked and
 /// waiting for Telly to start again.
 const UNPACKING: &str = "backup-to-restore.part";

@@ -181,7 +181,7 @@
 
   /** What Find a setting looks through: each setting, its page, and the group it's in there, which a link to Settings can name (/settings#moved). `words` are what else it might be looked for by. */
   const FIND: { label: string; page: string; group: string; words?: string }[] = [
-    { label: "Libraries", page: "library", group: "libraries", words: "folders series movies add library" },
+    { label: "Libraries", page: "library", group: "libraries", words: "folders series movies add library look for new shows" },
     { label: "Folder for new shows", page: "library", group: "downloads", words: "downloads" },
     { label: "nyaa address", page: "library", group: "downloads", words: "blocked provider" },
     { label: "Download and upload speed, at most", page: "library", group: "downloads", words: "torrent limit rate bandwidth" },
@@ -527,11 +527,22 @@
   let showRouterKey = $state(false);
   /** Where new shows are downloaded when no folder is chosen. */
   let downloadsFolder = $state("");
-  /** Saves the list of libraries, then lists them again with what's in them. */
+  /** Saves the list of libraries, then lists them again with what's in them. The shows in a folder no library has any more leave Telly, so it asks first. */
   async function saveLibraries(list: DownloadLibrary[]) {
+    const value = list.map(({ name, kind, folders, downloads }) => ({ name, kind, folders, downloads }));
+    const leaving = await call<number>("showsLeaving", { libraries: value }).catch(() => 0);
+    if (leaving && !confirm(`Remove ${plural(leaving, "show")} from Telly? They’re in the folders you’re taking out of your libraries. The video files stay where they are. Telly’s copies and subtitles are deleted.`)) return;
     editing = null;
-    await set("libraries", list.map(({ name, kind, folders, downloads }) => ({ name, kind, folders, downloads })));
+    await set("libraries", value);
     libraries = await call<LibraryView[]>("libraries").catch(() => libraries);
+  }
+  /** Looks in a library's folders for new shows now; its count goes up as they're added. */
+  async function lookIn(at: number) {
+    try {
+      libraries = await call<LibraryView[]>("lookInLibrary", { at });
+    } catch (e) {
+      toast({ key: "library", state: "failed", title: "Couldn’t look in the library", text: errorText(e) });
+    }
   }
   /** Puts the library from its sheet in the list: in its place when edited, else at the end. */
   function saveLibrary(library: DownloadLibrary) {
@@ -707,17 +718,18 @@
             <h3>Libraries</h3>
             <button type="button" class="btn quiet" onclick={() => (editing = { at: null })}><Icon name="plus" /><span>Add library…</span></button>
           </div>
-          <p class="lede">Telly adds the shows in a library’s folders when it’s added. A download goes there once you’ve said which show it is: Telly makes the folders and the release keeps its file names; nothing already there is moved.</p>
+          <p class="lede">Telly adds the shows in a library’s folders, and looks there again every 10 minutes for new ones: an anime, or a season or film of one you have. A download goes there once you’ve said which show it is: Telly makes the folders and the release keeps its file names; nothing already there is moved. A show whose folder you delete from a library leaves Telly, and so do the shows in a library you remove.</p>
           {#if libraries.length}
             <div class="card">
               {#each libraries as l, i (i)}
                 <div class="row top">
                   <span class="what">
-                    <span><b>{l.name}</b> <span class="muted">{l.kind === "movies" ? "Movies" : "Series"} · {plural(l.shows, "show")}{#if l.adding} · Adding shows…{/if}</span></span>
+                    <span><b>{l.name}</b> <span class="muted">{l.kind === "movies" ? "Movies" : "Series"} · {plural(l.shows, "show")}{#if l.adding} · Looking for new shows…{/if}</span></span>
                     {#each l.folders as folder (folder)}
                       <span class="path"><span class="mono">{folder}</span>{#if l.folders.length > 1 && folder === l.downloads} <span class="muted">Downloads go here</span>{/if}</span>
                     {/each}
                   </span>
+                  <button type="button" class="btn quiet small" disabled={l.adding} onclick={() => lookIn(i)}>Look for new shows</button>
                   <button type="button" class="btn quiet small" onclick={() => (editing = { at: i })}>Edit…</button>
                   <button type="button" class="btn quiet small" onclick={() => saveLibraries(libraries.filter((_, j) => j !== i))}>Remove</button>
                 </div>

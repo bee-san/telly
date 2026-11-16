@@ -244,8 +244,9 @@ pub fn library(backend: &Backend, from: &str, to: &str, apply: bool) -> Result<V
     Ok(moves)
 }
 
-/// Your libraries' folders, and the folder new shows are downloaded to,
-/// that were below `from`: below `to` now, as the rips there are.
+/// Your libraries' folders (those still to be read for shows too), and the
+/// folder new shows are downloaded to, that were below `from`: below `to`
+/// now, as the rips there are.
 fn move_folders(backend: &Backend, from: &str, to: &str) -> Result<()> {
     let moved = |folder: &str| below(from, folder).map(|rest| join(to, &rest));
     if backend.db.setting("libraries")?.is_some() {
@@ -263,6 +264,14 @@ fn move_folders(backend: &Backend, from: &str, to: &str) -> Result<()> {
             backend.db.set_setting("libraries", &serde_json::to_value(&libraries)?)?;
         }
     }
+    // A library's folder still to be read for shows (its drive was away) is read where it is now.
+    let adding: Vec<String> = backend.db.setting("libraries.adding")?.and_then(|kept| serde_json::from_value(kept).ok()).unwrap_or_default();
+    if adding.iter().any(|f| moved(f).is_some()) {
+        let now: Vec<String> = adding.iter().map(|f| moved(f).unwrap_or_else(|| f.clone())).collect();
+        backend.db.set_setting("libraries.adding", &serde_json::json!(now))?;
+    }
+    // And what a look for new shows passes over there is passed over where it is now.
+    crate::library::moved(backend, from, to);
     if let Some(now) = moved(&backend.db.setting_str("downloads.folder")) {
         backend.db.set_setting("downloads.folder", &serde_json::json!(now))?;
     }
@@ -483,7 +492,11 @@ mod tests {
         let lib = crate::library::Library { name: "Series".into(), kind: "series".into(), folders: vec![series.clone()], downloads: series };
         backend.db.set_setting("libraries", &serde_json::json!([lib])).unwrap();
         backend.db.set_setting("downloads.folder", &serde_json::json!(text(&dir.join("D").join("Anime").join("New")))).unwrap();
+        // So does a library's folder that was still to be read for shows; one elsewhere stays.
+        let (waiting, elsewhere) = (text(&dir.join("D").join("Anime").join("More")), text(&dir.join("G").join("Films")));
+        backend.db.set_setting("libraries.adding", &serde_json::json!([waiting, elsewhere])).unwrap();
         library(&backend, &from, &to, true).unwrap();
+        assert_eq!(backend.db.setting("libraries.adding").unwrap(), Some(serde_json::json!([text(&dir.join("E").join("Anime").join("More")), elsewhere])));
         let moved = crate::library::libraries(&backend).unwrap();
         assert_eq!((moved[0].folders[0].as_str(), moved[0].downloads.as_str()), (text(&dir.join("E").join("Anime").join("Series")).as_str(), text(&dir.join("E").join("Anime").join("Series")).as_str()));
         assert_eq!(backend.db.setting_str("downloads.folder"), text(&dir.join("E").join("Anime").join("New")));

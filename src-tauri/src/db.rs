@@ -186,6 +186,14 @@ CREATE TABLE removed_shows (
 -- tells what's after its ending (an after-credits scene, the next episode's
 -- preview) only once you've played that far.
 ALTER TABLE episodes ADD COLUMN reached REAL NOT NULL DEFAULT 0;
+", "
+-- A film is the one episode of its AniList entry, whatever number its file's
+-- name gave it: \"Jujutsu Kaisen 0\" was episode 0, which AniList has no
+-- progress for, and \"Kizumonogatari 3\" episode 3 of an entry of one.
+UPDATE episodes SET number = 1
+ WHERE number <> 1
+   AND show_id IN (SELECT s.id FROM shows s WHERE s.format = 'MOVIE' AND s.anilist_episodes = 1
+                      AND (SELECT COUNT(*) FROM episodes e WHERE e.show_id = s.id) = 1);
 "];
 
 /// How many migrations this Telly has: a library of a higher version is from a newer Telly.
@@ -1336,6 +1344,28 @@ mod tests {
         assert_eq!(history.finished_at, Some(10000));
         assert_eq!(history.rewatches.len(), 2);
         assert_eq!(history.rewatches[1], 30000);
+        drop(db);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_film_numbered_by_its_name_becomes_its_entry_s_one_episode() {
+        let dir = std::env::temp_dir().join(format!("telly-film-number-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("telly.sqlite");
+        let old = open_migrated(&path, &MIGRATIONS[..MIGRATIONS.len() - 1]).unwrap();
+        old.execute_batch(
+            "INSERT INTO shows (id, folder, title, format, anilist_episodes, added_at) VALUES
+               (1, 'Jujutsu Kaisen 0', 'JUJUTSU KAISEN 0', 'MOVIE', 1, 0), (2, 'das Finale', 'das Finale', 'MOVIE', 6, 0), (3, 'Show', 'Show', 'TV', 12, 0);
+             INSERT INTO episodes (id, show_id, number, path) VALUES (1, 1, 0, 'Jujutsu Kaisen 0.mkv'), (2, 2, 3, 'das Finale - 03.mkv'), (3, 3, 5, 'Show - 05.mkv');",
+        )
+        .unwrap();
+        drop(old);
+        let db = Db::open(&path).unwrap();
+        // A film released in parts, and a series with one episode so far, keep the numbers their names give.
+        let numbers: Vec<i64> = (1..=3).map(|show| db.episodes(show).unwrap()[0].number).collect();
+        assert_eq!(numbers, [1, 3, 5]);
         drop(db);
         let _ = std::fs::remove_dir_all(dir);
     }

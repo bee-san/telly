@@ -195,6 +195,10 @@
     finds: Find[];
     /** What's in it that's in Telly already. */
     have: number;
+    /** It's a folder of anime or of films, which becomes a library; not one anime's own. */
+    library: boolean;
+    /** It holds films, mostly. */
+    films: boolean;
     /** What's still to be read in it. */
     left: number;
   }
@@ -217,7 +221,7 @@
   /** Takes the folders chosen, and reads them one after another while the setup goes on. */
   function choose(paths: string[]) {
     for (const path of paths) {
-      if (!chosen.some((c) => c.path === path)) chosen.push({ path, state: "waiting", error: "", finds: [], have: 0, left: 0 });
+      if (!chosen.some((c) => c.path === path)) chosen.push({ path, state: "waiting", error: "", finds: [], have: 0, left: 0, library: false, films: false });
     }
     if (!reading) readOn();
   }
@@ -266,6 +270,8 @@
       try {
         const inside = await call<ChosenFolder>("chosenFolder", { folder });
         c.have = inside.have;
+        c.library = !inside.show;
+        c.films = inside.videos.length > inside.folders.length;
         const todo = [...inside.folders.map((path) => ({ path, film: false })), ...inside.videos.map((path) => ({ path, film: true }))];
         c.left = todo.length;
         for (const t of todo) {
@@ -447,14 +453,22 @@
   /** How many couldn't be added, the last time. */
   let failed = $state(0);
 
+  /** The folders of anime and of films you chose become your libraries, and what you unticked stays out of them. */
+  async function settle() {
+    const folders = chosen.filter((c) => c.library && c.state !== "error").map((c) => ({ folder: c.path, films: c.films }));
+    const out = finds.filter((f) => !f.include && !f.added).flatMap((f) => f.asRead.flatMap((s) => s.episodes.map((e) => ({ path: e.path, duration: e.duration }))));
+    if (folders.length) await call("setupLibraries", { folders, out }).catch((e) => toast({ key: "libraries", state: "failed", title: "Your folders weren’t made libraries", text: errorText(e) }));
+  }
+
   /** Adds everything that's ticked, each as Add media… would when nothing is changed, then opens Telly. */
   async function addAll() {
     const list = toAdd;
     adding = { done: 0, of: list.length };
     failed = 0;
+    await settle();
     for (const f of list) {
       try {
-        await call("addShows", { shows: f.asRead, anime: f.anime?.id ?? null });
+        await call("addShows", { shows: f.asRead, anime: f.anime?.id ?? null, newOnly: true });
         f.added = true;
       } catch (e) {
         f.error = errorText(e);
@@ -542,7 +556,7 @@
             </div>
           {/each}
         </div>
-        <p class="muted">You’ll check what Telly found at the end, before anything is added.</p>
+        <p class="muted">You’ll check what Telly found at the end, before anything is added. A folder of anime or of films becomes one of your libraries: Telly looks there again for new shows, and downloads go there.</p>
       {:else if shows}
         <p class="muted">Your library has {plural(shows, "show")}.</p>
       {/if}
@@ -721,7 +735,7 @@
           <div class="row">
             <span class="spin"></span>
             <span class="what"><span>Still reading <span class="mono">{unread[0]?.path}</span></span><small>{finds.length} found so far{#if unread[0]?.left}, {unread[0].left} to go in this folder{/if}{#if unread.length > 1}, and {plural(unread.length - 1, "more folder")} after it{/if}</small></span>
-            <button type="button" class="btn quiet small" onclick={() => (reading = false)} title="What isn’t read yet isn’t added. Add media… in the Library adds it later.">Stop reading</button>
+            <button type="button" class="btn quiet small" onclick={() => (reading = false)} title="What isn’t read yet isn’t added now.">Stop reading</button>
           </div>
         </div>
       {/if}
@@ -799,7 +813,7 @@
         {:else if toAdd.length}
           <button type="button" class="btn big" disabled={reading} onclick={addAll} title={reading ? "Telly is still reading your folders" : undefined}>Add {toAdd.length > 1 && toAdd.length === finds.filter((f) => !f.added).length ? `all ${toAdd.length}` : toAdd.length} and open Telly</button>
         {:else}
-          <button type="button" class="btn big" disabled={reading} onclick={finish}>Open Telly</button>
+          <button type="button" class="btn big" disabled={reading} onclick={async () => { await settle(); finish(); }}>Open Telly</button>
         {/if}
       {/if}
     </div>

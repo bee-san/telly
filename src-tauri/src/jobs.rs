@@ -527,19 +527,35 @@ fn update_task(slot: &Mutex<Option<Task>>, label: Option<&str>, progress: f64) {
     }
 }
 
-/// Waits while the player has an episode open from the drive `rip` is on. A
-/// worker reading a rip from end to end takes the drive from the player,
-/// which then waits for its video; so no such read starts until the player
-/// is closed (one already going is left to end).
-fn after_the_player(backend: &Backend, rip: &Path) {
+/// Waits while the player has an episode open from the hard drive `rip` is
+/// on. A worker reading a rip from end to end takes a hard drive from the
+/// player, which then waits for its video; so no such read starts until the
+/// player is closed (one already going is left to end). An SSD reads both
+/// at once, so nothing waits for it. Nor does `wanted` wait, on any drive:
+/// the subtitles of the episode playing and of the one after it, which the
+/// player is about to need.
+fn after_the_player(backend: &Backend, rip: &Path, wanted: Option<&Episode>) {
+    if backend.jobs.drive(rip).seek_free {
+        return;
+    }
     let drive = |path: &Path| path.ancestors().last().map(Path::to_path_buf);
-    let playing_there = || {
-        let playing = backend.now_playing().and_then(|p| backend.db.episode(p.episode_id).ok().flatten());
-        playing.is_some_and(|e| drive(Path::new(&e.play_path)) == drive(rip))
+    let waits = || {
+        let Some(playing) = backend.now_playing() else { return false };
+        let Some(open) = backend.db.episode(playing.episode_id).ok().flatten() else { return false };
+        if drive(Path::new(&open.play_path)) != drive(rip) {
+            return false;
+        }
+        !wanted.is_some_and(|e| plays_next(&backend.db.episodes(open.show_id).unwrap_or_default(), open.id, e.id))
     };
-    while playing_there() {
+    while waits() {
         std::thread::sleep(Duration::from_secs(2));
     }
+}
+
+/// Whether `episode` is the one playing or the one that plays after it, among its show's `episodes`.
+fn plays_next(episodes: &[Episode], playing: i64, episode: i64) -> bool {
+    let at = episodes.iter().position(|e| e.id == playing);
+    episode == playing || at.and_then(|i| episodes.get(i + 1)).is_some_and(|next| next.id == episode)
 }
 
 /// Waits while a game is running (see games.rs), before a worker takes an
@@ -704,7 +720,7 @@ fn catch_up_worker(backend: &Backend) {
                 let _ = media::make_sheet(&ffmpeg, Path::new(&episode.play_path), episode.duration, &sheet);
             }
             if from_rip || english {
-                after_the_player(backend, rip);
+                after_the_player(backend, rip, None);
                 let drive = backend.jobs.drive(rip);
                 let _turn = drive.take(place(backend, &episode));
                 // What's still missing once it's this episode's turn: the
@@ -1084,7 +1100,7 @@ fn pictures_after(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &Path, 
     if !drive.seek_free || sheet.is_file() || plan_for(backend, episode, &probe).0 != Plan::Direct || lacks_translation(backend, episode.id, &probe) {
         return;
     }
-    after_the_player(backend, rip);
+    after_the_player(backend, rip, None);
     let _turn = drive.take(place(backend, episode));
     update_task(slot, Some(&format!("Making the seek bar’s pictures for {} {}", show.title, episode.number)), 0.0);
     let _ = std::fs::create_dir_all(sheet.parent().expect("a folder"));
@@ -2251,7 +2267,7 @@ fn find_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &Path, 
         None => media::probe(ffprobe, rip)?,
     };
     let reading = || {
-        after_the_player(backend, rip);
+        after_the_player(backend, rip, Some(episode));
         let turn = match queued.take() {
             Some(waiting) => waiting.take(),
             None => drive.take(place),
@@ -2453,6 +2469,15 @@ pub fn use_file(backend: &Backend, episode: &Episode, path: &Path, name: &str) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_episode_playing_and_the_one_after_it_don_t_wait_for_the_player() {
+        let episodes: Vec<Episode> = (1..=4).map(|id| Episode { id, ..Default::default() }).collect();
+        assert!(plays_next(&episodes, 2, 2) && plays_next(&episodes, 2, 3));
+        assert!(!plays_next(&episodes, 2, 1) && !plays_next(&episodes, 2, 4));
+        // The last episode has none after it.
+        assert!(plays_next(&episodes, 4, 4) && !plays_next(&episodes, 4, 1));
+    }
 
     fn ep(number: i64, watched: bool, position: f64, played: i64) -> Episode {
         Episode {

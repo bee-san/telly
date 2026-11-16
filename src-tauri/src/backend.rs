@@ -1179,6 +1179,21 @@ impl Backend {
                 || in_folder(&show.folder, path).is_some_and(|p| left_out.contains(&p))
                 || others.iter().any(|s| Path::new(&s.folder).starts_with(&show.folder) && Path::new(path).starts_with(&s.folder))
         };
+        // A film whose rip is gone, and one new video in its folder: that's its rip now, whatever it's called.
+        // A film's name has no episode number to tell by, and it may run past two hours.
+        let film = existing.len() == 1 && show.anilist_episodes.unwrap_or(1) == 1 && is_movie(&show.format, show.anilist_id.is_some(), &[existing[0].duration]);
+        if film && !shared && gone.len() == 1 {
+            let videos: Vec<&scan::ScannedFile> = scan
+                .files
+                .iter()
+                .filter(|f| (f.reason.is_empty() || f.reason.starts_with("Over 2 hours")) && !known.contains_key(&f.path) && !not_its_own(&f.path))
+                .collect();
+            if let [rip] = videos.as_slice() {
+                self.replace_rip(id, existing[0].id, rip)?;
+                self.jobs.poke();
+                return Ok(1);
+            }
+        }
         let news: Vec<&scan::ScannedFile> = scan
             .files
             .iter()
@@ -2609,6 +2624,46 @@ mod tests {
         }
         assert_eq!(backend.rescan(show).unwrap(), 3);
         assert_eq!(backend.db.episodes(show).unwrap()[0].path, path("[BD] K-On!/K-On! - 01.mkv"));
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_film_s_new_rip_takes_the_place_of_the_one_that_s_gone_whatever_it_s_called() {
+        let dir = std::env::temp_dir().join(format!("telly-film-rip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let Some(ffmpeg) = backend.tools().ffmpeg else { return }; // making rips to scan needs ffmpeg
+        let folder = dir.join("Paprika (2006)");
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = |name: &str| folder.join(name).to_string_lossy().into_owned();
+        let rip = |name: &str| {
+            let made = std::process::Command::new(&ffmpeg)
+                .args(["-v", "quiet", "-f", "lavfi", "-i", "color=c=black:s=64x36:r=1", "-t", "400", "-c:v", "mpeg4", "-y"])
+                .arg(path(name))
+                .status()
+                .unwrap();
+            assert!(made.success());
+        };
+        rip("Paprika.mkv");
+        let episodes = vec![crate::db::NewEpisode { number: 1, path: path("Paprika.mkv"), size: 1, duration: 5400.0 }];
+        let film = crate::db::NewShow { folder: folder.to_string_lossy().into_owned(), title: "Paprika".into(), format: "MOVIE".into(), anilist_id: Some(1943), anilist_episodes: Some(1), episodes, ..Default::default() };
+        let show = backend.db.add_show(&film).unwrap();
+        let one = backend.db.episodes(show).unwrap()[0].clone();
+        backend.db.save_position(one.id, 600.0).unwrap();
+        // A better rip under another name, as Radarr puts one in.
+        std::fs::remove_file(path("Paprika.mkv")).unwrap();
+        rip("Paprika (2006) [Bluray-1080p].mkv");
+        assert_eq!(backend.rescan(show).unwrap(), 1);
+        let after = backend.db.episodes(show).unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!((after[0].id, after[0].number, after[0].path.as_str(), after[0].position), (one.id, 1, path("Paprika (2006) [Bluray-1080p].mkv").as_str(), 600.0));
+        // Two new videos don't say which is the film: it's left as it is.
+        std::fs::remove_file(path("Paprika (2006) [Bluray-1080p].mkv")).unwrap();
+        rip("Paprika CD1.mkv");
+        rip("Paprika CD2.mkv");
+        backend.rescan(show).unwrap();
+        assert_eq!(backend.db.episodes(show).unwrap()[0].path, path("Paprika (2006) [Bluray-1080p].mkv"));
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

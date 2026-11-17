@@ -21,6 +21,7 @@ function part(title: string, anime: number, episodes: number, watched: number): 
     wordsKnown: 0,
     addedAt: 0,
     lastWatchedAt: watched ? 1 : null,
+    tmdbId: null,
     library: 0,
     series: { id: anime, title, native: "", order: next, parts: 1, next: null },
   } as unknown as ShowCard;

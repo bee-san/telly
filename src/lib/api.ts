@@ -68,6 +68,8 @@ export interface Show {
   jimakuId: number | null;
   addedAt: number;
   lastWatchedAt: number | null;
+  /** What TMDB has it as ("tv:55925", "movie:505192"), for a show AniList doesn't know. */
+  tmdbId: string | null;
 }
 
 export interface NextUp {
@@ -576,6 +578,20 @@ export interface Anime {
   year: number | null;
   cover: string;
   color: string;
+  score: number;
+}
+
+/** A Japanese drama or film (or any series or film) on TMDB, for what AniList doesn't know. */
+export interface TmdbTitle {
+  id: string;
+  native: string;
+  english: string;
+  format: string;
+  episodes: number | null;
+  year: number | null;
+  cover: string;
+  japanese: boolean;
+  animation: boolean;
   score: number;
 }
 

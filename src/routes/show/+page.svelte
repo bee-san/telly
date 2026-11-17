@@ -4,7 +4,7 @@
   import { onMount } from "svelte";
   import Cover from "$lib/Cover.svelte";
   import Icon from "$lib/Icon.svelte";
-  import { call, callKept, errorText, kept, pickFile, pickFolder, setWindowTitle, type Anime, type EpisodeRow, type Library, type MissingRips, type ShowMove, type ShowView } from "$lib/api";
+  import { call, callKept, errorText, kept, pickFile, pickFolder, setWindowTitle, type Anime, type EpisodeRow, type Library, type MissingRips, type ShowMove, type ShowView, type TmdbTitle } from "$lib/api";
   import { bytes, clock, mediaLabel, plural, statusOf, subsHelp, subsLabel } from "$lib/format";
   import { animeOf, partsText } from "$lib/series";
   import { app } from "$lib/state.svelte";
@@ -17,6 +17,8 @@
   let matching = $state(false);
   let query = $state("");
   let found = $state<Anime[]>([]);
+  /** What TMDB finds for Change match…: Japanese dramas and films AniList doesn't know. */
+  let foundTmdb = $state<TmdbTitle[]>([]);
   let busy = $state(false);
   /** What Find its folder… found in the folder chosen, before anything changes. */
   let moving = $state<ShowMove | null>(null);
@@ -165,7 +167,11 @@
   async function search() {
     busy = true;
     try {
-      found = await call<Anime[]>("searchAnilist", { query, count: card?.episodes ?? 0 });
+      const count = card?.episodes ?? 0;
+      const [anilist, tmdb] = await Promise.allSettled([call<Anime[]>("searchAnilist", { query, count }), call<TmdbTitle[]>("searchTmdb", { query, count })]);
+      found = anilist.status === "fulfilled" ? anilist.value : [];
+      foundTmdb = tmdb.status === "fulfilled" ? tmdb.value : [];
+      if (anilist.status === "rejected" && tmdb.status === "rejected") error = errorText(anilist.reason);
     } catch (e) {
       error = errorText(e);
     } finally {
@@ -178,6 +184,13 @@
     const show = card.id;
     matching = false;
     await act(() => call("rematch", { id: show, anilistId: a.id }));
+  }
+
+  async function rematchTmdb(t: TmdbTitle) {
+    if (!card) return;
+    const show = card.id;
+    matching = false;
+    await act(() => call("rematch", { id: show, tmdbId: t.id }));
   }
 
   /** The anime this show could be listed under: every other one in the library, those whose name has what's typed. */
@@ -416,7 +429,7 @@
                   <button type="button" role="menuitem" onclick={() => { more = false; card && act(() => call("retrySubs", { show: card.id })); }}>Find subtitles again<small>Look on Jimaku for every episode</small></button>
                   <hr />
                   <p class="menu-head">In your library</p>
-                  <button type="button" role="menuitem" onclick={() => { more = false; matching = true; query = card?.titleRomaji || card?.title || ""; found = []; search(); }}>Change match…</button>
+                  <button type="button" role="menuitem" onclick={() => { more = false; matching = true; query = card?.titleRomaji || card?.title || ""; found = []; foundTmdb = []; search(); }}>Change match…</button>
                   <button type="button" role="menuitem" onclick={() => { more = false; openRegroup(); }} title="List it in the Library under another anime, with that anime’s seasons and movies, or on its own">Move to another anime…</button>
                   <button type="button" role="menuitem" onclick={() => { more = false; freeSpace(); }}>Free up space<small>Delete Telly’s copies of the episodes you’ve watched</small></button>
                   <hr />
@@ -571,7 +584,7 @@
   <div class="modal-bg" role="presentation" onclick={(e) => e.target === e.currentTarget && (matching = false)}>
     <div class="sheet" role="dialog" aria-modal="true" aria-label="Change match">
       <form class="searchrow" onsubmit={(e) => { e.preventDefault(); search(); }}>
-        <input class="input grow" bind:value={query} aria-label="Search AniList" />
+        <input class="input grow" bind:value={query} aria-label="Search AniList and TMDB" />
         <button type="submit" class="btn" disabled={busy}>{busy ? "Searching…" : "Search"}</button>
       </form>
       <div class="results scroll">
@@ -585,6 +598,19 @@
             </span>
           </button>
         {/each}
+        {#if foundTmdb.length}
+          <div class="r-source">Dramas and films on TMDB</div>
+          {#each foundTmdb as t (t.id)}
+            <button type="button" class="result" onclick={() => rematchTmdb(t)}>
+              {#if t.cover}<img src={t.cover} alt="" />{:else}<span class="noimg"></span>{/if}
+              <span class="r-body">
+                <span class="r-jp" lang="ja">{t.native || t.english}</span>
+                <span class="r-en">{t.english}</span>
+                <span class="r-meta">{[t.format === "MOVIE" ? "Film" : "Series", t.year].filter(Boolean).join(" · ")}</span>
+              </span>
+            </button>
+          {/each}
+        {/if}
       </div>
       <div class="sheet-foot"><button type="button" class="btn quiet" onclick={() => (matching = false)}>Cancel</button></div>
     </div>
@@ -697,4 +723,5 @@
   .r-jp { font: 800 15px/1.25 var(--font-jp-title); }
   .r-en { font-size: 13px; }
   .r-meta { font-size: 12px; color: var(--ink-3); }
+  .r-source { padding: 12px 6px 4px; font-size: 12px; font-weight: 600; color: var(--ink-3); }
 </style>

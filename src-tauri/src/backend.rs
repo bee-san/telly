@@ -30,6 +30,7 @@ use crate::series;
 use crate::stats;
 use crate::subs::Line;
 use crate::sync;
+use crate::tmdb;
 use crate::tools::{self, Tools};
 use crate::torrents::{self, Downloads};
 use crate::util::now_ms;
@@ -833,9 +834,32 @@ impl Backend {
         std::thread::spawn(move || backend.get_cover(show_id, &url));
     }
 
-    /// Gets a show its cover: AniList's (`url`) when it has one; else the
-    /// poster from Wikipedia's article about a film or series of that name;
-    /// else a frame from its first episode.
+    /// Looks a show AniList doesn't know up on TMDB, once: a Japanese drama or
+    /// film whose name is much like the show's becomes what it is, with its
+    /// titles and poster (tmdb.rs). Returns its poster's address when it's found.
+    fn find_on_tmdb(&self, show_id: i64) -> Option<String> {
+        let show = self.db.show(show_id).ok()??;
+        let asked = format!("tmdb.asked.{show_id}");
+        if show.anilist_id.is_some() || show.tmdb_id.is_some() || self.db.setting(&asked).ok()?.is_some() {
+            return None;
+        }
+        let count = self.db.episodes(show_id).map(|e| e.len()).unwrap_or(0);
+        // TMDB can't be asked now: it's asked again the next time Telly starts.
+        let found = tmdb::find(&show.title, count).ok()?;
+        let _ = self.db.set_setting(&asked, &Value::Bool(true));
+        let title = found?;
+        self.db.set_show_tmdb(show_id, &title).ok()?;
+        self.jobs.forget_jimaku();
+        // Subtitles were looked for, and maybe queued to be made, under its folder's name alone.
+        let _ = self.db.requeue_subs(Some(show_id), &["none", "nokey", "whisper"]);
+        self.jobs.poke();
+        Some(title.cover)
+    }
+
+    /// Gets a show its cover: AniList's or TMDB's (`url`) when it has one;
+    /// else TMDB's poster, for a Japanese drama or film it finds of that
+    /// name; else the poster from Wikipedia's article about a film or series
+    /// of that name; else a frame from its first episode.
     fn get_cover(&self, show_id: i64, url: &str) {
         let path = self.cover_path(show_id);
         // A frame has the show's title drawn over it, as a poster has; a real poster has its own.
@@ -849,6 +873,12 @@ impl Backend {
                 framed(false);
             }
             return;
+        }
+        if let Some(poster) = self.find_on_tmdb(show_id).filter(|p| !p.is_empty()) {
+            if anilist::download_cover(&poster, &path).is_ok() {
+                framed(false);
+                return;
+            }
         }
         let Ok(Some(show)) = self.db.show(show_id) else { return };
         if let Ok(Some(poster)) = covers::wikipedia_poster(&show.title) {
@@ -873,7 +903,11 @@ impl Backend {
             .name("telly-covers".into())
             .spawn(move || {
                 for show in backend.db.shows().unwrap_or_default() {
-                    if !backend.cover_path(show.id).is_file() {
+                    // A show added before Telly asked TMDB, AniList not knowing it, is asked about once.
+                    if let Some(poster) = backend.find_on_tmdb(show.id).filter(|p| !p.is_empty()) {
+                        backend.remove_cover(show.id);
+                        backend.get_cover(show.id, &poster);
+                    } else if !backend.cover_path(show.id).is_file() {
                         backend.get_cover(show.id, &show.cover_url);
                     } else if !backend.small_cover_path(show.id).is_file() {
                         let _ = covers::make_small(&backend.cover_path(show.id), &backend.small_cover_path(show.id));
@@ -1049,10 +1083,19 @@ impl Backend {
         Ok(json!({ "shows": cards, "libraries": libraries, "activity": self.activity(), "setup": self.setup() }))
     }
 
-    /// What AniList says a show is about, asked for once per AniList entry and
-    /// kept ("" for a show without an entry).
+    /// What AniList (or TMDB, for a show AniList doesn't know) says a show is
+    /// about, asked for once per entry and kept ("" for a show without one).
     fn show_about(&self, id: i64) -> Result<String> {
         let show = self.db.show(id)?.ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?;
+        if let (None, Some(tmdb_id)) = (show.anilist_id, &show.tmdb_id) {
+            let key = format!("tmdb.about.{tmdb_id}");
+            if let Some(Value::String(text)) = self.db.setting(&key)? {
+                return Ok(text);
+            }
+            let text = tmdb::description(tmdb_id)?;
+            self.db.set_setting(&key, &Value::String(text.clone()))?;
+            return Ok(text);
+        }
         let Some(anilist_id) = show.anilist_id else { return Ok(String::new()) };
         let key = format!("anilist.about.{anilist_id}");
         if let Some(Value::String(text)) = self.db.setting(&key)? {
@@ -1338,7 +1381,14 @@ impl Backend {
                 let added = self.rescan(arg(&args, "id")?)?;
                 Ok(json!({ "added": added }))
             }
-            "rematch" => self.rematch(arg(&args, "id")?, arg(&args, "anilistId")?),
+            "searchTmdb" => {
+                let count = arg::<Option<usize>>(&args, "count")?.unwrap_or(0);
+                to_value(tmdb::search(&arg::<String>(&args, "query")?, count)?)
+            }
+            "rematch" => match arg::<Option<String>>(&args, "tmdbId")? {
+                Some(tmdb_id) => self.rematch_tmdb(arg(&args, "id")?, &tmdb_id),
+                None => self.rematch(arg(&args, "id")?, arg(&args, "anilistId")?),
+            },
             "missingRips" => to_value(relink::missing_shows(self)?),
             "relinkShow" => {
                 let apply = arg::<Option<bool>>(&args, "apply")?.unwrap_or(false);

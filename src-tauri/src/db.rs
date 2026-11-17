@@ -194,6 +194,10 @@ UPDATE episodes SET number = 1
  WHERE number <> 1
    AND show_id IN (SELECT s.id FROM shows s WHERE s.format = 'MOVIE' AND s.anilist_episodes = 1
                       AND (SELECT COUNT(*) FROM episodes e WHERE e.show_id = s.id) = 1);
+", "
+-- What TMDB has a show AniList doesn't know as (a Japanese drama or film):
+-- \"tv:55925\" or \"movie:505192\", as Jimaku writes it (tmdb.rs).
+ALTER TABLE shows ADD COLUMN tmdb_id TEXT;
 "];
 
 /// How many migrations this Telly has: a library of a higher version is from a newer Telly.
@@ -231,10 +235,13 @@ pub struct Show {
     pub jimaku_id: Option<i64>,
     pub added_at: i64,
     pub last_watched_at: Option<i64>,
+    /// What TMDB has it as, for a show AniList doesn't know (tmdb.rs).
+    #[serde(default)]
+    pub tmdb_id: Option<String>,
 }
 
 const SHOW_COLUMNS: &str = "id, folder, title, title_native, title_english, title_romaji, anilist_id, anilist_episodes,
-  format, year, cover_url, cover_color, jimaku_id, added_at, last_watched_at";
+  format, year, cover_url, cover_color, jimaku_id, added_at, last_watched_at, tmdb_id";
 
 fn show_from_row(r: &Row) -> rusqlite::Result<Show> {
     Ok(Show {
@@ -253,6 +260,7 @@ fn show_from_row(r: &Row) -> rusqlite::Result<Show> {
         jimaku_id: r.get(12)?,
         added_at: r.get(13)?,
         last_watched_at: r.get(14)?,
+        tmdb_id: r.get(15)?,
     })
 }
 
@@ -590,7 +598,7 @@ impl Db {
         }
         // Settings kept by the show's id, and by its episodes' (backend.rs,
         // jobs.rs, anilist_list.rs, the player's picture filter).
-        for key in ["audio.track.{id}", "cover.frame.{id}", "player.filter.{id}", "player.filters.{id}", "series.of.{id}", "folder.shared.{id}", "folder.left.{id}", "follow.{id}", "follow.got.{id}", "follow.like.{id}", "follow.started.{id}"] {
+        for key in ["audio.track.{id}", "cover.frame.{id}", "player.filter.{id}", "player.filters.{id}", "series.of.{id}", "folder.shared.{id}", "folder.left.{id}", "follow.{id}", "follow.got.{id}", "follow.like.{id}", "follow.started.{id}", "tmdb.asked.{id}"] {
             tx.execute("DELETE FROM settings WHERE key = ?1", params![key.replace("{id}", &id.to_string())])?;
         }
         for prefix in ["anilist.group", "jimaku.group", "subs.numbering"] {
@@ -602,6 +610,27 @@ impl Db {
         )?;
         tx.execute("DELETE FROM mine_jobs WHERE episode_id IN (SELECT id FROM episodes WHERE show_id = ?1)", params![id])?;
         tx.execute("DELETE FROM shows WHERE id = ?1", params![id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Makes a show TMDB's series or film `t`, for one AniList doesn't know:
+    /// its titles, format, year, poster and ID. Its AniList entry, if it had
+    /// one, and the Jimaku entry found for it are let go.
+    pub fn set_show_tmdb(&self, id: i64, t: &crate::tmdb::Title) -> Result<()> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM openings WHERE episode_id IN (SELECT id FROM episodes WHERE show_id = ?1)", params![id])?;
+        for prefix in ["anilist.group", "jimaku.group", "subs.numbering"] {
+            tx.execute("DELETE FROM settings WHERE key LIKE ?1", params![format!("{prefix}.{id}.%")])?;
+        }
+        tx.execute(
+            "UPDATE shows SET title = ?2, title_native = ?3, title_english = ?4, title_romaji = '', anilist_id = NULL,
+               anilist_episodes = NULL, format = ?5, year = ?6, cover_url = ?7, cover_color = '', jimaku_id = NULL,
+               tmdb_id = ?8
+             WHERE id = ?1",
+            params![id, t.short_title(), t.native, t.english, t.format, t.year, t.cover, t.id],
+        )?;
         tx.commit()?;
         Ok(())
     }
@@ -618,7 +647,8 @@ impl Db {
         }
         tx.execute(
             "UPDATE shows SET title = ?2, title_native = ?3, title_english = ?4, title_romaji = ?5, anilist_id = ?6,
-               anilist_episodes = ?7, format = ?8, year = ?9, cover_url = ?10, cover_color = ?11, jimaku_id = NULL
+               anilist_episodes = ?7, format = ?8, year = ?9, cover_url = ?10, cover_color = ?11, jimaku_id = NULL,
+               tmdb_id = NULL
              WHERE id = ?1",
             params![
                 id,
@@ -1444,7 +1474,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("telly.sqlite");
-        let old = open_migrated(&path, &MIGRATIONS[..MIGRATIONS.len() - 1]).unwrap();
+        let before = MIGRATIONS.iter().position(|m| m.contains("A film is the one episode")).unwrap();
+        let old = open_migrated(&path, &MIGRATIONS[..before]).unwrap();
         old.execute_batch(
             "INSERT INTO shows (id, folder, title, format, anilist_episodes, added_at) VALUES
                (1, 'Jujutsu Kaisen 0', 'JUJUTSU KAISEN 0', 'MOVIE', 1, 0), (2, 'das Finale', 'das Finale', 'MOVIE', 6, 0), (3, 'Show', 'Show', 'TV', 12, 0);

@@ -342,6 +342,7 @@ mod tests {
             jimaku_id: None,
             added_at: 0,
             last_watched_at: None,
+            tmdb_id: None,
         }
     }
 

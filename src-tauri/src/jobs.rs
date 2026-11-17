@@ -1769,14 +1769,16 @@ fn entry_files(backend: &Backend, key: &str, id: i64) -> Result<Vec<jimaku::Loca
 /// every episode, not only the first. The entries are asked for once while
 /// Telly is open, and again after Change match.
 fn jimaku_files(backend: &Backend, key: &str, show: &Show) -> Result<Vec<jimaku::Local>> {
-    let match_key = (show.id, show.anilist_id, show.title_romaji.clone());
+    // A show AniList doesn't know is looked for by the name it's listed under.
+    let name = if show.anilist_id.is_none() && show.title_romaji.is_empty() { &show.title } else { &show.title_romaji };
+    let match_key = (show.id, show.anilist_id, format!("{name}\u{1}{}", show.tmdb_id.as_deref().unwrap_or("")));
     let known = backend.jobs.jimaku_entries.lock().ok().and_then(|e| e.get(&match_key).cloned());
     let entry_ids: Vec<i64> = match known {
         Some(ids) => ids,
-        None => match jimaku::find_entries(key, show.anilist_id, &show.title_romaji) {
+        None => match jimaku::find_entries(key, show.anilist_id, show.tmdb_id.as_deref(), name) {
             Ok(entries) => {
                 // (Not if you changed the show's match meanwhile: it's another anime's entry.)
-                let same_match = backend.db.show(show.id)?.is_some_and(|s| s.anilist_id == show.anilist_id);
+                let same_match = backend.db.show(show.id)?.is_some_and(|s| s.anilist_id == show.anilist_id && s.tmdb_id == show.tmdb_id);
                 if let Some(first) = entries.first().filter(|f| same_match && show.jimaku_id != Some(f.id)) {
                     backend.db.set_jimaku_id(show.id, Some(first.id))?;
                 }
@@ -1820,7 +1822,7 @@ fn group_files(backend: &Backend, key: &str, show: &Show, group: &str, in_group:
             anilist::follow_sequels(&mut found, &title)?;
             let id = match found.first() {
                 Some(a) if Some(a.id) != show.anilist_id && a.score >= 0.5 => {
-                    jimaku::find_entries(key, Some(a.id), &a.romaji)?.first().map(|e| e.id).unwrap_or(crate::anilist_list::NO_ENTRY)
+                    jimaku::find_entries(key, Some(a.id), None, &a.romaji)?.first().map(|e| e.id).unwrap_or(crate::anilist_list::NO_ENTRY)
                 }
                 _ => crate::anilist_list::NO_ENTRY,
             };

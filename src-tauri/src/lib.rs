@@ -42,6 +42,7 @@ pub mod series;
 pub mod stats;
 pub mod subs;
 pub mod sync;
+pub mod tmdb;
 pub mod tools;
 pub mod torrents;
 pub mod update;

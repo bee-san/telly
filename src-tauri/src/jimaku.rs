@@ -1,7 +1,9 @@
-//! Jimaku (https://jimaku.cc): Japanese subtitles for anime, found by AniList ID.
+//! Jimaku (https://jimaku.cc): Japanese subtitles for anime, found by AniList ID,
+//! and for Japanese dramas and films, found by TMDB's.
 //! It needs a free account's API key, sent as the Authorization header.
 //!
 //!   GET /api/entries/search?anilist_id=20&anime=true   the show's entries
+//!   GET /api/entries/search?tmdb_id=tv:55925&anime=false   a drama's
 //!   GET /api/entries/{id}/files                         its files (zips too)
 //!
 //! Jimaku's own episode filter is a guess from file names, so Telly reads the
@@ -46,6 +48,8 @@ pub struct Entry {
     pub name: String,
     pub japanese_name: String,
     pub anilist_id: Option<i64>,
+    #[serde(default)]
+    pub tmdb_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -124,6 +128,7 @@ fn entries_from(v: &Value) -> Vec<Entry> {
                 name: e.get("name").and_then(Value::as_str).unwrap_or("").to_string(),
                 japanese_name: e.get("japanese_name").and_then(Value::as_str).unwrap_or("").to_string(),
                 anilist_id: e.get("anilist_id").and_then(Value::as_i64),
+                tmdb_id: e.get("tmdb_id").and_then(Value::as_str).map(str::to_string),
             })
         })
         .collect()
@@ -141,21 +146,39 @@ fn check_key_at(api: &str, key: &str) -> Result<()> {
     get_json(key.trim(), &format!("{api}/entries/search?anilist_id=1&anime=true")).map(|_| ())
 }
 
-/// The show's entries on Jimaku: by AniList ID, else by name.
-pub fn find_entries(key: &str, anilist_id: Option<i64>, title: &str) -> Result<Vec<Entry>> {
+/// The show's entries on Jimaku: by AniList ID, else by TMDB's (a Japanese
+/// drama or film), else by name. A show with no AniList entry is looked for
+/// among Jimaku's live action too.
+pub fn find_entries(key: &str, anilist_id: Option<i64>, tmdb_id: Option<&str>, title: &str) -> Result<Vec<Entry>> {
     if let Some(id) = anilist_id {
         let found = entries_from(&get_json(key, &format!("{}/entries/search?anilist_id={id}&anime=true", api()))?);
         if !found.is_empty() {
             return Ok(found);
         }
     }
+    if let Some(id) = tmdb_id.filter(|_| anilist_id.is_none()) {
+        let id = percent_encoding::utf8_percent_encode(id, percent_encoding::NON_ALPHANUMERIC).to_string();
+        for anime in ["false", "true"] {
+            let found = entries_from(&get_json(key, &format!("{}/entries/search?tmdb_id={id}&anime={anime}", api()))?);
+            if !found.is_empty() {
+                return Ok(found);
+            }
+        }
+    }
     if title.trim().is_empty() {
         return Ok(Vec::new());
     }
     let q = percent_encoding::utf8_percent_encode(title.trim(), percent_encoding::NON_ALPHANUMERIC).to_string();
-    let found = entries_from(&get_json(key, &format!("{}/entries/search?query={q}&anime=true", api()))?);
-    // A name search can find other shows; keep only ones without a different AniList ID.
-    Ok(found.into_iter().filter(|e| anilist_id.is_none() || e.anilist_id.is_none() || e.anilist_id == anilist_id).collect())
+    let mut found = entries_from(&get_json(key, &format!("{}/entries/search?query={q}&anime=true", api()))?);
+    if anilist_id.is_none() {
+        found.extend(entries_from(&get_json(key, &format!("{}/entries/search?query={q}&anime=false", api()))?));
+    }
+    // A name search can find other shows; keep only ones without a different AniList or TMDB ID.
+    Ok(found
+        .into_iter()
+        .filter(|e| anilist_id.is_none() || e.anilist_id.is_none() || e.anilist_id == anilist_id)
+        .filter(|e| tmdb_id.is_none() || e.tmdb_id.is_none() || e.tmdb_id.as_deref() == tmdb_id)
+        .collect())
 }
 
 pub fn files(key: &str, entry_id: i64) -> Result<Vec<RemoteFile>> {

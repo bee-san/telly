@@ -521,4 +521,22 @@ impl Backend {
         self.jobs.poke();
         self.show_view(id)
     }
+
+    /// Change match… to a series or film on TMDB, for a show AniList doesn't know.
+    pub(super) fn rematch_tmdb(self: &Arc<Self>, id: i64, tmdb_id: &str) -> Result<Value> {
+        self.db.show(id)?.ok_or_else(|| anyhow!("That show isn’t in Telly any more"))?;
+        let title = tmdb::by_id(tmdb_id)?;
+        self.db.set_show_tmdb(id, &title)?;
+        // Chosen by hand: it isn't looked up again.
+        self.db.set_setting(&format!("tmdb.asked.{id}"), &Value::Bool(true))?;
+        self.remove_cover(id);
+        self.fetch_cover(id, title.cover.clone());
+        series::gather(self);
+        recommend::gather(self);
+        self.db.requeue_subs(Some(id), &["none", "failed", "check", "synced", "nokey", "whisper"])?;
+        self.jobs.find_again(&self.db, Some(id));
+        self.jobs.forget_jimaku();
+        self.jobs.poke();
+        self.show_view(id)
+    }
 }

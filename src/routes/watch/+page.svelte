@@ -21,7 +21,13 @@
 
   let view = $state<PlayerView | null>(null);
   let error = $state("");
-  let video = $state<HTMLVideoElement | null>(null);
+  /** The two players: one shows the episode, and near its end the other reads the start of the next, so it starts at once. */
+  let players = $state<(HTMLVideoElement | null)[]>([null, null]);
+  /** Which of the two shows the episode. */
+  let showing = $state(0);
+  const video = $derived(players[showing]);
+  /** The next episode, as the player behind has it: which, its address and its audio track. */
+  let ahead = $state<{ id: number; src: string; listedAudio: number } | null>(null);
   let txList = $state<HTMLOListElement | null>(null);
   let now = $state(0);
   let duration = $state(0);
@@ -174,7 +180,7 @@
   const autoplay = $derived(settings["player.autoplay"] !== false);
   const skipEndings = $derived(settings["player.skipEndings"] === true);
   /** The next episode starts as this one ends, without the end card, when it's ready to. */
-  const straightOn = $derived(settings["player.endCard"] === false && autoplay && !!view?.next?.ready);
+  const straightOn = $derived(settings["player.endCard"] !== true && autoplay && !!view?.next?.ready);
   const subSize = $derived(Number(settings["player.subtitleSize"] ?? 36) || 36);
   /** The subtitles' size: in the small player, scaled to its width, from 14 px up to their usual size. */
   const subFont = $derived(app.compact ? `clamp(14px, ${subSize / 10}vw, ${subSize}px)` : `${subSize}px`);
@@ -210,8 +216,8 @@
     const autoplayed = cameByAutoplay;
     cameByAutoplay = false;
     try {
-      settings = await call<Record<string, unknown>>("settings");
-      const v = await call<PlayerView>("openPlayer", { id });
+      const [s, v] = await Promise.all([call<Record<string, unknown>>("settings"), call<PlayerView>("openPlayer", { id })]);
+      settings = s;
       // Cards finished before this episode opened aren't news here, but one
       // still shown as being finished (mined just before) gets its outcome.
       call<CardEvent[]>("events", { since: lastEvent })
@@ -229,7 +235,22 @@
       if (back && written) holdPlay = true;
       firstFrameFor = 0;
       dropSheet();
+      // The player behind has the start of this episode read: it comes to the front, and the one in front lets go of the last.
+      const behind = 1 - showing;
+      const readAhead = ahead?.id === v.episode.id && ahead.src === mediaUrl(v.src) && v.episode.mediaState === "ready";
+      if (readAhead) {
+        letGo(players[showing]);
+        showing = behind;
+      } else if (ahead) {
+        letGo(players[behind]);
+      }
+      ahead = null;
       view = v;
+      if (readAhead) {
+        nextTick().then(() => {
+          if (view?.episode.id === v.episode.id && video && video.readyState >= HTMLMediaElement.HAVE_METADATA) onLoaded();
+        });
+      }
       castNames = [];
       call<CastName[]>("showNames", { id: v.show.id }).then((n) => (castNames = n)).catch(() => {});
       nudge = v.episode.subsNudgeMs;
@@ -1298,7 +1319,7 @@
         return;
       }
     }
-    if (settings["player.endCard"] === false) return playNext();
+    if (settings["player.endCard"] !== true) return playNext();
     countdown = 8;
     if (countTimer) clearInterval(countTimer);
     countTimer = setInterval(() => {
@@ -1310,15 +1331,47 @@
 
   /** The episode the next one was read ahead for. */
   let warmedFor = 0;
-  // Near the end (the last two minutes, or once the ending starts), the start of the next
-  // episode is asked for, so Telly reads it into Windows' file cache and it starts quickly.
+  // Near the end (the last two minutes, or once the ending starts), the player behind
+  // loads the start of the next episode, so it starts the moment this one ends.
   $effect(() => {
     const id = view?.episode.id;
     const next = view?.next;
     if (!id || !next?.ready || warmedFor === id || !(duration > 0)) return;
     if (now < Math.min(duration - 120, endingStart ?? Infinity)) return;
     warmedFor = id;
-    fetch(mediaUrl(`/ep/${next.id}`), { headers: { Range: "bytes=0-0" } }).catch(() => {});
+    readNext(id, next.id);
+  });
+
+  /** Has the player behind load the start of episode `next`, while `from` is still the one playing. */
+  async function readNext(from: number, next: number) {
+    try {
+      const v = await call<PlayerView>("episode", { id: next });
+      if (view?.episode.id !== from || v.episode.mediaState !== "ready") return;
+      ahead = { id: next, src: mediaUrl(v.src), listedAudio: v.listedAudio };
+    } catch {}
+  }
+
+  /** The player behind has the next episode's first frame: it's on the audio track that will play. */
+  function aheadLoaded(k: number) {
+    const el = players[k];
+    if (el && ahead) pickAudio(el, ahead.listedAudio);
+  }
+
+  /** Stops a player and lets go of its video. */
+  function letGo(el: HTMLVideoElement | null) {
+    if (!el) return;
+    el.pause();
+    el.removeAttribute("src");
+    el.load();
+  }
+
+  // The sound comes from the player in front; the one behind stays silent.
+  $effect(() => {
+    players.forEach((el, k) => {
+      if (!el) return;
+      el.muted = k !== showing || muted;
+      if (k === showing) el.volume = volume;
+    });
   });
 
   /** Stop (or Esc) on the countdown: it stays stopped for this episode, though the video reaches its end after. */
@@ -1630,30 +1683,40 @@
 <div class="player" class:idle class:paused class:compact={app.compact} onpointermove={wake} role="application" aria-label="Player">
   <div class="pic" onpointerdown={picDown} onpointermove={picMove} onpointerleave={clearResume} onclick={picClick} ondblclick={picDoubleClick} role="presentation">
     {#if view && view.episode.mediaState === "ready"}
-      <!-- svelte-ignore a11y_media_has_caption -->
-      <video
-        bind:this={video}
-        class:filtered={chain.length > 0 && filterShown}
-        crossorigin="anonymous"
-        src={mediaUrl(view.src)}
-        preload="auto"
-        bind:volume
-        bind:muted
-        onloadedmetadata={onLoaded}
-        oncanplay={firstFrame}
-        onplay={() => { paused = false; wake(); }}
-        onpause={() => (paused = true)}
-        onseeked={() => {
-          if (video) lastT = video.currentTime;
-          firstFrame();
-        }}
-        onended={() => {
-          firstFrame();
-          finish();
-        }}
-        ondurationchange={() => video && (duration = video.duration)}
-        onerror={() => (videoError = video?.error?.message || "The video couldn’t play.")}
-      ></video>
+      {#each [0, 1] as k (k)}
+        <!-- svelte-ignore a11y_media_has_caption -->
+        <video
+          bind:this={players[k]}
+          class:filtered={k === showing && chain.length > 0 && filterShown}
+          class:behind={k !== showing}
+          crossorigin="anonymous"
+          src={k === showing ? mediaUrl(view.src) : ahead?.src}
+          preload="auto"
+          onloadedmetadata={() => (k === showing ? onLoaded() : aheadLoaded(k))}
+          oncanplay={() => k === showing && firstFrame()}
+          onplay={() => {
+            if (k !== showing) return;
+            paused = false;
+            wake();
+          }}
+          onpause={() => k === showing && (paused = true)}
+          onseeked={() => {
+            if (k !== showing) return;
+            if (video) lastT = video.currentTime;
+            firstFrame();
+          }}
+          onended={() => {
+            if (k !== showing) return;
+            firstFrame();
+            finish();
+          }}
+          ondurationchange={() => k === showing && video && (duration = video.duration)}
+          onerror={() => {
+            if (k === showing) videoError = video?.error?.message || "The video couldn’t play.";
+            else ahead = null;
+          }}
+        ></video>
+      {/each}
       {#if chain.length}<canvas class="filtered-pic" class:waiting={!filterShown} bind:this={filtered}></canvas>{/if}
     {/if}
   </div>
@@ -1976,6 +2039,8 @@
   .pic { position: absolute; inset: 0; display: grid; place-items: center; cursor: pointer; }
   .pic video { width: 100%; height: 100%; object-fit: contain; display: block; background: var(--vid); }
   .pic video.filtered { opacity: 0; }
+  /* The player behind, loading the next episode: there, but not seen. */
+  .pic video.behind { position: absolute; inset: 0; opacity: 0; pointer-events: none; }
   .filtered-pic.waiting { visibility: hidden; }
   .filtered-pic { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
   .subs { position: absolute; left: 0; right: 0; bottom: 96px; display: flex; flex-direction: column; align-items: center; gap: 2px; pointer-events: none; z-index: 5; }

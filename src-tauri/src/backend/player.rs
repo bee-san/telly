@@ -218,7 +218,10 @@ impl Backend {
             let _ = self.db.touch_show(e.show_id);
             let seen = position.unwrap_or(e.position);
             let finished = e.watched_at.is_some() || (e.duration > 0.0 && seen >= self.watched_from(&e));
-            ask::prepare_recaps(self, id, finished, (!finished && ask::resuming(&e, seen)).then_some(seen));
+            // Reading the subtitles they're told from takes a while: the next episode doesn't wait for it.
+            let resume_at = (!finished && ask::resuming(&e, seen)).then_some(seen);
+            let backend = self.clone();
+            std::thread::spawn(move || ask::prepare_recaps(&backend, id, finished, resume_at));
         }
         // Explain's Claude Code is kept only while the player is open: it goes a
         // minute after the player closes, unless another episode has opened.

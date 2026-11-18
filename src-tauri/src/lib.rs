@@ -188,6 +188,9 @@ async fn hachidori_start(app: AppHandle, backend: State<'_, Arc<Backend>>, state
         window.navigate(url).map_err(|e| e.to_string())?;
         return Ok(true);
     }
+    #[cfg(mobile)]
+    return Err(format!("Hachidori needs WebView2, so it can't open {url} here"));
+    #[cfg(desktop)]
     WebviewWindowBuilder::new(&app, HOST_WINDOW, WebviewUrl::External(url))
         .title("Hachidori engine")
         .visible(false)
@@ -201,6 +204,7 @@ async fn hachidori_start(app: AppHandle, backend: State<'_, Arc<Backend>>, state
         })
         .build()
         .map_err(|e| e.to_string())?;
+    #[cfg(desktop)]
     Ok(true)
 }
 
@@ -296,13 +300,16 @@ fn say_why_not(why: &str) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-            }
-        }))
+    let builder = tauri::Builder::default();
+    // Android keeps one Telly by itself.
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        }
+    }));
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         // Answered off the main thread: a video range is a disk read.
@@ -332,7 +339,10 @@ pub fn run() {
             app.manage(backend);
 
             let hachidori = hachidori::locate(app.handle());
-            let mut main = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
+            let main = WebviewWindowBuilder::new(app, "main", WebviewUrl::default());
+            // On a phone the window is the whole screen, with no title bar and no extensions.
+            #[cfg(desktop)]
+            let mut main = main
                 .title("Telly")
                 .inner_size(1280.0, 820.0)
                 // The small player (src/lib/compact.ts) lifts this, and puts it back.
@@ -340,6 +350,7 @@ pub fn run() {
                 .decorations(false)
                 .browser_extensions_enabled(cfg!(windows))
                 .additional_browser_args(&browser_args());
+            #[cfg(desktop)]
             if let Some(dir) = &hachidori.extensions_dir {
                 main = main.extensions_path(dir);
             }

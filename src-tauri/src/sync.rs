@@ -44,6 +44,7 @@ pub const FIRERED_RATE: u32 = 16_000;
 /// Spans of speech, in seconds, from FireRedVAD (FireRedTeam's detector, a
 /// small DFSMN network): on FLEURS-VAD it finds 96% of speech where WebRTC's
 /// finds 36%, with as few false alarms. `samples` are 16 kHz mono.
+#[cfg(not(target_os = "android"))]
 pub fn firered_spans(samples: &[i16]) -> anyhow::Result<Vec<(f64, f64)>> {
     let fail = |e: firered_vad::Error| anyhow::anyhow!("FireRedVAD: {e}");
     let mut vad = firered_vad::Vad::bundled().map_err(fail)?;
@@ -64,6 +65,12 @@ pub fn firered_spans(samples: &[i16]) -> anyhow::Result<Vec<(f64, f64)>> {
         next = vad.push_samples(&[]).map_err(fail)?;
     }
     Ok(spans)
+}
+
+/// The phone never syncs subtitles, and FireRedVAD's ONNX Runtime has no Android build.
+#[cfg(target_os = "android")]
+pub fn firered_spans(_samples: &[i16]) -> anyhow::Result<Vec<(f64, f64)>> {
+    anyhow::bail!("FireRedVAD isn't on the phone: subtitles are synced on the PC")
 }
 
 /// Spans of speech, in seconds.

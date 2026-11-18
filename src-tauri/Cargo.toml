@@ -19,7 +19,6 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
-tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1.0.104"
@@ -40,12 +39,19 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 # Subtitle sync: alass's aligner, and the WebRTC voice detector alass uses.
 alass-core = "2"
 webrtc-vad = "0.4"
-firered-vad = "0.1.0"
 # Splits Japanese into words for premining (IPADIC, built into the app).
 lindera = { version = "6", default-features = false, features = ["embed-ipadic"] }
 # Downloads (torrents.rs): Telly's own torrent client, and the runtime it runs on.
 librqbit = { version = "9.1.0", default-features = false, features = ["rust-tls"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }
+
+# FireRedVAD runs on ONNX Runtime, which has no Android build; the phone never syncs subtitles.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+firered-vad = "0.1.0"
+
+# A second Telly hands over to the first; Android keeps one by itself.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-single-instance = "2"
 
 # Whether a drive is a hard drive and how much room it has (drives.rs), and the job helper
 # programs end with (util.rs) and the box that says why Telly can't open (lib.rs): the version

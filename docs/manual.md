@@ -471,6 +471,8 @@ On the phone the player takes the whole screen, sideways. A tap shows the contro
 
 **Cards on the phone.** **Add card** on a word adds a note to AnkiDroid while the episode carries on: the note type, deck, tags and field names your PC's cards use, with the word, its reading and furigana, the dictionaries' definitions, the line with the word in bold, and the line's picture and audio. The first time, Android asks whether Telly may add to AnkiDroid. AnkiDroid needs your note type, so sync it with AnkiWeb first; it then syncs the cards to your PC's Anki. A Telly built without FFmpegKit adds the card without its picture and audio, and says so.
 
+**Explain and Previously on on the phone** are answered by gpt-oss on OpenRouter, with the OpenRouter key from your PC (Settings → Keys and accounts), as Claude Code runs only on the PC. They need a signal: without one, or without a key, they say so. Previously on still tells the story only from the subtitles of what you've watched, and the phone has every episode's.
+
 ## 💾 Backing up, and moving to another computer
 
 **Settings → Backup and your data → Back up…** saves one file (a .zip) with what Telly can't make again: your shows, where you are in each and what you watched, your settings, the subtitles with your choices and nudges, Tidepool's log, the words you know and your AniList list. It can be made while Telly is busy: each database is copied whole as it is at that moment. Telly's copies of episodes, covers, the seek bar's pictures, line search's index, recommendations and the character dictionary aren't in it, as Telly makes them again, and nor are your rips. A backup holds your Jimaku and OpenRouter keys and your AniList token, so keep it where only you can open it.

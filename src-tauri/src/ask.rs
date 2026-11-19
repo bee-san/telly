@@ -106,7 +106,8 @@ impl Asks {
                     });
                     or_instead(claude::ask(&question, on_text, &asking.stop), asking.stop.load(Ordering::SeqCst), instead)
                 }
-                Who::OpenRouter(key) => openrouter(key),
+                Who::OpenRouter(key) if key.is_empty() => Err(anyhow::anyhow!(NO_PHONE_KEY)),
+                Who::OpenRouter(key) => openrouter(key).map_err(on_phone_offline),
             };
             match result {
                 Ok(answer) => {
@@ -178,6 +179,10 @@ pub enum Who {
 /// Claude Code, unless it isn't installed and Settings has an OpenRouter key.
 pub fn who(backend: &Backend) -> Who {
     let key = Some(backend.db.setting_str("openrouter.key").trim().to_string()).filter(|key| !key.is_empty());
+    // On the phone gpt-oss on OpenRouter answers, with the PC's key (phone.rs brings it): Claude Code is the PC's.
+    if cfg!(target_os = "android") {
+        return Who::OpenRouter(key.unwrap_or_default());
+    }
     match (claude::find(), key) {
         (None, Some(key)) => Who::OpenRouter(key),
         (_, key) => Who::Claude(model(backend), key),
@@ -189,6 +194,18 @@ pub fn who(backend: &Backend) -> Who {
 /// OpenRouter's (with `openrouter` true) when Claude Code isn't installed.
 pub fn status(backend: &Backend) -> Value {
     match who(backend) {
+        Who::OpenRouter(key) if key.is_empty() => json!({
+            "available": false,
+            "version": openrouter::CHAT_MODEL,
+            "detail": NO_PHONE_KEY,
+            "openrouter": true,
+        }),
+        Who::OpenRouter(_) if cfg!(target_os = "android") => json!({
+            "available": true,
+            "version": openrouter::CHAT_MODEL,
+            "detail": "On the phone gpt-oss on OpenRouter answers, with your PC’s OpenRouter key. It needs a signal.",
+            "openrouter": true,
+        }),
         Who::OpenRouter(_) => json!({
             "available": true,
             "version": openrouter::CHAT_MODEL,
@@ -197,6 +214,18 @@ pub fn status(backend: &Backend) -> Value {
         }),
         Who::Claude(..) => json!(claude::status()),
     }
+}
+
+/// Why the phone can't answer without a key.
+const NO_PHONE_KEY: &str = "On the phone gpt-oss on OpenRouter answers, with the OpenRouter key from Telly on your PC. Add one there (Settings → Keys and accounts), then Sync on the phone’s Library.";
+
+/// On the phone, an OpenRouter that can't be reached is most likely no signal.
+fn on_phone_offline(e: anyhow::Error) -> anyhow::Error {
+    let text = format!("{e:#}");
+    if cfg!(target_os = "android") && text.starts_with("OpenRouter isn’t reachable") {
+        return anyhow::anyhow!("The phone has no signal, or OpenRouter is down: Explain and Previously on need one. ({text})");
+    }
+    e
 }
 
 /// Explain's effort: low answers in about a third of the time.
@@ -1117,7 +1146,8 @@ pub fn recaps_on(backend: &Backend) -> bool {
 /// before the next one; part-way through (`resume_at`), the recap up to there,
 /// or in its first 5 minutes the recap before it.
 pub fn prepare_recaps(backend: &Arc<Backend>, episode_id: i64, finished: bool, resume_at: Option<f64>) {
-    if !recaps_on(backend) || matches!(who(backend), Who::Claude(..)) && claude::find().is_none() {
+    let who = who(backend);
+    if !recaps_on(backend) || matches!(who, Who::Claude(..)) && claude::find().is_none() || matches!(&who, Who::OpenRouter(key) if key.is_empty()) {
         return;
     }
     if finished {

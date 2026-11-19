@@ -13,6 +13,8 @@ allprojects {
     repositories {
         google()
         mavenCentral()
+        // AnkiDroid's API for adding cards (TellyPlugin.kt) is published on JitPack.
+        maven("https://jitpack.io")
     }
 }
 

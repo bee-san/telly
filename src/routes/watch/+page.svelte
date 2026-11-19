@@ -1,4 +1,7 @@
 <script lang="ts">
+  import LookupPopup from "$lib/player/LookupPopup.svelte";
+  import { lookUp, type Found } from "$lib/lookup.svelte";
+  import { addPhoneCard } from "$lib/phone-cards";
   import { onPhone } from "$lib/phone";
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
@@ -68,6 +71,98 @@
   /** After a change of audio track: where to carry on from, and whether it was paused. */
   let reloadAt: { t: number; paused: boolean } | null = null;
   let videoError = $state("");
+
+  // ---- looking words up on the phone (lookup.svelte.ts) -------------------------------
+
+  /** The popup of what a tapped word means, and whether the video carries on when it closes. */
+  let look = $state<{ found: Found[]; error: string; resume: boolean; line: Line | null } | null>(null);
+  /** The word whose card is being added. */
+  let adding = $state("");
+
+  /** The text of a subtitle line as it's shown (its furigana and speaker left out), and where (x, y) falls in it. */
+  function textAt(el: HTMLElement, x: number, y: number): { text: string; offset: number; nodes: [Text, number][] } | null {
+    const nodes: [Text, number][] = [];
+    let text = "";
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+      acceptNode: (n) => (n.parentElement?.closest("rt, rp, .speaker") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+    });
+    for (let n = walker.nextNode() as Text | null; n; n = walker.nextNode() as Text | null) {
+      nodes.push([n, text.length]);
+      text += n.data;
+    }
+    const caret = document.caretRangeFromPoint?.(x, y);
+    const hit = caret && nodes.find(([n]) => n === caret.startContainer);
+    if (!hit || !caret) return null;
+    // The caret falls between characters: a tap on a character's right half is still that character.
+    let offset = hit[1] + caret.startOffset;
+    if (caret.startOffset > 0) {
+      const r = document.createRange();
+      r.setStart(hit[0], caret.startOffset - 1);
+      r.setEnd(hit[0], caret.startOffset);
+      const box = r.getBoundingClientRect();
+      if (x >= box.left && x <= box.right) offset -= 1;
+    }
+    return offset < text.length ? { text, offset, nodes } : null;
+  }
+
+  /** Marks `length` characters of the tapped line from `offset`, as the word looked up. */
+  function markWord(nodes: [Text, number][], offset: number, length: number) {
+    const highlights = (globalThis.CSS as any)?.highlights;
+    if (!highlights || !length) return;
+    const place = (at: number): [Text, number] | null => {
+      for (const [n, start] of nodes) if (at <= start + n.data.length) return [n, at - start];
+      return null;
+    };
+    const a = place(offset);
+    const b = place(offset + length);
+    if (!a || !b) return;
+    const range = document.createRange();
+    range.setStart(a[0], a[1]);
+    range.setEnd(b[0], b[1]);
+    highlights.set("telly-look", new (globalThis as any).Highlight(range));
+  }
+
+  async function tapWord(e: MouseEvent, line: Line) {
+    if (!onPhone) return;
+    e.stopPropagation();
+    const at = textAt(e.currentTarget as HTMLElement, e.clientX, e.clientY);
+    if (!at) return;
+    const resume = look ? look.resume : !!video && !video.paused;
+    video?.pause();
+    look = { found: [], error: "", resume, line };
+    try {
+      const found = await lookUp(at.text.slice(at.offset));
+      if (!look) return;
+      look = { ...look, found };
+      markWord(at.nodes, at.offset, found[0]?.matched.length ?? 1);
+    } catch (err) {
+      if (look) look = { ...look, error: errorText(err) };
+    }
+  }
+
+  function closeLook() {
+    (globalThis.CSS as any)?.highlights?.delete("telly-look");
+    if (look?.resume) video?.play().catch(() => {});
+    look = null;
+  }
+
+  /** Adds a card for the word, and carries on: the card is finished while the episode plays. */
+  async function addWordCard(f: Found) {
+    if (!view || !look?.line) return;
+    const [playing, line] = [view, look.line];
+    adding = f.term.expression;
+    closeLook();
+    toast({ key: "card", state: "working", title: `Adding ${f.term.expression}`, text: line.text });
+    try {
+      const { withClip } = await addPhoneCard(playing, line, f);
+      toast({ key: "card", state: "done", title: `Added ${f.term.expression} to AnkiDroid`, text: withClip ? line.text : `${line.text} (no picture or audio: this Telly was built without FFmpegKit)` });
+    } catch (err) {
+      toast({ key: "card", state: "failed", title: "The card wasn’t added", text: errorText(err) });
+    } finally {
+      adding = "";
+    }
+  }
+
   let settings = $state<Record<string, unknown>>({});
   // Filters (V): the picture drawn through them, one after another, on a canvas over the video. Kept for each show.
   let chain = $state.raw<string[]>([]);
@@ -1748,12 +1843,18 @@
     {/if}
   </div>
 
-  <div class="subs" class:off={!subsOn} style:--sub-size={subFont}>
+  {#if look}
+    <div class="look-scrim" role="presentation" onclick={closeLook}></div>
+    <LookupPopup found={look.found} error={look.error} {adding} onadd={addWordCard} />
+  {/if}
+  <div class="subs" class:off={!subsOn} class:looking={!!look} style:--sub-size={subFont}>
     {#each translated as line (line.start + line.text)}
       <p class="tr-line">{line.speaker ? `(${line.speaker}) ` : ""}{line.text}</p>
     {/each}
     {#each active as line (line.start + line.text)}
-      <p class="sub-line" class:blur lang="ja" onpointerenter={hoverText}>
+      <!-- On the phone a tap on a word looks it up; the desktop's Hachidori looks words up by hovering. -->
+      <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+      <p class="sub-line" class:blur lang="ja" onpointerenter={hoverText} onclick={(e) => tapWord(e, line)}>
         {#if line.speaker}<span class="speaker">{line.speaker}</span>{/if}{@html lineHtml(line)}
       </p>
     {/each}
@@ -2061,6 +2162,9 @@
 </div>
 
 <style>
+  .look-scrim { position: absolute; inset: 0; z-index: 29; }
+  .subs.looking { z-index: 31; }
+  :global(::highlight(telly-look)) { background-color: var(--mark); color: var(--mark-ink); }
   .player { position: absolute; inset: 0; background: var(--vid); color: var(--vid-ink); overflow: hidden; user-select: none; -webkit-user-select: none; }
   .player.idle .pic { cursor: none; }
   .pic { position: absolute; inset: 0; display: grid; place-items: center; cursor: pointer; }

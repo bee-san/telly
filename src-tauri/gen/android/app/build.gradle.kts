@@ -75,6 +75,10 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.10.1")
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.lifecycle:lifecycle-process:2.10.0")
+    // Adding cards to AnkiDroid (TellyPlugin.kt).
+    implementation("com.github.ankidroid:Anki-Android:api-v1.1.0")
+    // FFmpegKit cuts cards' clips when its .aar is in app/libs (docs/android.md says how it's built).
+    implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar", "*.jar"))))
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.4")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.0")

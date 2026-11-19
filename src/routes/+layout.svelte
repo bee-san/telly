@@ -16,8 +16,11 @@
   let { children }: { children: Snippet } = $props();
 
   onMount(() => {
-    // The phone has no background work to show, and no Hachidori.
-    if (onPhone) return;
+    // The phone has no background work to show, and no Hachidori: its lookups install your dictionaries instead.
+    if (onPhone) {
+      import("$lib/lookup.svelte").then((l) => l.installDictionaries()).catch(() => {});
+      return;
+    }
     const stop = watchActivity();
     // WebView2 has loaded Hachidori by the time the page is up: start its engine.
     hachidoriStart().catch(() => {});

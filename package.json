@@ -14,7 +14,9 @@
     "tauri": "tauri",
     "prepare:hachidori": "node scripts/prepare-hachidori.mjs",
     "devserver": "cargo run --manifest-path src-tauri/Cargo.toml --features devserver --bin telly-devserver --",
-    "release": "npm run prepare:hachidori && tauri build --config src-tauri/tauri.bundle.conf.json"
+    "release": "npm run prepare:hachidori && tauri build --config src-tauri/tauri.bundle.conf.json",
+    "prepare:hoshidicts": "node scripts/prepare-hoshidicts.mjs",
+    "android": "npm run prepare:hachidori && npm run prepare:hoshidicts && tauri android build"
   },
   "license": "GPL-3.0-or-later",
   "dependencies": {

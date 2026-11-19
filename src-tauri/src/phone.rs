@@ -44,7 +44,10 @@ const LINES: &str = "phone.lines";
 /// Setting (phone): each dictionary the phone has, by its revision on the PC.
 const DICTIONARIES: &str = "phone.dictionaries";
 /// The PC's settings the phone goes by: Explain and Previously on, and cards.
-const SHARED_SETTINGS: [&str; 7] = ["openrouter.key", "openrouter.model", "claude.language", "anki.noteType", "anki.deck", "clip.padding", "subs.size"];
+const SHARED_SETTINGS: [&str; 11] = [
+    "openrouter.key", "openrouter.model", "claude.language", "anki.noteType", "anki.deck", "clip.padding", "subs.size",
+    "anki.field.sentence", "anki.field.picture", "anki.field.audio", "anki.field.info",
+];
 /// What the phone says to find a PC, and the start of the PC's answer.
 const HELLO: &[u8] = b"telly-phone?";
 /// Room kept free on the phone beyond a copy's size.
@@ -908,6 +911,47 @@ pub fn phone_library(backend: &Backend) -> Result<Value> {
         out.push(json!({ "show": show, "episodes": episodes, "next": next }));
     }
     Ok(json!({ "shows": out, "state": state(backend) }))
+}
+
+/// What a card for `line` of an episode on the phone needs: ffmpeg's
+/// arguments for its picture and audio (run by FFmpegKit, in TellyPlugin.kt),
+/// where they go, and the note type, deck, tags and fields the PC's cards use.
+pub fn card_plan(backend: &Backend, episode_id: i64, start: f64, end: f64, text: &str) -> Result<Value> {
+    let episode = backend.db.episode(episode_id)?.ok_or_else(|| anyhow!("That episode isn’t on the phone any more"))?;
+    let show = backend.db.show(episode.show_id)?.ok_or_else(|| anyhow!("That show isn’t on the phone any more"))?;
+    if episode.play_path.is_empty() {
+        return Err(anyhow!("This episode isn’t on the phone"));
+    }
+    let lines = crate::cards::played_lines(backend, episode_id);
+    let line = crate::subs::Line { start, end, text: text.to_string(), ruby: vec![], speaker: String::new(), sign: false };
+    let (from, to) = crate::cards::clip_bounds(&lines, &line, &backend.db.setting_str("clip.padding"));
+    let from = from.max(0.0);
+    let length = (to - from).clamp(0.3, crate::clip::MAX_SECONDS);
+    let dir = backend.dirs.clips();
+    std::fs::create_dir_all(&dir)?;
+    let base = format!("telly_{episode_id}_{}", (from * 1000.0) as i64);
+    let (picture, audio) = (dir.join(format!("{base}.avif")), dir.join(format!("{base}.opus")));
+    let video = Path::new(&episode.play_path);
+    let field = |key: &str, default: &str| match backend.db.setting_str(key).trim() {
+        "" => default.to_string(),
+        name => name.to_string(),
+    };
+    Ok(json!({
+        "picture": picture,
+        "audio": audio,
+        "pictureArgs": crate::clip::picture_args(video, from, length, &picture),
+        "audioArgs": crate::clip::audio_args(video, 0, from, length, &audio),
+        "model": own_hachidori::model(backend),
+        "deck": own_hachidori::deck_for(backend, &show.title),
+        "tags": own_hachidori::tags_for(&show.title),
+        "fields": {
+            "sentence": field("anki.field.sentence", "Sentence"),
+            "picture": field("anki.field.picture", "Picture"),
+            "audio": field("anki.field.audio", "SentenceAudio"),
+            "info": field("anki.field.info", "MiscInfo"),
+        },
+        "info": format!("{} · E{:02} · {}", show.title, episode.number, crate::util::clock(from + 0.25)),
+    }))
 }
 
 /// Gives the PC what changed on the phone since last time, and takes in

@@ -467,6 +467,10 @@ Each time the Library opens, and with **Sync now**, the phone gives the PC where
 
 On the phone the player takes the whole screen, sideways. A tap shows the controls or hides them; two quick taps to the left or right go back or on 10 seconds.
 
+**Looking words up on the phone.** Tap a word in a line: the episode pauses, the word is marked, and what your dictionaries say about each word starting there shows above, the longest first. Tap anywhere else and it carries on. The phone has the dictionaries in your PC's dictionaries folder (Settings → Lookups and names), installed once each the first time the phone has them, which takes a while for a big one; it uses Hoshidicts, the engine inside Hachidori.
+
+**Cards on the phone.** **Add card** on a word adds a note to AnkiDroid while the episode carries on: the note type, deck, tags and field names your PC's cards use, with the word, its reading and furigana, the dictionaries' definitions, the line with the word in bold, and the line's picture and audio. The first time, Android asks whether Telly may add to AnkiDroid. AnkiDroid needs your note type, so sync it with AnkiWeb first; it then syncs the cards to your PC's Anki. A Telly built without FFmpegKit adds the card without its picture and audio, and says so.
+
 ## 💾 Backing up, and moving to another computer
 
 **Settings → Backup and your data → Back up…** saves one file (a .zip) with what Telly can't make again: your shows, where you are in each and what you watched, your settings, the subtitles with your choices and nudges, Tidepool's log, the words you know and your AniList list. It can be made while Telly is busy: each database is copied whole as it is at that moment. Telly's copies of episodes, covers, the seek bar's pictures, line search's index, recommendations and the character dictionary aren't in it, as Telly makes them again, and nor are your rips. A backup holds your Jimaku and OpenRouter keys and your AniList token, so keep it where only you can open it.

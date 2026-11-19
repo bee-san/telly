@@ -20,3 +20,6 @@ vite.config.ts.timestamp-*
 
 # Throwaway data folders for the dev server and tests
 /dev-data*/
+
+# Hoshidicts copied by scripts/prepare-hoshidicts.mjs
+/static/hoshi/

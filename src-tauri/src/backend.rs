@@ -1700,6 +1700,7 @@ impl Backend {
             "phoneRemove" => crate::phone::remove(self, &arg::<Vec<i64>>(&args, "ids")?),
             "phoneSync" => crate::phone::sync(self),
             "phoneLibrary" => crate::phone::phone_library(self),
+            "phoneCardPlan" => crate::phone::card_plan(self, arg(&args, "episodeId")?, arg(&args, "start")?, arg(&args, "end")?, &arg::<String>(&args, "text")?),
             "phoneDictionaries" => Ok(crate::phone::dictionaries(self)),
             "pauseDownload" => {
                 torrents::pause(self, arg(&args, "id")?, arg(&args, "paused")?)?;

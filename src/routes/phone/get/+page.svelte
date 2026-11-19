@@ -177,7 +177,7 @@
           </li>
         {/each}
       </ul>
-      <div class="bar">
+      <div class="getbar">
         <span>{picked.size ? `${picked.size} picked · about ${bytes(pickedSize)}` : "Tick the episodes to copy"}</span>
         <button type="button" class="btn primary" disabled={!picked.size || getting} onclick={get}>Get</button>
       </div>
@@ -212,5 +212,5 @@
   .episodes label { display: flex; align-items: center; gap: 12px; padding: 10px 4px; border-bottom: 1px solid var(--rule); }
   .episodes input { width: 22px; height: 22px; }
   .ep { display: flex; flex-direction: column; gap: 2px; }
-  .bar { position: fixed; left: 0; right: 0; bottom: 0; display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); background: var(--surface); border-top: 1px solid var(--rule); }
+  .getbar { position: fixed; left: 0; right: 0; bottom: 0; display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); background: var(--surface); border-top: 1px solid var(--rule); }
 </style>

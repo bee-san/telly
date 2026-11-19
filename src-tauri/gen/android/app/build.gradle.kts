@@ -57,6 +57,10 @@ android {
     buildFeatures {
         buildConfig = true
     }
+    lint {
+        // AnkiDroid's API library brings AnkiDroid's own lint rules, written for its code, not Telly's.
+        disable += setOf("DuplicateCrowdInStrings", "DirectDateInstantiation")
+    }
 }
 
 kotlin {

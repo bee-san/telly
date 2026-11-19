@@ -60,6 +60,10 @@ Telly builds a dictionary of the characters in what you're watching, with their 
 
 ![ハク looked up in a subtitle line: his name card from Telly characters, with his portrait](docs/names.webp)
 
+## 📱 Take it with you
+
+Telly for Android copies the episodes you pick from your PC over your Wi-Fi and plays them anywhere. Tap a word to look it up, add it to AnkiDroid, and your PC knows where you got to when you're home. See [Telly on your phone](docs/manual.md#-telly-on-your-phone).
+
 ## 💡 Find what to watch next
 
 Recommendations from AniList's users, weighed across your whole library and your AniList list.

@@ -48,6 +48,12 @@ Your library shows how much of each show's vocabulary you already know, so you c
 
 ![The Library: what you're watching, then every show with the share of its words you know](docs/library.webp)
 
+## 🗂️ Every season in one place
+
+Each anime is listed once, its seasons and movies inside, in the order they came out, with how far you are through each.
+
+![K-ON!'s page: its two seasons and its movie, with how much of each you've watched and the next episode](docs/seasons.webp)
+
 ## 📛 Know who's who
 
 Telly builds a dictionary of the characters in what you're watching, with their portraits, and colours their names in the subtitles.
@@ -70,12 +76,15 @@ Time watched, cards mined and words known, over a week, a month, a year or all t
 
 - 🎯 **Subtitles that fit:** found on Jimaku and synced to your rip, even files timed to a TV broadcast, ad breaks and all
 - 🃏 **Cards that move:** every card you mine gets an animated picture of the line, and its audio
+- 💬 **English when you need it:** hold **Tab** for the rip's own English line
+- 🔊 **Boost dialogue:** quiet speech comes up and loud music comes down, so you catch every word
+- 🎬 **Dramas and films too:** Japanese live action is found on TMDB, with its poster and subtitles
 - 📝 **Premining:** learn the next episode's new words before you watch it
 - 🗣️ **Every line a word is said in,** across your whole library, ready to play
 - 🪟 **A small player** that stays on top of a game, lookups and all
 - ⏭️ **Skip opening and outro,** from the rip's chapters or AniSkip
 - 🤖 **No subtitles anywhere?** Telly makes them with Whisper
-- ⬇️ **Download from nyaa.si,** straight from Recommended, with Telly's own torrent client: it picks up where it was when the connection drops, and each episode joins your library as it finishes
+- ⬇️ **Downloads built in:** find releases of a show on nyaa and download them with Telly's own torrent client, which picks up where it was when the connection drops. Each episode joins your library as it finishes. Download only what you have the right to.
 - 📈 **AniList and Tidepool** log what you watch for you
 
 ## 🆚 Why Telly?

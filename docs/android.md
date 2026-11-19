@@ -1,6 +1,6 @@
 # Building Telly for Android
 
-Telly for Android ([bee-san/telly#24](https://github.com/bee-san/telly/issues/24)) is the same app built for Android: the PC gets shows ready, and the phone plays copies of them offline, looks words up and adds cards to AnkiDroid ([the manual](manual.md#-telly-on-your-phone) says what it does). This repository is Telly with the Android app added; `upstream` is Telly itself, merged in to keep up.
+Telly for Android ([bee-san/telly#24](https://github.com/bee-san/telly/issues/24)) is the same app built for Android: the PC gets shows ready, and the phone plays copies of them offline, looks words up and adds cards to AnkiDroid ([the manual](manual.md#-telly-on-your-phone) says what it does). Its Android project is `src-tauri/gen/android`.
 
 ## What you need
 

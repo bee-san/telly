@@ -18,8 +18,8 @@
 //!   GET /download/2088335.torrent
 //!
 //! `c` is the category (1_0 all anime, 1_2 English-translated, 1_4 raw) and
-//! f=2 keeps to trusted uploaders. Setting nyaa.site is another address for
-//! nyaa, for where nyaa.si itself is blocked; TELLY_NYAA is a stand-in for tests.
+//! f=2 keeps to trusted uploaders. Setting nyaa.site is another site running
+//! nyaa's software to search instead; TELLY_NYAA is a stand-in for tests.
 
 use anyhow::{anyhow, Result};
 use regex::Regex;
@@ -433,9 +433,9 @@ fn parse(html: &str, site: &str) -> Result<Found> {
     static DATE: OnceLock<Regex> = OnceLock::new();
     static NUMBER: OnceLock<Regex> = OnceLock::new();
     let re = |cell: &'static OnceLock<Regex>, pattern: &str| cell.get_or_init(|| Regex::new(pattern).expect("a valid pattern"));
-    // An internet provider's page saying nyaa is blocked has no table of torrents.
+    // A page that isn't nyaa's search has no table of torrents.
     if !html.contains("torrent-list") {
-        return Err(anyhow!("That isn’t nyaa’s search page. If your internet provider blocks nyaa.si, give another address for it in Settings → Library and downloads."));
+        return Err(anyhow!("That isn’t a nyaa search page. Check the search site in Settings → Library and downloads."));
     }
     let row = re(&ROW, r#"(?s)<tr class="(default|success|danger)">(.*?)</tr>"#);
     let view = re(&VIEW, r#"<a href="/view/(\d+)" title="([^"]*)""#);

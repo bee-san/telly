@@ -1696,7 +1696,7 @@ impl Backend {
             "phonePair" => crate::phone::pair_with(self, &arg::<String>(&args, "address")?, &arg::<String>(&args, "code")?),
             "phoneUnpair" => crate::phone::unpair(self),
             "phonePcLibrary" => crate::phone::pc_library(self),
-            "phoneGet" => crate::phone::get(self, &arg::<Vec<i64>>(&args, "ids")?),
+            "phoneGet" => crate::phone::get(self, &arg::<Vec<i64>>(&args, "ids")?, arg(&args, "plays")?),
             "phoneRemove" => crate::phone::remove(self, &arg::<Vec<i64>>(&args, "ids")?),
             "phoneSync" => crate::phone::sync(self),
             "phoneLibrary" => crate::phone::phone_library(self),

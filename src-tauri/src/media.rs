@@ -342,7 +342,7 @@ pub fn video_filter(v: &VideoInfo, encoder: &str) -> String {
     filters.join(",")
 }
 
-fn encoder_args(encoder: &str) -> Vec<String> {
+pub fn encoder_args(encoder: &str) -> Vec<String> {
     let args: &[&str] = match encoder {
         "h264_nvenc" => &["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "23", "-b:v", "0", "-profile:v", "high"],
         "h264_amf" => &["-c:v", "h264_amf", "-usage", "transcoding", "-quality", "quality", "-rc", "cqp", "-qp_i", "22", "-qp_p", "24", "-qp_b", "26", "-profile:v", "high"],

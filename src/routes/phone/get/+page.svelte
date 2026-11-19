@@ -3,7 +3,7 @@
   import { onMount } from "svelte";
   import { call, errorText, mediaUrl } from "$lib/api";
   import { bytes } from "$lib/format";
-  import type { PcEpisode, PcLibrary, PhoneState } from "$lib/phone";
+  import { phonePlays, type PcEpisode, type PcLibrary, type PhoneState } from "$lib/phone";
   import { app } from "$lib/state.svelte";
   import { toast } from "$lib/toast-store.svelte";
 
@@ -93,7 +93,7 @@
   async function get() {
     getting = true;
     try {
-      await call("phoneGet", { ids: [...picked] });
+      await call("phoneGet", { ids: [...picked], plays: await phonePlays() });
       toast({ key: "get", state: "working", title: `Getting ${picked.size === 1 ? "1 episode" : `${picked.size} episodes`}`, text: "Your Library shows how it’s going." }, 4000);
       picked = new Set();
       goto("/phone");

@@ -58,11 +58,13 @@ const SPARE: u64 = 300 * 1024 * 1024;
 pub struct Phone {
     /// PC: the copies for the phone being made, and how each is going.
     making: Mutex<HashMap<i64, Making>>,
-    waiting: Mutex<VecDeque<i64>>,
+    waiting: Mutex<VecDeque<(i64, Plays)>>,
     wake: Condvar,
     sharing: AtomicBool,
     /// Phone: the episodes being got from the PC, and how each is going.
     getting: Mutex<Vec<Getting>>,
+    /// Phone: what its WebView said it plays, for the PC to go by.
+    plays: Mutex<Plays>,
     get_wake: Condvar,
 }
 
@@ -71,6 +73,72 @@ struct Making {
     state: &'static str,
     progress: f64,
     error: String,
+    /// The file the phone copies: the episode's own (as it is) or one made for the phone.
+    file: Option<PathBuf>,
+    /// How it was made for the phone (`PhonePlan::name`).
+    plan: &'static str,
+}
+
+/// What a phone's WebView plays: kinds of video ("h264", "hevc-10") and audio codecs ("aac"), as ffprobe names them.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct Plays {
+    pub video: Vec<String>,
+    pub audio: Vec<String>,
+}
+
+impl Default for Plays {
+    /// What any phone plays, for one that didn't say.
+    fn default() -> Self {
+        Plays { video: vec!["h264".into()], audio: ["aac", "mp3", "opus", "flac"].map(String::from).to_vec() }
+    }
+}
+
+/// How an episode gets to the phone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PhonePlan {
+    /// The phone plays the file the PC plays, and it has only the Japanese audio: it's sent as it is.
+    AsIs,
+    /// The phone plays it, but the file has other audio tracks (a dub) or a container it doesn't: copied into MKV with the Japanese audio alone, in seconds.
+    Remux,
+    /// The phone plays the picture but not the audio (AC-3, DTS): the picture copied, the Japanese audio converted to AAC.
+    Audio,
+    /// The phone doesn't play the picture: converted to H.264 on the PC's encoder.
+    Video,
+}
+
+impl PhonePlan {
+    fn name(self) -> &'static str {
+        match self {
+            PhonePlan::AsIs => "as it is",
+            PhonePlan::Remux => "remux",
+            PhonePlan::Audio => "audio",
+            PhonePlan::Video => "video",
+        }
+    }
+}
+
+/// A video's kind as a phone says it plays it: its codec, and "-10" when it's more than 8-bit.
+fn video_kind(v: &media::VideoInfo) -> String {
+    let deep = ["10", "12", "p010", "p016"].iter().any(|d| v.pix_fmt.contains(d));
+    if deep { format!("{}-10", v.codec) } else { v.codec.clone() }
+}
+
+/// How the episode in `probe` (its Japanese track `audio`) gets to a phone that plays `plays`.
+fn phone_plan(probe: &media::Probe, path: &Path, audio: usize, plays: &Plays) -> PhonePlan {
+    let picture = probe.video.as_ref().is_some_and(|v| plays.video.contains(&video_kind(v)));
+    if !picture {
+        return PhonePlan::Video;
+    }
+    let sound = probe.audio.get(audio).is_none_or(|a| plays.audio.contains(&a.codec));
+    if !sound {
+        return PhonePlan::Audio;
+    }
+    let extension = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
+    if probe.audio.len() <= 1 && matches!(extension.as_str(), "mkv" | "mp4" | "m4v" | "webm") {
+        PhonePlan::AsIs
+    } else {
+        PhonePlan::Remux
+    }
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -104,9 +172,24 @@ fn computer_name() -> String {
 
 // ---- the PC ---------------------------------------------------------------
 
-/// The PC's copy of an episode for the phone.
+/// Where the PC keeps the copies it makes for the phone.
+fn phone_dir(backend: &Backend) -> PathBuf {
+    backend.media_dir().join("phone")
+}
+
+/// The PC's copy of an episode made for the phone.
 fn phone_copy(backend: &Backend, id: i64) -> PathBuf {
-    backend.media_dir().join("phone").join(format!("{id}.mp4"))
+    phone_dir(backend).join(format!("{id}.mkv"))
+}
+
+/// The file the phone copies for an episode: as made or picked for it, else a copy left from before.
+fn phone_file(backend: &Backend, id: i64) -> Option<PathBuf> {
+    let made = lock(&backend.phone.making).get(&id).cloned().unwrap_or_default();
+    if made.state == "ready" {
+        return made.file;
+    }
+    let left = phone_copy(backend, id);
+    (made.state.is_empty() && left.is_file()).then_some(left)
 }
 
 /// Settings → Your phone: whether it's on, the code to pair with, and the
@@ -258,7 +341,10 @@ fn answer(backend: &Backend, mut request: tiny_http::Request) {
         ["library"] => library(backend),
         ["make"] => make(backend, &body),
         ["got", id] => id.parse().map_err(|_| anyhow!("bad episode")).map(|id| {
-            let _ = std::fs::remove_file(phone_copy(backend, id));
+            // Only a copy made for the phone goes: an episode sent as it is is your rip (or Telly's copy of it).
+            if let Some(file) = phone_file(backend, id).filter(|f| f.starts_with(phone_dir(backend))) {
+                let _ = std::fs::remove_file(file);
+            }
             lock(&backend.phone.making).remove(&id);
             json!({})
         }),
@@ -266,8 +352,11 @@ fn answer(backend: &Backend, mut request: tiny_http::Request) {
         ["lines", id] => id.parse().map_err(|_| anyhow!("bad episode")).map(|id| json!(jobs::read_lines(backend, id))),
         ["episode", id] => id.parse().map_err(|_| anyhow!("bad episode")).and_then(|id| episode_extra(backend, id)),
         ["video", id] => {
-            let file = id.parse().map(|id| phone_copy(backend, id)).map_err(|_| anyhow!("bad episode"));
-            let _ = match file.and_then(|f| send_file(&f, range.as_deref(), "video/mp4")) {
+            let file = id.parse().map_err(|_| anyhow!("bad episode")).and_then(|id| phone_file(backend, id).ok_or_else(|| anyhow!("That episode isn’t ready for the phone")));
+            let _ = match file.and_then(|f| {
+                let mime = if f.extension().is_some_and(|e| e.eq_ignore_ascii_case("mp4") || e.eq_ignore_ascii_case("m4v")) { "video/mp4" } else { "video/x-matroska" };
+                send_file(&f, range.as_deref(), mime)
+            }) {
                 Ok(response) => request.respond(response),
                 Err(e) => request.respond(json_response(404, &json!({ "error": format!("{e:#}") })).boxed()),
             };
@@ -355,21 +444,20 @@ fn library(backend: &Backend) -> Result<Value> {
             .episodes(show.id)?
             .into_iter()
             .map(|e| {
-                let copy = phone_copy(backend, e.id);
                 let made = making.get(&e.id).cloned().unwrap_or_default();
-                let (state, size) = if copy.is_file() && made.state != "working" {
-                    ("ready", std::fs::metadata(&copy).map(|m| m.len()).unwrap_or(0))
-                } else if made.state.is_empty() {
-                    ("none", 0)
-                } else {
-                    (made.state, 0)
+                let file = phone_file(backend, e.id);
+                let (state, size) = match &file {
+                    Some(f) => ("ready", std::fs::metadata(f).map(|m| m.len()).unwrap_or(0)),
+                    None if made.state.is_empty() || made.state == "ready" => ("none", 0),
+                    None => (made.state, 0),
                 };
+                let ext = file.as_ref().and_then(|f| f.extension()).map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
                 json!({
                     "episode": e,
                     "reached": reached.get(&e.id).copied().unwrap_or(0.0),
                     "ready": e.media_state == "ready",
                     "lines": lines_stamp(backend, e.id),
-                    "phone": { "state": state, "progress": made.progress, "error": made.error, "size": size },
+                    "phone": { "state": state, "progress": made.progress, "error": made.error, "size": size, "ext": ext, "plan": made.plan },
                     "rip": e.size,
                 })
             })
@@ -397,11 +485,12 @@ fn episode_extra(backend: &Backend, id: i64) -> Result<Value> {
 /// Queues the phone's copies of the episodes asked for.
 fn make(backend: &Backend, body: &Value) -> Result<Value> {
     let ids: Vec<i64> = body["ids"].as_array().into_iter().flatten().filter_map(Value::as_i64).collect();
+    let plays: Plays = serde_json::from_value(body["plays"].clone()).unwrap_or_default();
     let mut making = lock(&backend.phone.making);
     let mut waiting = lock(&backend.phone.waiting);
     for id in ids {
         let episode = backend.db.episode(id)?.ok_or_else(|| anyhow!("That episode isn’t in Telly on the PC any more"))?;
-        if phone_copy(backend, id).is_file() || matches!(making.get(&id).map(|m| m.state), Some("waiting" | "working")) {
+        if matches!(making.get(&id).map(|m| m.state), Some("waiting" | "working" | "ready")) || (!making.contains_key(&id) && phone_copy(backend, id).is_file()) {
             continue;
         }
         if episode.media_state != "ready" {
@@ -410,7 +499,7 @@ fn make(backend: &Backend, body: &Value) -> Result<Value> {
             backend.jobs.poke();
         }
         making.insert(id, Making { state: "waiting", ..Default::default() });
-        waiting.push_back(id);
+        waiting.push_back((id, plays.clone()));
     }
     backend.phone.wake.notify_all();
     Ok(json!({}))
@@ -418,63 +507,70 @@ fn make(backend: &Backend, body: &Value) -> Result<Value> {
 
 fn copy_worker(backend: &Backend) {
     loop {
-        let id = {
+        let (id, plays) = {
             let mut waiting = lock(&backend.phone.waiting);
             loop {
                 // An episode not ready yet waits its turn behind those that are.
-                let ready = waiting.iter().position(|id| backend.db.episode(*id).ok().flatten().is_some_and(|e| e.media_state == "ready"));
+                let ready = waiting.iter().position(|(id, _)| backend.db.episode(*id).ok().flatten().is_some_and(|e| e.media_state == "ready"));
                 if let Some(i) = ready {
                     break waiting.remove(i).expect("there");
                 }
                 waiting = backend.phone.wake.wait_timeout(waiting, Duration::from_secs(5)).unwrap_or_else(|e| e.into_inner()).0;
             }
         };
-        let set = |state: &'static str, progress: f64, error: String| {
-            lock(&backend.phone.making).insert(id, Making { state, progress, error });
+        let set = |state: &'static str, progress: f64, error: String, file: Option<PathBuf>, plan: &'static str| {
+            lock(&backend.phone.making).insert(id, Making { state, progress, error, file, plan });
         };
-        set("working", 0.0, String::new());
-        match make_copy(backend, id, &|p| set("working", p, String::new())) {
-            Ok(()) => set("ready", 1.0, String::new()),
-            Err(e) => set("failed", 0.0, format!("{e:#}")),
+        set("working", 0.0, String::new(), None, "");
+        match make_copy(backend, id, &plays, &|p| set("working", p, String::new(), None, "")) {
+            Ok((file, plan)) => set("ready", 1.0, String::new(), Some(file), plan.name()),
+            Err(e) => set("failed", 0.0, format!("{e:#}"), None, ""),
         }
     }
 }
 
-/// Makes the MP4 the phone plays: the picture as it is when it's H.264 in
-/// 8-bit 4:2:0 (else converted to that), and the Japanese audio as it is when
-/// a phone plays it (else AAC).
-fn make_copy(backend: &Backend, id: i64, progress: &dyn Fn(f64)) -> Result<()> {
+/// Gets an episode ready for a phone that plays `plays`, and says which
+/// file it copies and how it was got ready (`phone_plan`): the file the PC
+/// plays itself when the phone plays it too, else a copy with the Japanese
+/// audio alone, made in seconds, its audio converted to AAC when the phone
+/// doesn't play that, and its picture converted only when it can't play that.
+fn make_copy(backend: &Backend, id: i64, plays: &Plays, progress: &dyn Fn(f64)) -> Result<(PathBuf, PhonePlan)> {
     let episode = backend.db.episode(id)?.ok_or_else(|| anyhow!("That episode isn’t in Telly any more"))?;
     let tools = backend.tools();
-    let ffmpeg = tools.ffmpeg.ok_or_else(|| anyhow!("Telly on the PC needs ffmpeg for this"))?;
-    let ffprobe = tools.ffprobe.ok_or_else(|| anyhow!("Telly on the PC needs ffprobe for this"))?;
+    let ffprobe = tools.ffprobe.clone().ok_or_else(|| anyhow!("Telly on the PC needs ffprobe for this"))?;
     let input = PathBuf::from(if episode.play_path.is_empty() { &episode.path } else { &episode.play_path });
     let probe = media::probe(&ffprobe, &input)?;
-    let video = probe.video.clone().unwrap_or_default();
     let audio = (episode.audio_index.max(0) as usize).min(probe.audio.len().saturating_sub(1));
+    let plan = phone_plan(&probe, &input, audio, plays);
+    if plan == PhonePlan::AsIs {
+        return Ok((input, plan));
+    }
+    let ffmpeg = tools.ffmpeg.clone().ok_or_else(|| anyhow!("Telly on the PC needs ffmpeg for this"))?;
     let out = phone_copy(backend, id);
-    std::fs::create_dir_all(out.parent().expect("a folder"))?;
-    let part = out.with_extension("part.mp4");
+    std::fs::create_dir_all(phone_dir(backend))?;
+    let part = out.with_extension("part.mkv");
     let mut args: Vec<String> = ["-nostdin", "-hide_banner", "-y", "-v", "error", "-progress", "pipe:1", "-nostats", "-i"].iter().map(|a| a.to_string()).collect();
     args.push(input.to_string_lossy().into_owned());
     args.extend(["-map".into(), "0:v:0".into()]);
     if !probe.audio.is_empty() {
         args.extend(["-map".into(), format!("0:a:{audio}")]);
     }
-    args.extend(["-map_metadata".into(), "-1".into(), "-map_chapters".into(), "-1".into(), "-sn".into(), "-dn".into()]);
-    if video.codec == "h264" && video.pix_fmt == "yuv420p" {
-        args.extend(["-c:v".into(), "copy".into()]);
+    args.extend(["-map_metadata".into(), "-1".into(), "-sn".into(), "-dn".into()]);
+    if plan == PhonePlan::Video {
+        let video = probe.video.clone().unwrap_or_default();
+        args.extend(["-vf".into(), media::video_filter(&video, &tools.encoder)]);
+        args.extend(media::encoder_args(&tools.encoder));
     } else {
-        args.extend(["-vf".into(), media::video_filter(&video, "libx264")]);
-        args.extend(["-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-tune", "animation", "-profile:v", "high"].map(String::from));
+        args.extend(["-c:v".into(), "copy".into()]);
     }
-    let plays = probe.audio.get(audio).is_some_and(|a| matches!(a.codec.as_str(), "aac" | "mp3" | "opus" | "flac"));
-    args.extend(if plays { ["-c:a", "copy"].map(String::from).to_vec() } else { ["-c:a", "aac", "-b:a", "160k", "-ac", "2"].map(String::from).to_vec() });
-    args.extend(["-movflags", "+faststart", "-f", "mp4"].map(String::from));
+    let sound = probe.audio.get(audio).is_none_or(|a| plays.audio.contains(&a.codec));
+    args.extend(if sound { ["-c:a", "copy"].map(String::from).to_vec() } else { ["-c:a", "aac", "-b:a", "192k", "-ac", "2"].map(String::from).to_vec() });
+    args.extend(["-f", "matroska"].map(String::from));
     args.push(part.to_string_lossy().into_owned());
-    media::run_ffmpeg(&ffmpeg, &args, episode.duration, &AtomicBool::new(false), progress)?;
+    let duration = if plan == PhonePlan::Video { episode.duration } else { 0.0 };
+    media::run_ffmpeg(&ffmpeg, &args, duration, &AtomicBool::new(false), progress)?;
     std::fs::rename(&part, &out)?;
-    Ok(())
+    Ok((out, plan))
 }
 
 // ---- the phone ------------------------------------------------------------
@@ -757,7 +853,11 @@ fn get_file(backend: &Backend, path: &str, to: &Path, progress: &dyn Fn(u64)) ->
 
 /// Starts getting episodes from the PC: the PC makes each one's copy, and the
 /// phone copies it over, one at a time.
-pub fn get(backend: &Arc<Backend>, ids: &[i64]) -> Result<Value> {
+pub fn get(backend: &Arc<Backend>, ids: &[i64], plays: Option<Plays>) -> Result<Value> {
+    if let Some(plays) = plays {
+        *lock(&backend.phone.plays) = plays;
+    }
+    let plays = lock(&backend.phone.plays).clone();
     let library = ask(backend, "library", None)?;
     let mut shows = Vec::new();
     let mut sizes = HashMap::new();
@@ -771,7 +871,7 @@ pub fn get(backend: &Arc<Backend>, ids: &[i64]) -> Result<Value> {
         }
     }
     take_library(backend, &library, &shows)?;
-    ask(backend, "make", Some(&json!({ "ids": ids })))?;
+    ask(backend, "make", Some(&json!({ "ids": ids, "plays": plays })))?;
     let mut getting = lock(&backend.phone.getting);
     for &id in ids {
         getting.retain(|g| g.id != id || g.state != "failed");
@@ -849,7 +949,7 @@ pub fn start_getting(backend: Arc<Backend>) {
 
 /// Waits for the PC to make the episode's copy, then copies it over.
 fn get_one(backend: &Backend, g: &Getting, set: &dyn Fn(&'static str, f64)) -> Result<()> {
-    let size = loop {
+    let (size, ext) = loop {
         let library = ask(backend, "library", None)?;
         let e = library["shows"]
             .as_array()
@@ -860,19 +960,20 @@ fn get_one(backend: &Backend, g: &Getting, set: &dyn Fn(&'static str, f64)) -> R
             .cloned()
             .ok_or_else(|| anyhow!("That episode isn’t in Telly on the PC any more"))?;
         match e["phone"]["state"].as_str() {
-            Some("ready") => break e["phone"]["size"].as_u64().unwrap_or(0),
+            Some("ready") => break (e["phone"]["size"].as_u64().unwrap_or(0), e["phone"]["ext"].as_str().filter(|x| !x.is_empty()).unwrap_or("mkv").to_string()),
             Some("failed") => return Err(anyhow!("The PC couldn’t make the phone’s copy: {}", e["phone"]["error"].as_str().unwrap_or(""))),
             Some("working") => set("making", e["phone"]["progress"].as_f64().unwrap_or(0.0)),
             Some("none") => {
-                ask(backend, "make", Some(&json!({ "ids": [g.id] })))?;
+                let plays = lock(&backend.phone.plays).clone();
+                ask(backend, "make", Some(&json!({ "ids": [g.id], "plays": plays })))?;
                 set("making", 0.0);
             }
             _ => set("making", 0.0),
         }
         std::thread::sleep(Duration::from_secs(2));
     };
-    let path = copies(backend).join(format!("{}.mp4", g.id));
-    let part = path.with_extension("mp4.part");
+    let path = copies(backend).join(format!("{}.{ext}", g.id));
+    let part = path.with_extension(format!("{ext}.part"));
     let have = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
     make_room(backend, size.saturating_sub(have))?;
     set("copying", have as f64 / size.max(1) as f64);
@@ -977,6 +1078,38 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("telly-phone-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         (Backend::open(Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap(), dir)
+    }
+
+    fn probe(codec: &str, pix_fmt: &str, audio: &[&str]) -> media::Probe {
+        media::Probe {
+            video: Some(media::VideoInfo { codec: codec.into(), pix_fmt: pix_fmt.into(), ..Default::default() }),
+            audio: audio.iter().map(|c| media::AudioInfo { codec: c.to_string(), ..Default::default() }).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn an_episode_goes_to_the_phone_as_it_is_when_the_phone_plays_it() {
+        // What the Thor's WebView said it plays.
+        let thor = Plays {
+            video: ["h264", "h264-10", "hevc", "hevc-10", "av1", "av1-10", "vp9", "vp9-10"].map(String::from).to_vec(),
+            audio: ["aac", "mp3", "opus", "flac", "vorbis"].map(String::from).to_vec(),
+        };
+        let mkv = Path::new("/rips/Show - 01.mkv");
+        assert_eq!(phone_plan(&probe("hevc", "yuv420p10le", &["flac"]), mkv, 0, &thor), PhonePlan::AsIs);
+        assert_eq!(phone_plan(&probe("av1", "yuv420p10le", &["opus"]), mkv, 0, &thor), PhonePlan::AsIs);
+        // A dub beside the Japanese: the Japanese alone, copied in seconds.
+        assert_eq!(phone_plan(&probe("hevc", "yuv420p10le", &["aac", "aac"]), mkv, 1, &thor), PhonePlan::Remux);
+        // An AVI the phone's WebView doesn't open.
+        assert_eq!(phone_plan(&probe("h264", "yuv420p", &["aac"]), Path::new("/rips/old.avi"), 0, &thor), PhonePlan::Remux);
+        // Dolby and DTS play silently on Android: only the audio is converted.
+        assert_eq!(phone_plan(&probe("h264", "yuv420p", &["ac3"]), mkv, 0, &thor), PhonePlan::Audio);
+        assert_eq!(phone_plan(&probe("hevc", "yuv420p10le", &["eac3"]), mkv, 0, &thor), PhonePlan::Audio);
+        // A picture the phone can't play is converted, whatever its audio.
+        assert_eq!(phone_plan(&probe("mpeg2video", "yuv420p", &["ac3"]), mkv, 0, &thor), PhonePlan::Video);
+        // A phone that said nothing plays H.264 alone.
+        assert_eq!(phone_plan(&probe("hevc", "yuv420p10le", &["aac"]), mkv, 0, &Plays::default()), PhonePlan::Video);
+        assert_eq!(phone_plan(&probe("h264", "yuv420p", &["aac"]), mkv, 0, &Plays::default()), PhonePlan::AsIs);
     }
 
     #[test]

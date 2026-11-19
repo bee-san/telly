@@ -75,3 +75,53 @@ export function gettingText(g: { state: Getting["state"]; progress: number; erro
       return g.error || "Couldn’t be got";
   }
 }
+
+/** Video kinds as the PC names them (phone.rs video_kind), each with a codec string to ask the WebView about. */
+const VIDEO: Record<string, string> = {
+  h264: "avc1.640028",
+  "h264-10": "avc1.6e0028",
+  hevc: "hvc1.1.6.L120.90",
+  "hevc-10": "hvc1.2.4.L120.90",
+  av1: "av01.0.08M.08",
+  "av1-10": "av01.0.08M.10",
+  vp9: "vp09.00.40.08",
+  "vp9-10": "vp09.02.40.10",
+};
+/** Audio codecs as ffprobe names them, each with the type to ask about. */
+const AUDIO: Record<string, string> = {
+  aac: 'audio/mp4; codecs="mp4a.40.2"',
+  mp3: "audio/mpeg",
+  opus: 'audio/mp4; codecs="opus"',
+  flac: 'audio/mp4; codecs="flac"',
+  vorbis: 'audio/webm; codecs="vorbis"',
+  ac3: 'audio/mp4; codecs="ac-3"',
+  eac3: 'audio/mp4; codecs="ec-3"',
+  dts: 'audio/mp4; codecs="dtsc"',
+  truehd: 'audio/mp4; codecs="mlpa"',
+};
+
+/** What this phone's WebView plays, for the PC to send episodes as they are when it can.
+ *  A codec counts when either way of asking says yes: Media Capabilities says no to
+ *  H.264 10-bit, which plays, and canPlayType says "maybe" to it. */
+export async function phonePlays(): Promise<{ video: string[]; audio: string[] }> {
+  const probe = document.createElement("video");
+  const capable = async (config: MediaDecodingConfiguration) => {
+    try {
+      return (await navigator.mediaCapabilities.decodingInfo(config)).supported;
+    } catch {
+      return false;
+    }
+  };
+  const video: string[] = [];
+  for (const [kind, codec] of Object.entries(VIDEO)) {
+    const type = `video/mp4; codecs="${codec}"`;
+    const yes = probe.canPlayType(type) !== "" || (await capable({ type: "file", video: { contentType: type, width: 1920, height: 1080, bitrate: 8e6, framerate: 24 } }));
+    if (yes) video.push(kind);
+  }
+  const audio: string[] = [];
+  for (const [codec, type] of Object.entries(AUDIO)) {
+    const yes = probe.canPlayType(type) !== "" || (await capable({ type: "file", audio: { contentType: type, channels: "2", bitrate: 192000, samplerate: 48000 } }));
+    if (yes) audio.push(codec);
+  }
+  return { video, audio };
+}

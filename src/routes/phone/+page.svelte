@@ -3,7 +3,7 @@
   import { onMount } from "svelte";
   import { call, errorText, mediaUrl } from "$lib/api";
   import { bytes, clock } from "$lib/format";
-  import { gettingText, type PhoneEpisode, type PhoneLibrary, type PhoneShow } from "$lib/phone";
+  import { gettingText, phonePlays, type PhoneEpisode, type PhoneLibrary, type PhoneShow } from "$lib/phone";
   import { app } from "$lib/state.svelte";
   import { toast } from "$lib/toast-store.svelte";
 
@@ -75,7 +75,7 @@
     }
   }
 
-  const get = (ids: number[]) => act(() => call("phoneGet", { ids }));
+  const get = (ids: number[]) => act(async () => call("phoneGet", { ids, plays: await phonePlays() }));
   const remove = (ids: number[]) => act(() => call("phoneRemove", { ids }));
   const play = (e: PhoneEpisode) => goto(`/watch?ep=${e.id}`);
 </script>

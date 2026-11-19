@@ -93,7 +93,7 @@ pub fn folder(backend: &Backend) -> Option<PathBuf> {
 }
 
 /// Each .zip in `dir`: its name, size and revision (size and time modified).
-fn archives(dir: &Path) -> Vec<(String, u64, String)> {
+pub(crate) fn archives(dir: &Path) -> Vec<(String, u64, String)> {
     let mut out = Vec::new();
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -109,7 +109,7 @@ fn archives(dir: &Path) -> Vec<(String, u64, String)> {
 
 /// The order dictionaries go in: word dictionaries first (Jitendex, JMdict,
 /// then the monolingual ones), then the rest, smallest first.
-fn install_order(name: &str, size: u64) -> (usize, u64) {
+pub(crate) fn install_order(name: &str, size: u64) -> (usize, u64) {
     let lower = name.to_lowercase();
     let first = FIRST.iter().position(|w| lower.contains(w) && !lower.contains("jmnedict")).unwrap_or(FIRST.len());
     (first, size)

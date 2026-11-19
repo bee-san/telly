@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onPhone } from "$lib/phone";
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { onDestroy, onMount, tick as nextTick } from "svelte";
@@ -503,6 +504,24 @@
   }
 
   function picClick(e: MouseEvent) {
+    // On the phone a tap shows the controls, or hides them; two quick taps to a side go back or on 10 s.
+    if (onPhone) {
+      const side = e.clientX < window.innerWidth / 3 ? -10 : e.clientX > (window.innerWidth * 2) / 3 ? 10 : 0;
+      if (clickTimer && side) {
+        clearTimeout(clickTimer);
+        clickTimer = null;
+        if (video) video.currentTime = Math.min(duration || Infinity, Math.max(0, video.currentTime + side));
+        flash(side < 0 ? "−10 s" : "+10 s");
+        return;
+      }
+      const wasIdle = idle;
+      clickTimer = setTimeout(() => {
+        clickTimer = null;
+        if (wasIdle) wake();
+        else idle = true;
+      }, 230);
+      return;
+    }
     if (e.detail !== 1 || dragged) return;
     clickToggled = false;
     clickTimer = setTimeout(() => {
@@ -513,6 +532,7 @@
   }
 
   function picDoubleClick() {
+    if (onPhone) return;
     if (clickTimer) clearTimeout(clickTimer);
     // A slow double-click: its first click already paused or played, so that's undone.
     else if (clickToggled) togglePlay();
@@ -1427,6 +1447,8 @@
   }
 
   async function leave(to = "/") {
+    // The phone's Library has every show it has: there's no show page to go back to.
+    if (onPhone) to = "/phone";
     stopWaiting();
     await close();
     if (app.compact) await leaveCompact(false).catch(() => {});
@@ -1634,6 +1656,8 @@
     window.addEventListener("beforeunload", unload);
     // Reloaded in the small player: the window goes back as it was.
     leaveCompact(false).catch(() => {});
+    // The phone plays on the whole screen, sideways.
+    if (onPhone && !app.fullscreen) toggleFull();
     wake();
     return () => window.removeEventListener("beforeunload", unload);
   });
@@ -1712,8 +1736,11 @@
           }}
           ondurationchange={() => k === showing && video && (duration = video.duration)}
           onerror={() => {
-            if (k === showing) videoError = video?.error?.message || "The video couldn’t play.";
-            else ahead = null;
+            if (k !== showing) return void (ahead = null);
+            // Android's WebView can send an error and then play: there, only an error still there a moment later counts.
+            const say = () => (videoError = video?.error?.message || "The video couldn’t play.");
+            if (onPhone) setTimeout(() => video?.error && video.readyState < 2 && say(), 1500);
+            else say();
           }}
         ></video>
       {/each}

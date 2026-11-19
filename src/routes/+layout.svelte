@@ -10,11 +10,14 @@
   import TitleBar from "$lib/TitleBar.svelte";
   import Toasts from "$lib/Toasts.svelte";
   import { hachidoriStart } from "$lib/api";
+  import { onPhone } from "$lib/phone";
   import { app, watchActivity } from "$lib/state.svelte";
 
   let { children }: { children: Snippet } = $props();
 
   onMount(() => {
+    // The phone has no background work to show, and no Hachidori.
+    if (onPhone) return;
     const stop = watchActivity();
     // WebView2 has loaded Hachidori by the time the page is up: start its engine.
     hachidoriStart().catch(() => {});
@@ -23,7 +26,7 @@
 </script>
 
 <div class="shell" class:dark={app.dark}>
-  {#if !app.fullscreen && !app.compact}<TitleBar />{/if}
+  {#if !app.fullscreen && !app.compact && !onPhone}<TitleBar />{/if}
   <main class="body">
     {@render children()}
   </main>

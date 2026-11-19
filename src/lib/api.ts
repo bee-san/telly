@@ -43,7 +43,8 @@ export function kept<T>(cmd: string, args: Record<string, unknown> = {}): T | nu
 export function mediaUrl(path: string): string {
   if (!path) return "";
   if (!inTauri) return DEV_SERVER + "/media" + path;
-  const windows = navigator.userAgent.includes("Windows");
+  // WebView2 and Android's WebView reach a custom protocol as http://<name>.localhost.
+  const windows = /Windows|Android/.test(navigator.userAgent);
   return (windows ? "http://media.localhost" : "media://localhost") + path;
 }
 
@@ -948,6 +949,8 @@ export async function setFullscreen(on: boolean): Promise<void> {
     else if (document.fullscreenElement) await document.exitFullscreen();
     return;
   }
+  // On the phone: the whole screen, sideways (TellyPlugin.kt).
+  if (/Android/i.test(navigator.userAgent)) return invoke("plugin:telly|immersive", { on });
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
   await getCurrentWindow().setFullscreen(on);
 }

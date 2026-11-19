@@ -1,6 +1,7 @@
 import { redirect } from "@sveltejs/kit";
 import { call, callKept, type Backup, type MissingRips, type Settings } from "$lib/api";
 import { plural } from "$lib/format";
+import { onPhone } from "$lib/phone";
 import { toast } from "$lib/toast-store.svelte";
 
 /** Whether this run of Telly has looked at whether the setup is done. */
@@ -10,6 +11,8 @@ let looked = false;
  *  Just after a backup was restored, it says so, and goes to Settings →
  *  Moved rips when shows' rips aren't where the backup has them. */
 export async function load() {
+  // The phone has its own Library: the shows it got from your PC.
+  if (onPhone) redirect(307, "/phone");
   if (looked) return;
   looked = true;
   const settings = await callKept<Settings>("settings").catch(() => null);

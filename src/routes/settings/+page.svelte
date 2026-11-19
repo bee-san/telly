@@ -93,10 +93,22 @@
     }
   }
 
+  /** Settings → Your phone (phone.rs). */
+  let phone = $state<{ on: boolean; listening: boolean; code: string; addresses: string[]; phones: { name: string; at: number }[] } | null>(null);
+  async function setPhone(on: boolean) {
+    phone = await call("setPhoneSharing", { on });
+    // The server takes a moment to start listening.
+    setTimeout(async () => (phone = await call("phoneSharing")), 3500);
+  }
+  async function forgetPhones() {
+    phone = await call("forgetPhones");
+  }
+
   onMount(() => {
     app.dark = false;
     setWindowTitle("Settings — Telly");
     load();
+    call<typeof phone>("phoneSharing").then((p) => (phone = p)).catch(() => {});
     let unlisten: (() => void) | null = null;
     let left = false;
     if (inTauri) {
@@ -945,6 +957,31 @@
           </div>
         </section>
 
+        <section class="group" id="phone">
+          <h3>Your phone</h3>
+          <div class="card">
+            <label class="row">
+              <span class="what"><b>Lend episodes to Telly on your phone</b><small>Your phone copies the episodes you pick over your Wi-Fi to watch anywhere, and gives back where you got to, what you watched and the recaps it wrote. Telly listens on port 8775 while this is on; Windows asks once whether to let it.</small></span>
+              <input type="checkbox" checked={phone?.on ?? false} onchange={(e) => setPhone(e.currentTarget.checked)} />
+            </label>
+            {#if phone?.on}
+              <div class="row">
+                <span class="what"><b>Pair a phone with this code</b><small>In Telly on your phone, Get from PC asks for it.{#if phone.addresses.length} If the phone doesn’t find this PC, type {phone.addresses.length === 1 ? "its address" : "one of its addresses"}: {phone.addresses.join(", ")}.{/if}</small></span>
+                <b class="mono code">{phone.code}</b>
+              </div>
+              {#if !phone.listening}
+                <div class="row"><span class="what"><small>Starting… If this stays, another program may have port 8775.</small></span></div>
+              {/if}
+              {#if phone.phones.length}
+                <div class="row">
+                  <span class="what"><b>Paired: {phone.phones.map((p) => p.name).join(", ")}</b><small>Forgetting them makes each pair again with the code.</small></span>
+                  <button type="button" class="btn quiet" onclick={forgetPhones}>Forget</button>
+                </div>
+              {/if}
+            {/if}
+          </div>
+        </section>
+
         <section class="group" id="games">
           <h3>Games</h3>
           <div class="card">
@@ -1335,6 +1372,7 @@
   .card { border: 1px solid var(--rule); border-radius: 10px; background: var(--surface); }
   .card.alert { border-color: var(--warn-dot); }
   .card.alert.bad { border-color: var(--bad-dot); }
+  .code { font-size: 24px; letter-spacing: .12em; }
   .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 13px 18px; margin: 0; }
   .row + .row { border-top: 1px solid var(--rule); }
   .row.top { align-items: flex-start; }

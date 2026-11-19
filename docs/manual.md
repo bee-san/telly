@@ -453,6 +453,20 @@ Telly knows a show's episodes by where their rips are. When the rips aren't ther
 - **Look for new episodes** (and Telly's look every 10 minutes) finds a rip moved within its show's folder, into a season folder, say, by its name and size, rather than taking it for a new release of the episode.
 - **A rip replaced by a new release** (the old file gone, the new one in the show's folder) takes the episode's place, by the episode number in its name: where you were stays, and the new rip is got ready from the start. A film's has no number to go by, so the one new video in a film's folder is its rip, whatever it's called.
 
+## 📱 Telly on your phone
+
+Telly for Android plays episodes your PC got ready, anywhere, with or without a signal. Your PC still finds subtitles, downloads and converts; the phone keeps copies of the episodes you pick.
+
+**On the PC:** Settings → Playing → **Your phone** → *Lend episodes to Telly on your phone*. Telly listens on port 8775 on your home network while it's on (Windows asks once whether to let it) and shows a six-figure code. Forget takes back every phone paired: each pairs again with the code.
+
+**On the phone:** **Get from PC** finds Telly on your Wi-Fi, or takes the address Settings shows, and pairs with the code once. It lists your shows; tick the episodes you want (**Pick the next 3** ticks the next three you haven't watched) and **Get**. For each, the PC makes a copy the phone plays (H.264 with its Japanese audio, kept as it is when it plays already), and the phone copies it over; a copy that stops carries on where it stopped. The PC deletes its own copy once the phone has it. An episode the PC hasn't got ready yet is got ready first.
+
+The phone's Library has only what it got: what you're watching first, then every show with its episodes, which are on the phone, and which are being got. **Remove** deletes the phone's copy; it stays on your PC. Watched copies stay until the phone needs the room for new ones, the longest-watched going first.
+
+Each time the Library opens, and with **Sync now**, the phone gives the PC where you got to, what you watched and what Claude said, and takes in what changed on the PC for its shows: every episode's subtitles (Previously on tells the story from them), your dictionaries, and the settings for Explain, Previously on and cards. Where you are in an episode is wherever you played it last.
+
+On the phone the player takes the whole screen, sideways. A tap shows the controls or hides them; two quick taps to the left or right go back or on 10 seconds.
+
 ## 💾 Backing up, and moving to another computer
 
 **Settings → Backup and your data → Back up…** saves one file (a .zip) with what Telly can't make again: your shows, where you are in each and what you watched, your settings, the subtitles with your choices and nudges, Tidepool's log, the words you know and your AniList list. It can be made while Telly is busy: each database is copied whole as it is at that moment. Telly's copies of episodes, covers, the seek bar's pictures, line search's index, recommendations and the character dictionary aren't in it, as Telly makes them again, and nor are your rips. A backup holds your Jimaku and OpenRouter keys and your AniList token, so keep it where only you can open it.

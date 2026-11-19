@@ -2,6 +2,9 @@
 //! library load from, and Hachidori. Everything else the UI asks for goes
 //! through `call`, into backend.rs, which the development server shares.
 
+// Much of the PC's work never runs on the phone (phone.rs says what does).
+#![cfg_attr(target_os = "android", allow(dead_code))]
+
 pub mod anilist;
 pub mod anilist_list;
 pub mod aniskip;
@@ -32,6 +35,7 @@ pub mod nyaa;
 pub mod openrouter;
 pub mod own_hachidori;
 pub mod parts;
+pub mod phone;
 pub mod premine;
 pub mod recommend;
 pub mod relay;
@@ -309,6 +313,17 @@ pub fn run() {
             let _ = window.set_focus();
         }
     }));
+    // What Telly's pages ask of Android itself (TellyPlugin.kt): the player's whole screen, cards in AnkiDroid.
+    #[cfg(mobile)]
+    let builder = builder.plugin(
+        tauri::plugin::Builder::<tauri::Wry, ()>::new("telly")
+            .setup(|_app, _api| {
+                #[cfg(target_os = "android")]
+                _api.register_android_plugin("com.telly.player", "TellyPlugin")?;
+                Ok(())
+            })
+            .build(),
+    );
     builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -331,6 +346,8 @@ pub fn run() {
             // in a box: without a window there's nowhere else to say it, and Telly would just not open.
             let backend = Arc::new(Backend::open(data_dirs(app)?).inspect_err(|e| say_why_not(&format!("{e:#}")))?);
             backend.start();
+            // The phone adds cards through AnkiDroid, not AnkiConnect.
+            #[cfg(desktop)]
             backend.start_mining();
             let for_relay = backend.clone();
             app.manage(RelayStatus(relay::supervise(move || {

@@ -175,6 +175,8 @@ pub struct Backend {
     pub passed_over: Mutex<Option<std::collections::HashMap<String, f64>>>,
     /// The folder Add media's sheet is open on, and since when: the libraries' look leaves it to you.
     sheet: Mutex<Option<(String, std::time::Instant)>>,
+    /// Episodes lent to your phone, or got from your PC (phone.rs).
+    pub phone: crate::phone::Phone,
 }
 
 /// A folder Add media read, and what AniList makes of it.
@@ -633,13 +635,22 @@ impl Backend {
             library_looks: Mutex::new(Vec::new()),
             passed_over: Mutex::new(None),
             sheet: Mutex::new(None),
+            phone: Default::default(),
         })
     }
 
     /// Starts the background work: getting shows ready and finishing cards.
     pub fn start(self: &Arc<Self>) {
+        // The phone plays what it got from the PC: the PC does the rest.
+        #[cfg(target_os = "android")]
+        {
+            crate::phone::start_getting(self.clone());
+            search::start(self.clone());
+        }
+        #[cfg(not(target_os = "android"))]
         let backend = self.clone();
         // The work starts once ffmpeg has said what it can do, so none of it sees half an answer.
+        #[cfg(not(target_os = "android"))]
         std::thread::spawn(move || {
             backend.refind_tools();
             jobs::clear_parts(&backend);
@@ -659,6 +670,7 @@ impl Backend {
             names::start(backend.clone());
             anilist_list::start(backend.clone());
             search::start(backend.clone());
+            crate::phone::start_sharing(backend.clone());
         });
     }
 
@@ -1676,6 +1688,19 @@ impl Backend {
                 crate::library::look_now(self, arg(&args, "at")?)?;
                 crate::library::view(self)
             }
+            "phoneSharing" => Ok(crate::phone::sharing_state(self)),
+            "setPhoneSharing" => crate::phone::set_sharing(self, arg(&args, "on")?),
+            "forgetPhones" => crate::phone::forget_phones(self),
+            "phoneState" => Ok(crate::phone::state(self)),
+            "phoneFind" => crate::phone::find(),
+            "phonePair" => crate::phone::pair_with(self, &arg::<String>(&args, "address")?, &arg::<String>(&args, "code")?),
+            "phoneUnpair" => crate::phone::unpair(self),
+            "phonePcLibrary" => crate::phone::pc_library(self),
+            "phoneGet" => crate::phone::get(self, &arg::<Vec<i64>>(&args, "ids")?),
+            "phoneRemove" => crate::phone::remove(self, &arg::<Vec<i64>>(&args, "ids")?),
+            "phoneSync" => crate::phone::sync(self),
+            "phoneLibrary" => crate::phone::phone_library(self),
+            "phoneDictionaries" => Ok(crate::phone::dictionaries(self)),
             "pauseDownload" => {
                 torrents::pause(self, arg(&args, "id")?, arg(&args, "paused")?)?;
                 Ok(torrents::view(self))
@@ -1749,6 +1774,8 @@ impl Backend {
             // A clip's file name alone: on Windows "C:\…" joined to the folder would be anywhere.
             ["clip", name] if !name.contains("..") && !name.contains(['/', '\\', ':']) => self.dirs.clips().join(name),
             ["names", "telly-characters.zip"] => names::zip_path(self),
+            // Your dictionaries on the phone, for its lookups to install (phone.rs).
+            ["dict", name] if !name.contains("..") && !name.contains(['/', '\\', ':']) => crate::phone::dictionaries_dir(self).join(name),
             ["hd", "dictionaries", "file", name] => own_hachidori::dictionary_file(self, name)?,
             _ => return Err(anyhow!("nothing at {path}")),
         };

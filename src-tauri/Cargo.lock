@@ -5906,6 +5906,7 @@ dependencies = [
  "encoding_rs",
  "firered-vad",
  "image",
+ "libc",
  "librqbit",
  "lindera",
  "network-interface",

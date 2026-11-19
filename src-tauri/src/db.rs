@@ -1320,6 +1320,151 @@ impl Db {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows.into_iter().collect())
     }
+
+    // ---- the phone (phone.rs) ----------------------------------------------
+
+    /// On the phone: the PC's show as it is there, under the PC's id. When
+    /// it was last watched is the later of the two.
+    pub fn put_show(&self, s: &Show) -> Result<()> {
+        self.conn()?.execute(
+            "INSERT INTO shows (id, folder, title, title_native, title_english, title_romaji, anilist_id, anilist_episodes,
+                                format, year, cover_url, cover_color, jimaku_id, added_at, last_watched_at, tmdb_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+             ON CONFLICT (id) DO UPDATE SET folder = ?2, title = ?3, title_native = ?4, title_english = ?5, title_romaji = ?6,
+               anilist_id = ?7, anilist_episodes = ?8, format = ?9, year = ?10, cover_url = ?11, cover_color = ?12,
+               jimaku_id = ?13, last_watched_at = MAX(IFNULL(last_watched_at, 0), IFNULL(?15, 0)), tmdb_id = ?16",
+            params![
+                s.id, s.folder, s.title, s.title_native, s.title_english, s.title_romaji, s.anilist_id, s.anilist_episodes,
+                s.format, s.year, s.cover_url, s.cover_color, s.jimaku_id, s.added_at, s.last_watched_at, s.tmdb_id
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// On the phone: the PC's episode, under the PC's id. Where you are in
+    /// it is the one played last; how far you ever got, the further; and it's
+    /// watched if either says so. What the phone has of it (its copy) stays.
+    pub fn put_episode(&self, e: &Episode, reached: f64) -> Result<()> {
+        self.conn()?.execute(
+            "INSERT INTO episodes (id, show_id, number, path, size, duration, media_state, media_plan, play_path, audio_index,
+                                   ending_at, position, watched_at, last_played_at, subs_state, subs_file, subs_score,
+                                   subs_offset_ms, subs_nudge_ms, reached)
+             VALUES (?1, ?2, ?3, '', ?4, ?5, 'away', 'direct', '', 0, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+             ON CONFLICT (id) DO UPDATE SET show_id = ?2, number = ?3, duration = ?5, ending_at = ?6,
+               position = CASE WHEN IFNULL(?9, 0) > IFNULL(last_played_at, 0) THEN ?7 ELSE position END,
+               last_played_at = MAX(IFNULL(last_played_at, 0), IFNULL(?9, 0)),
+               watched_at = IFNULL(watched_at, ?8),
+               subs_state = ?10, subs_file = ?11, subs_score = ?12, subs_offset_ms = ?13, subs_nudge_ms = ?14,
+               reached = MAX(reached, ?15)",
+            params![
+                e.id, e.show_id, e.number, e.size, e.duration, e.ending_at, e.position, e.watched_at, e.last_played_at,
+                e.subs_state, e.subs_file, e.subs_score, e.subs_offset_ms, e.subs_nudge_ms, reached
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// On the phone: the episode's copy is at `path` (ready to play), or
+    /// isn't on the phone (None).
+    pub fn set_phone_copy(&self, id: i64, path: Option<&str>) -> Result<()> {
+        self.conn()?.execute(
+            "UPDATE episodes SET path = IFNULL(?2, ''), play_path = IFNULL(?2, ''), media_state = CASE WHEN ?2 IS NULL THEN 'away' ELSE 'ready' END,
+               media_plan = 'direct', audio_index = 0 WHERE id = ?1",
+            params![id, path],
+        )?;
+        Ok(())
+    }
+
+    /// What's changed since `since` (unix ms) for the PC to take in: each
+    /// episode played or finished since, with each time it was played to its
+    /// end, and what Claude said since.
+    pub fn progress_since(&self, since: i64) -> Result<Value> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, position, last_played_at, watched_at, reached FROM episodes
+              WHERE IFNULL(last_played_at, 0) > ?1 OR IFNULL(watched_at, 0) > ?1",
+        )?;
+        let mut episodes = stmt
+            .query_map([since], |r| {
+                Ok(serde_json::json!({ "id": r.get::<_, i64>(0)?, "position": r.get::<_, f64>(1)?, "lastPlayedAt": r.get::<_, Option<i64>>(2)?,
+                    "watchedAt": r.get::<_, Option<i64>>(3)?, "reached": r.get::<_, f64>(4)?, "finishes": [] }))
+            })?
+            .collect::<rusqlite::Result<Vec<Value>>>()?;
+        let mut stmt = conn.prepare("SELECT episode_id, at FROM rewatches WHERE at > ?1 ORDER BY id")?;
+        let finishes = stmt.query_map([since], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        for (id, at) in finishes {
+            if let Some(e) = episodes.iter_mut().find(|e| e["id"] == id) {
+                e["finishes"].as_array_mut().expect("an array").push(at.into());
+            }
+        }
+        let mut stmt = conn.prepare("SELECT episode_id, kind, line, about, text, extra, created_at FROM answers WHERE created_at > ?1")?;
+        let answers = stmt
+            .query_map([since], |r| {
+                Ok(serde_json::json!({ "episodeId": r.get::<_, i64>(0)?, "kind": r.get::<_, String>(1)?, "line": r.get::<_, i64>(2)?,
+                    "about": r.get::<_, String>(3)?, "text": r.get::<_, String>(4)?, "extra": r.get::<_, String>(5)?, "createdAt": r.get::<_, i64>(6)? }))
+            })?
+            .collect::<rusqlite::Result<Vec<Value>>>()?;
+        Ok(serde_json::json!({ "episodes": episodes, "answers": answers }))
+    }
+
+    /// On the PC: takes in what the phone says changed (`progress_since`
+    /// there). Where you are is the phone's when it played the episode later;
+    /// each time it was played to its end there is one here too, once; and
+    /// what Claude said there is kept where there's nothing here yet.
+    pub fn take_progress(&self, progress: &Value) -> Result<()> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        let mut shows = HashSet::new();
+        for e in progress["episodes"].as_array().into_iter().flatten() {
+            let Some(id) = e["id"].as_i64() else { continue };
+            let Some(show) = tx.query_row("SELECT show_id FROM episodes WHERE id = ?1", [id], |r| r.get::<_, i64>(0)).optional()? else { continue };
+            let played = e["lastPlayedAt"].as_i64().unwrap_or(0);
+            tx.execute(
+                "UPDATE episodes SET position = CASE WHEN ?2 > IFNULL(last_played_at, 0) THEN ?3 ELSE position END,
+                   last_played_at = MAX(IFNULL(last_played_at, 0), ?2), reached = MAX(reached, ?4) WHERE id = ?1",
+                params![id, played, e["position"].as_f64().unwrap_or(0.0), e["reached"].as_f64().unwrap_or(0.0)],
+            )?;
+            tx.execute("UPDATE shows SET last_watched_at = MAX(IFNULL(last_watched_at, 0), ?2) WHERE id = ?1", params![show, played])?;
+            let mut first = false;
+            if let Some(at) = e["watchedAt"].as_i64() {
+                first = tx.execute("UPDATE episodes SET watched_at = ?2, position = 0 WHERE id = ?1 AND watched_at IS NULL", params![id, at])? == 1;
+            }
+            for at in e["finishes"].as_array().into_iter().flatten().filter_map(Value::as_i64) {
+                let known: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM rewatches WHERE episode_id = ?1 AND at = ?2)", params![id, at], |r| r.get(0))?;
+                if !known {
+                    tx.execute(
+                        "INSERT INTO rewatches (episode_id, at, first_watch) VALUES (?1, ?2, ?3 AND NOT EXISTS (SELECT 1 FROM rewatches WHERE episode_id = ?1))",
+                        params![id, at, first],
+                    )?;
+                    first = false;
+                }
+            }
+            shows.insert(show);
+        }
+        for show in shows {
+            Self::record_show_completions(&tx, show, false)?;
+        }
+        for a in progress["answers"].as_array().into_iter().flatten() {
+            tx.execute(
+                "INSERT OR IGNORE INTO answers (episode_id, kind, line, about, text, extra, created_at)
+                 SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7 WHERE EXISTS (SELECT 1 FROM episodes WHERE id = ?1)",
+                params![
+                    a["episodeId"].as_i64(), a["kind"].as_str(), a["line"].as_i64().unwrap_or(-1), a["about"].as_str().unwrap_or(""),
+                    a["text"].as_str(), a["extra"].as_str().unwrap_or(""), a["createdAt"].as_i64().unwrap_or_else(now_ms)
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Every episode's reached (how far you ever played it), by id.
+    pub fn all_reached(&self) -> Result<std::collections::HashMap<i64, f64>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare("SELECT id, reached FROM episodes")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows.into_iter().collect())
+    }
 }
 
 #[cfg(test)]

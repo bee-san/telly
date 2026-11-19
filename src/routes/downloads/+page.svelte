@@ -331,10 +331,16 @@
         </button>
       </div>
     {:else if lookingForSet && entry}
-      <p class="hint">Looking for a release of each episode, in case no one release has them all…</p>
+      <div class="set looking" role="status">
+        <div class="row-body">
+          <span class="row-title"><span class="spin"></span> Looking for a release of each episode…</span>
+          <span class="row-meta">Telly is reading nyaa’s pages in case no one release has them all, which takes a little while. Wait for it before picking one below: if it finds them, <b>Download all</b> appears here.</span>
+          <span class="bar busy" aria-hidden="true"><i></i></span>
+        </div>
+      </div>
     {/if}
     {#if releases.length}
-      <ul class="list" role="list">
+      <ul class="list" class:waiting={lookingForSet && entry && !set} role="list">
         {#each releases as r (r.id)}
           <li class="row">
             <div class="row-body">
@@ -403,4 +409,10 @@
   .into .mono { overflow-wrap: anywhere; }
   .set { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: center; padding: 12px 14px; border: 1px solid var(--rule-2); border-radius: 8px; background: var(--surface); }
   .set.first { border-color: var(--ink-3); }
+  .set.looking { grid-template-columns: minmax(0, 1fr); }
+  .looking .row-title { display: flex; align-items: center; gap: 8px; }
+  .bar.busy { margin-top: 4px; }
+  .bar.busy i { width: 30%; animation: busy 1.4s ease-in-out infinite; }
+  @keyframes busy { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+  .list.waiting { opacity: .5; transition: opacity .2s; }
 </style>

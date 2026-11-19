@@ -98,7 +98,8 @@ impl Default for Plays {
 enum PhonePlan {
     /// The phone plays the file the PC plays, and it has only the Japanese audio: it's sent as it is.
     AsIs,
-    /// The phone plays it, but the file has other audio tracks (a dub) or a container it doesn't: copied into MKV with the Japanese audio alone, in seconds.
+    /// The phone plays it, but the file has other audio tracks (a dub) or isn't an MP4: copied into an MP4 with the Japanese audio alone, in seconds.
+    /// An MKV plays on Android, but opening one part-way through stalls on its first frame when the phone's hardware decodes it (H.264, HEVC).
     Remux,
     /// The phone plays the picture but not the audio (AC-3, DTS): the picture copied, the Japanese audio converted to AAC.
     Audio,
@@ -134,7 +135,7 @@ fn phone_plan(probe: &media::Probe, path: &Path, audio: usize, plays: &Plays) ->
         return PhonePlan::Audio;
     }
     let extension = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
-    if probe.audio.len() <= 1 && matches!(extension.as_str(), "mkv" | "mp4" | "m4v" | "webm") {
+    if probe.audio.len() <= 1 && matches!(extension.as_str(), "mp4" | "m4v") {
         PhonePlan::AsIs
     } else {
         PhonePlan::Remux
@@ -179,7 +180,7 @@ fn phone_dir(backend: &Backend) -> PathBuf {
 
 /// The PC's copy of an episode made for the phone.
 fn phone_copy(backend: &Backend, id: i64) -> PathBuf {
-    phone_dir(backend).join(format!("{id}.mkv"))
+    phone_dir(backend).join(format!("{id}.mp4"))
 }
 
 /// The file the phone copies for an episode: as made or picked for it, else a copy left from before.
@@ -354,7 +355,7 @@ fn answer(backend: &Backend, mut request: tiny_http::Request) {
         ["video", id] => {
             let file = id.parse().map_err(|_| anyhow!("bad episode")).and_then(|id| phone_file(backend, id).ok_or_else(|| anyhow!("That episode isn’t ready for the phone")));
             let _ = match file.and_then(|f| {
-                let mime = if f.extension().is_some_and(|e| e.eq_ignore_ascii_case("mp4") || e.eq_ignore_ascii_case("m4v")) { "video/mp4" } else { "video/x-matroska" };
+                let mime = if f.extension().is_some_and(|e| e.eq_ignore_ascii_case("mkv")) { "video/x-matroska" } else { "video/mp4" };
                 send_file(&f, range.as_deref(), mime)
             }) {
                 Ok(response) => request.respond(response),
@@ -531,8 +532,8 @@ fn copy_worker(backend: &Backend) {
 
 /// Gets an episode ready for a phone that plays `plays`, and says which
 /// file it copies and how it was got ready (`phone_plan`): the file the PC
-/// plays itself when the phone plays it too, else a copy with the Japanese
-/// audio alone, made in seconds, its audio converted to AAC when the phone
+/// plays itself when the phone plays it too and it's an MP4, else an MP4
+/// with the Japanese audio alone, made in seconds, its audio converted to AAC when the phone
 /// doesn't play that, and its picture converted only when it can't play that.
 fn make_copy(backend: &Backend, id: i64, plays: &Plays, progress: &dyn Fn(f64)) -> Result<(PathBuf, PhonePlan)> {
     let episode = backend.db.episode(id)?.ok_or_else(|| anyhow!("That episode isn’t in Telly any more"))?;
@@ -548,7 +549,7 @@ fn make_copy(backend: &Backend, id: i64, plays: &Plays, progress: &dyn Fn(f64)) 
     let ffmpeg = tools.ffmpeg.clone().ok_or_else(|| anyhow!("Telly on the PC needs ffmpeg for this"))?;
     let out = phone_copy(backend, id);
     std::fs::create_dir_all(phone_dir(backend))?;
-    let part = out.with_extension("part.mkv");
+    let part = out.with_extension("part.mp4");
     let mut args: Vec<String> = ["-nostdin", "-hide_banner", "-y", "-v", "error", "-progress", "pipe:1", "-nostats", "-i"].iter().map(|a| a.to_string()).collect();
     args.push(input.to_string_lossy().into_owned());
     args.extend(["-map".into(), "0:v:0".into()]);
@@ -565,7 +566,11 @@ fn make_copy(backend: &Backend, id: i64, plays: &Plays, progress: &dyn Fn(f64)) 
     }
     let sound = probe.audio.get(audio).is_none_or(|a| plays.audio.contains(&a.codec));
     args.extend(if sound { ["-c:a", "copy"].map(String::from).to_vec() } else { ["-c:a", "aac", "-b:a", "192k", "-ac", "2"].map(String::from).to_vec() });
-    args.extend(["-f", "matroska"].map(String::from));
+    // hvc1 is how an MP4 names HEVC for every player; the index goes first, so the phone can start anywhere at once.
+    if probe.video.as_ref().is_some_and(|v| v.codec == "hevc") && plan != PhonePlan::Video {
+        args.extend(["-tag:v", "hvc1"].map(String::from));
+    }
+    args.extend(["-movflags", "+faststart", "-f", "mp4"].map(String::from));
     args.push(part.to_string_lossy().into_owned());
     let duration = if plan == PhonePlan::Video { episode.duration } else { 0.0 };
     media::run_ffmpeg(&ffmpeg, &args, duration, &AtomicBool::new(false), progress)?;
@@ -1096,8 +1101,11 @@ mod tests {
             audio: ["aac", "mp3", "opus", "flac", "vorbis"].map(String::from).to_vec(),
         };
         let mkv = Path::new("/rips/Show - 01.mkv");
-        assert_eq!(phone_plan(&probe("hevc", "yuv420p10le", &["flac"]), mkv, 0, &thor), PhonePlan::AsIs);
-        assert_eq!(phone_plan(&probe("av1", "yuv420p10le", &["opus"]), mkv, 0, &thor), PhonePlan::AsIs);
+        let mp4 = Path::new("/rips/Show - 01.mp4");
+        assert_eq!(phone_plan(&probe("hevc", "yuv420p10le", &["aac"]), mp4, 0, &thor), PhonePlan::AsIs);
+        assert_eq!(phone_plan(&probe("av1", "yuv420p10le", &["opus"]), mp4, 0, &thor), PhonePlan::AsIs);
+        // An MKV is copied into an MP4: one opened part-way stalls on Android.
+        assert_eq!(phone_plan(&probe("hevc", "yuv420p10le", &["flac"]), mkv, 0, &thor), PhonePlan::Remux);
         // A dub beside the Japanese: the Japanese alone, copied in seconds.
         assert_eq!(phone_plan(&probe("hevc", "yuv420p10le", &["aac", "aac"]), mkv, 1, &thor), PhonePlan::Remux);
         // An AVI the phone's WebView doesn't open.
@@ -1109,7 +1117,7 @@ mod tests {
         assert_eq!(phone_plan(&probe("mpeg2video", "yuv420p", &["ac3"]), mkv, 0, &thor), PhonePlan::Video);
         // A phone that said nothing plays H.264 alone.
         assert_eq!(phone_plan(&probe("hevc", "yuv420p10le", &["aac"]), mkv, 0, &Plays::default()), PhonePlan::Video);
-        assert_eq!(phone_plan(&probe("h264", "yuv420p", &["aac"]), mkv, 0, &Plays::default()), PhonePlan::AsIs);
+        assert_eq!(phone_plan(&probe("h264", "yuv420p", &["aac"]), mp4, 0, &Plays::default()), PhonePlan::AsIs);
     }
 
     #[test]

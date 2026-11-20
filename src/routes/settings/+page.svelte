@@ -195,7 +195,7 @@
   const FIND: { label: string; page: string; group: string; words?: string }[] = [
     { label: "Libraries", page: "library", group: "libraries", words: "folders series movies add library look for new shows" },
     { label: "Folder for new shows", page: "library", group: "downloads", words: "downloads" },
-    { label: "Search site", page: "library", group: "downloads", words: "nyaa address" },
+    { label: "Search site", page: "library", group: "downloads", words: "address tracker turn on" },
     { label: "Download and upload speed, at most", page: "library", group: "downloads", words: "torrent limit rate bandwidth" },
     { label: "Keep sharing a download once it’s finished", page: "library", group: "downloads", words: "torrent seeding upload stop" },
     { label: "Ask the router to let others connect", page: "library", group: "downloads", words: "torrent upnp port forwarding" },
@@ -775,7 +775,7 @@
 
         <section class="group" id="downloads">
           <h3>Downloads</h3>
-          <p class="lede">Find a show on nyaa.si with <b>Download…</b> in Recommended, the title bar’s search or Processing, or <b>Download episodes…</b> on a show’s page, and Telly downloads it itself, picking up where it was whenever the connection drops and when Telly opens again. Each episode joins the library as it finishes. Processing shows how they’re going. Download only what you have the right to.</p>
+          <p class="lede">Downloading is off until you add a search site below: Telly has no site of its own. Then find a show with <b>Download…</b> in Recommended, the title bar’s search or Processing, or <b>Download episodes…</b> on a show’s page, and Telly downloads it itself, picking up where it was whenever the connection drops and when Telly opens again. Each episode joins the library as it finishes. Processing shows how they’re going. Download only what you have the right to.</p>
           <div class="card">
             <div class="row tall">
               <span class="what"><b>Folder for new shows</b><small>A new show gets a folder of its own in here when no library takes it. More episodes of a show in the library go in its folder.</small></span>
@@ -783,8 +783,8 @@
               {#if str("downloads.folder")}<span><button type="button" class="link-btn" onclick={() => setDownloadsFolder(null)}>Use Downloads\Telly in your home folder</button></span>{/if}
             </div>
             <label class="row">
-              <span class="what"><b>Search site</b><small>The address of the site running nyaa that Telly finds releases on. Empty for nyaa.si.</small></span>
-              <input class="input mono ctl" value={str("nyaa.site")} placeholder="https://nyaa.si" onchange={(e) => set("nyaa.site", e.currentTarget.value.trim())} />
+              <span class="what"><b>Search site</b><small>The address of a tracker running the open-source Nyaa software, whose releases you have the right to download. Empty leaves downloading off.</small></span>
+              <input class="input mono ctl" value={str("nyaa.site")} placeholder="https://" aria-label="Search site" onchange={(e) => set("nyaa.site", e.currentTarget.value.trim())} />
             </label>
           </div>
           <div class="card">

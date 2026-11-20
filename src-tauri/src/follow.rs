@@ -1,5 +1,5 @@
 //! New episodes of a show you follow download themselves. Following is turned
-//! on from a show's page. Telly then looks on nyaa.si (nyaa.rs) for releases
+//! on from a show's page. Telly then looks on your search site (nyaa.rs) for releases
 //! named as the show's latest rip is (or the last release downloaded for it),
 //! but for a later episode: the same
 //! group, the same title and the same tags (resolution, codec), so episode 6
@@ -18,7 +18,7 @@
 //! follow.started.<show> (each episode it started and its download's info
 //! hash, so one whose download is gone is started again) and
 //! follow.like.<show> (the title of the last release downloaded for the show,
-//! which is how nyaa names its episodes when the files inside are named
+//! which is how the search site names its episodes when the files inside are named
 //! another way).
 //!
 //! Nobody is looking when these download, and anyone can upload under a

@@ -5,7 +5,7 @@
   import Cover from "$lib/Cover.svelte";
   import Icon from "$lib/Icon.svelte";
   import PickRow from "$lib/PickRow.svelte";
-  import { call, callKept, errorText, inTauri, kept, setWindowTitle, type Pick, type PickRowView, type Recommended, type Verdict } from "$lib/api";
+  import { call, callKept, errorText, inTauri, kept, setWindowTitle, type Pick, type PickRowView, type Recommended, type Settings, type Verdict, downloadsOn } from "$lib/api";
   import { plural } from "$lib/format";
   import { downloadLink, pickMeta } from "$lib/search";
   import { app } from "$lib/state.svelte";
@@ -17,6 +17,7 @@
   let rec = $state.raw<Recommended | null>(kept<Recommended>("recommendations"));
   let shown = $state(STEP);
   let error = $state("");
+  let settings = $state.raw<Settings>(kept<Settings>("settings") ?? {});
   let asking = $state(false);
   /** The pick whose sheet is open, and the card that opened it. */
   let open = $state.raw<Pick | null>(null);
@@ -86,6 +87,7 @@
   onMount(() => {
     app.dark = false;
     setWindowTitle("Recommended — Telly");
+    callKept<Settings>("settings").then((s) => (settings = s)).catch(() => {});
     load();
     const key = (e: KeyboardEvent) => e.key === "Escape" && close();
     window.addEventListener("keydown", key);
@@ -265,7 +267,7 @@
     },
   };
 
-  /** Opens nyaa.si's search for a pick, for Telly to download it. */
+  /** Opens the search site's search for a pick, for Telly to download it. */
   function download(p: Pick) {
     goto(`${downloadLink(p)}&from=recommended`);
   }
@@ -370,7 +372,7 @@
           <p class="hero-en">{[h.native ? h.title : "", meta(h)].filter(Boolean).join(" · ")}</p>
           <p class="hero-about">{plain(h.description)}</p>
           <div class="hero-actions">
-            <button type="button" class="btn big" onclick={() => download(h)} title="Find it on nyaa.si, most shared first, and pick a release for Telly to download"><Icon name="download" /><span>Download…</span></button>
+            {#if downloadsOn(settings)}<button type="button" class="btn big" onclick={() => download(h)} title="Find it on your search site, most shared first, and pick a release for Telly to download"><Icon name="download" /><span>Download…</span></button>{/if}
             <button type="button" class="btn big quiet" onclick={(e) => show(h, e.currentTarget)}>More about it</button>
           </div>
         </div>
@@ -454,8 +456,8 @@
           <button type="button" class="btn quiet" onclick={() => openOnAniList(p)}>Open on AniList</button>
           {#if p.show !== null}
             <button type="button" class="btn" onclick={() => goto(`/show?id=${p.show}`)}>Open in library</button>
-          {:else if !p.unreleased}
-            <button type="button" class="btn" onclick={() => download(p)} title="Find it on nyaa.si, most shared first, and pick a release for Telly to download"><Icon name="download" /><span>Download…</span></button>
+          {:else if !p.unreleased && downloadsOn(settings)}
+            <button type="button" class="btn" onclick={() => download(p)} title="Find it on your search site, most shared first, and pick a release for Telly to download"><Icon name="download" /><span>Download…</span></button>
           {/if}
         {/if}
       </div>

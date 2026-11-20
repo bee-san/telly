@@ -88,7 +88,7 @@ Time watched, cards mined and words known, over a week, a month, a year or all t
 - 🪟 **A small player** that stays on top of a game, lookups and all
 - ⏭️ **Skip opening and outro,** from the rip's chapters or AniSkip
 - 🤖 **No subtitles anywhere?** Telly makes them with Whisper
-- ⬇️ **Downloads built in:** find releases of a show on nyaa and download them with Telly's own torrent client, which picks up where it was when the connection drops. Each episode joins your library as it finishes. Download only what you have the right to.
+- ⬇️ **Downloads built in:** off until you add a search site you have the right to download from; then find releases of a show and download them with Telly's own torrent client, which picks up where it was when the connection drops. Each episode joins your library as it finishes. Download only what you have the right to.
 - 📈 **AniList and Tidepool** log what you watch for you
 
 ## 🆚 Why Telly?

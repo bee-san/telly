@@ -1,4 +1,7 @@
-//! nyaa.si: finding releases of a show to download. Telly reads nyaa's search
+//! Finding releases of a show to download, on the search site you add in
+//! Settings (setting nyaa.site): a tracker running the open-source Nyaa
+//! software. Telly has no site of its own, so until you add one it searches
+//! nothing and downloads nothing. Telly reads the site's search
 //! page (its RSS feed lists only the newest, whatever the order asked for),
 //! best-seeded first unless you ask for the newest, and downloads the one you
 //! pick from its .torrent file (torrents.rs).
@@ -18,8 +21,7 @@
 //!   GET /download/2088335.torrent
 //!
 //! `c` is the category (1_0 all anime, 1_2 English-translated, 1_4 raw) and
-//! f=2 keeps to trusted uploaders. Setting nyaa.site is another site running
-//! nyaa's software to search instead; TELLY_NYAA is a stand-in for tests.
+//! f=2 keeps to trusted uploaders. TELLY_NYAA is a stand-in for tests.
 
 use anyhow::{anyhow, Result};
 use regex::Regex;
@@ -29,7 +31,6 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::OnceLock;
 use std::time::Duration;
 
-const SITE: &str = "https://nyaa.si";
 const USER_AGENT: &str = concat!("Telly/", env!("CARGO_PKG_VERSION"), " (personal anime player)");
 
 /// One release on nyaa.
@@ -66,13 +67,13 @@ pub struct Found {
     pub more: bool,
 }
 
-/// Where nyaa is: setting nyaa.site, TELLY_NYAA, or nyaa.si.
-fn site(chosen: &str) -> String {
+/// The search site: setting nyaa.site, or TELLY_NYAA. With neither, downloading is off.
+fn site(chosen: &str) -> Result<String> {
     let chosen = chosen.trim().trim_end_matches('/');
     if !chosen.is_empty() {
-        return if chosen.contains("://") { chosen.to_string() } else { format!("https://{chosen}") };
+        return Ok(if chosen.contains("://") { chosen.to_string() } else { format!("https://{chosen}") });
     }
-    std::env::var("TELLY_NYAA").unwrap_or_else(|_| SITE.to_string())
+    std::env::var("TELLY_NYAA").map_err(|_| anyhow!("Downloading is off: add a search site in Settings → Library and downloads to turn it on."))
 }
 
 fn agent() -> &'static ureq::Agent {
@@ -90,7 +91,7 @@ fn agent() -> &'static ureq::Agent {
 /// Searches nyaa for `query`: `category` is "all", "translated" or "raw",
 /// `sort` "seeders", "newest" or "size", and `page` counts from 1.
 pub fn search(chosen_site: &str, query: &str, category: &str, trusted: bool, sort: &str, page: u32) -> Result<Found> {
-    let site = site(chosen_site);
+    let site = site(chosen_site)?;
     let category = match category {
         "translated" => "1_2",
         "raw" => "1_4",
@@ -388,14 +389,14 @@ pub fn torrent_file(url: &str) -> Result<Vec<u8>> {
     let bytes = fetch(url, &[])?;
     // A .torrent file is a bencoded dictionary.
     if bytes.first() != Some(&b'd') {
-        return Err(anyhow!("nyaa didn’t send a .torrent file"));
+        return Err(anyhow!("The search site didn’t send a .torrent file"));
     }
     Ok(bytes)
 }
 
 /// Asks nyaa for `url`. A dropped connection is asked again, twice, before giving up.
 fn fetch(url: &str, params: &[(&str, &str)]) -> Result<Vec<u8>> {
-    let mut failed = anyhow!("nyaa isn’t reachable");
+    let mut failed = anyhow!("The search site isn’t reachable");
     for attempt in 0..3u64 {
         if attempt > 0 {
             std::thread::sleep(Duration::from_secs(2 * attempt));
@@ -403,22 +404,22 @@ fn fetch(url: &str, params: &[(&str, &str)]) -> Result<Vec<u8>> {
         let mut response = match agent().get(url).query_pairs(params.iter().copied()).header("User-Agent", USER_AGENT).call() {
             Ok(r) => r,
             Err(e) => {
-                failed = anyhow!("nyaa isn’t reachable ({e})");
+                failed = anyhow!("The search site isn’t reachable ({e})");
                 continue;
             }
         };
         match response.status().as_u16() {
             200 => {}
-            429 => return Err(anyhow!("nyaa asked Telly to slow down. Try again in a minute.")),
+            429 => return Err(anyhow!("The search site asked Telly to slow down. Try again in a minute.")),
             code if code >= 500 => {
-                failed = anyhow!("nyaa answered {code}");
+                failed = anyhow!("The search site answered {code}");
                 continue;
             }
-            code => return Err(anyhow!("nyaa answered {code}")),
+            code => return Err(anyhow!("The search site answered {code}")),
         }
         match response.body_mut().with_config().limit(8 * 1024 * 1024).read_to_vec() {
             Ok(bytes) => return Ok(bytes),
-            Err(e) => failed = anyhow!("nyaa’s answer was cut off ({e})"),
+            Err(e) => failed = anyhow!("The search site’s answer was cut off ({e})"),
         }
     }
     Err(failed)
@@ -435,7 +436,7 @@ fn parse(html: &str, site: &str) -> Result<Found> {
     let re = |cell: &'static OnceLock<Regex>, pattern: &str| cell.get_or_init(|| Regex::new(pattern).expect("a valid pattern"));
     // A page that isn't nyaa's search has no table of torrents.
     if !html.contains("torrent-list") {
-        return Err(anyhow!("That isn’t a nyaa search page. Check the search site in Settings → Library and downloads."));
+        return Err(anyhow!("That isn’t a search page Telly can read. Check the search site in Settings → Library and downloads."));
     }
     let row = re(&ROW, r#"(?s)<tr class="(default|success|danger)">(.*?)</tr>"#);
     let view = re(&VIEW, r#"<a href="/view/(\d+)" title="([^"]*)""#);
@@ -535,6 +536,8 @@ fn unescape(text: &str) -> String {
 mod tests {
     use super::*;
 
+    const SITE: &str = "https://tracker.example";
+
     /// Three rows of nyaa's search page, as it sends them: trusted, ordinary and a remake.
     const PAGE: &str = r#"<table class="table table-bordered table-hover table-striped torrent-list"><tbody>
 			<tr class="success">
@@ -592,7 +595,7 @@ mod tests {
 
     #[test]
     fn reads_each_release_on_the_page() {
-        let found = parse(PAGE, "https://nyaa.si").unwrap();
+        let found = parse(PAGE, SITE).unwrap();
         assert!(found.more);
         assert_eq!(found.releases.len(), 3);
         let first = &found.releases[0];
@@ -607,8 +610,8 @@ mod tests {
         assert_eq!(first.bytes, 1_503_238_554);
         assert_eq!(first.date, 1774018847);
         assert!(first.trusted && !first.remake);
-        assert_eq!(first.page, "https://nyaa.si/view/2088335");
-        assert_eq!(first.torrent, "https://nyaa.si/download/2088335.torrent");
+        assert_eq!(first.page, "https://tracker.example/view/2088335");
+        assert_eq!(first.torrent, "https://tracker.example/download/2088335.torrent");
         let second = &found.releases[1];
         assert_eq!((second.seeders, second.bytes), (414, 394_788_864));
         assert!(!second.trusted && !second.remake);
@@ -632,8 +635,11 @@ mod tests {
 
     #[test]
     fn another_address_for_nyaa() {
-        assert_eq!(site("nyaa.land/"), "https://nyaa.land");
-        assert_eq!(site("http://192.168.1.5:8000"), "http://192.168.1.5:8000");
+        assert_eq!(site("tracker.example/").unwrap(), "https://tracker.example");
+        assert_eq!(site("http://192.168.1.5:8000").unwrap(), "http://192.168.1.5:8000");
+        if std::env::var("TELLY_NYAA").is_err() {
+            assert!(site(" ").is_err(), "with no site added, downloading is off");
+        }
     }
 
     #[test]

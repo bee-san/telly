@@ -1,5 +1,5 @@
 //! Telly's own torrent client (librqbit) does its downloading: you pick a
-//! release on nyaa.si (nyaa.rs), and Telly downloads it, carrying on from
+//! release on the search site you added (nyaa.rs), and Telly downloads it, carrying on from
 //! where it was whenever the connection drops, and when Telly opens again.
 //!
 //! Each download's files go straight into a show's folder. For a show in the
@@ -14,7 +14,7 @@
 //! as the show you said it was; a release you didn't say, or one of several
 //! parts (a folder for each season), is offered in the Library to add.
 //!
-//! Telly fetches the release's .torrent file from nyaa, asking again when the
+//! Telly fetches the release's .torrent file from the search site, asking again when the
 //! connection drops, and falls back to the magnet link (whose list of files
 //! has to come from the people sharing it) only when it can't. The client
 //! keeps what it's downloading, how far each got and the DHT's nodes in

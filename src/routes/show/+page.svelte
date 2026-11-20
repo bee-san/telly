@@ -4,7 +4,7 @@
   import { onMount } from "svelte";
   import Cover from "$lib/Cover.svelte";
   import Icon from "$lib/Icon.svelte";
-  import { call, callKept, errorText, kept, pickFile, pickFolder, setWindowTitle, type Anime, type EpisodeRow, type Library, type MissingRips, type ShowMove, type ShowView, type TmdbTitle } from "$lib/api";
+  import { call, callKept, errorText, kept, pickFile, pickFolder, setWindowTitle, type Anime, type EpisodeRow, type Library, type MissingRips, type Settings, type ShowMove, type ShowView, type TmdbTitle, downloadsOn } from "$lib/api";
   import { bytes, clock, mediaLabel, plural, statusOf, subsHelp, subsLabel } from "$lib/format";
   import { animeOf, partsText } from "$lib/series";
   import { app } from "$lib/state.svelte";
@@ -13,6 +13,7 @@
   const id = $derived(Number(page.url.searchParams.get("id")));
   let view = $state.raw<ShowView | null>(null);
   let error = $state("");
+  let settings = $state.raw<Settings>(kept<Settings>("settings") ?? {});
   let menu = $state<{ ep: EpisodeRow; x: number; y: number } | null>(null);
   let matching = $state(false);
   let query = $state("");
@@ -49,6 +50,7 @@
 
   onMount(() => {
     app.dark = false;
+    callKept<Settings>("settings").then((s) => (settings = s)).catch(() => {});
     const close = () => {
       menu = null;
       more = false;
@@ -273,12 +275,12 @@
   async function follow(on: boolean) {
     if (!card) return;
     const show = card;
-    if (on) toast({ key: "follow", state: "working", title: "Looking for new episodes on nyaa.si", text: show.title });
+    if (on) toast({ key: "follow", state: "working", title: "Looking for new episodes on your search site", text: show.title });
     try {
       const r = await call<{ following: boolean; looked?: { like: string | null; started: number[] }; error?: string | null }>("follow", { show: show.id, on });
       const hourly = "Telly looks every hour, and downloads each new episode into this show’s folder.";
       if (!r.following) toast({ key: "follow", state: "done", title: "Not following any more", text: "New episodes won’t download themselves." });
-      else if (r.error) toast({ key: "follow", state: "failed", title: "Following, but nyaa.si couldn’t be searched", text: `${r.error} Telly looks again in an hour.` });
+      else if (r.error) toast({ key: "follow", state: "failed", title: "Following, but your search site couldn’t be searched", text: `${r.error} Telly looks again in an hour.` });
       else if (!r.looked?.like) toast({ key: "follow", state: "info", title: "Nothing to follow yet", text: "None of this show’s rips has its episode number in its name, so Telly can’t tell which release to follow." });
       else if (r.looked.started.length) toast({ key: "follow", state: "done", title: `Downloading ${r.looked.started.length > 1 ? "episodes" : "Episode"} ${r.looked.started.join(", ")}`, text: `The same release as ${r.looked.like}. ${hourly}` });
       else toast({ key: "follow", state: "done", title: "Following", text: `Nothing after ${r.looked.like} is out yet. ${hourly}` });
@@ -414,7 +416,9 @@
               </button>
             {/if}
             <button type="button" class="btn big quiet" onclick={() => card && goto(`/premine?show=${card.id}`)} title="Make cards for the words that take you to the share of the show you choose"><Icon name="card" /><span>Premine</span></button>
-            <button type="button" class="btn big quiet" onclick={() => card && goto(`/downloads?show=${card.id}`)} title="Find more of it on nyaa.si: Telly downloads it into this show’s folder, and each episode joins as it finishes"><Icon name="download" /><span>Download episodes…</span></button>
+            {#if downloadsOn(settings)}
+              <button type="button" class="btn big quiet" onclick={() => card && goto(`/downloads?show=${card.id}`)} title="Find more of it on your search site: Telly downloads it into this show’s folder, and each episode joins as it finishes"><Icon name="download" /><span>Download episodes…</span></button>
+            {/if}
             <span class="sp-more">
               <button type="button" class="btn big quiet icon" class:on={more} aria-label="More for this show" aria-haspopup="menu" aria-expanded={more} title="More" onclick={(e) => { e.stopPropagation(); menu = null; more = !more; }}><Icon name="more" /></button>
               {#if more}
@@ -423,8 +427,8 @@
                   <button type="button" role="menuitem" onclick={() => { more = false; lookAgain(); }}>Look for new episodes<small>Check its folder for rips added since</small></button>
                   {#if view?.following}
                     <button type="button" role="menuitem" onclick={() => { more = false; follow(false); }}>Stop following<small>New episodes stop downloading themselves</small></button>
-                  {:else if canFollow}
-                    <button type="button" role="menuitem" onclick={() => { more = false; follow(true); }}>Follow new episodes<small>Download each new one from nyaa.si as it comes out</small></button>
+                  {:else if canFollow && downloadsOn(settings)}
+                    <button type="button" role="menuitem" onclick={() => { more = false; follow(true); }}>Follow new episodes<small>Download each new one from your search site as it comes out</small></button>
                   {/if}
                   <button type="button" role="menuitem" onclick={() => { more = false; card && act(() => call("retrySubs", { show: card.id })); }}>Find subtitles again<small>Look on Jimaku for every episode</small></button>
                   <hr />

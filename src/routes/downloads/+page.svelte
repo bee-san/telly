@@ -4,7 +4,7 @@
   import { onMount, untrack } from "svelte";
   import DownloadSheet from "$lib/DownloadSheet.svelte";
   import Icon from "$lib/Icon.svelte";
-  import { call, callKept, errorText, inTauri, kept, setWindowTitle, type DownloadPlan, type DownloadsView, type EpisodeSet, type NyaaFound, type Release, type ShowView } from "$lib/api";
+  import { call, callKept, errorText, inTauri, kept, setWindowTitle, type DownloadPlan, type DownloadsView, type EpisodeSet, type NyaaFound, type Release, type Settings, type ShowView, downloadsOn } from "$lib/api";
   import { bytes, plural } from "$lib/format";
   import { app } from "$lib/state.svelte";
   import { toast } from "$lib/toast-store.svelte";
@@ -26,6 +26,8 @@
   /** The release whose show is being asked. */
   let asking = $state.raw<Release | null>(null);
 
+  /** Your settings, for whether downloading is on; null until Telly has said. */
+  let settings = $state.raw<Settings | null>(kept<Settings>("settings"));
   let q = $state("");
   let category = $state("all");
   let trusted = $state(false);
@@ -43,7 +45,7 @@
   let searchError = $state("");
   /** A release for each episode of the AniList entry, from one group, for when no one release has them all. */
   let set = $state.raw<EpisodeSet | null>(null);
-  /** nyaa's pages are being read for a release of each episode. */
+  /** The search site's pages are being read for a release of each episode. */
   let lookingForSet = $state(false);
   /** How many of the set's releases Download all has started, while it's starting them. */
   let sending = $state<{ done: number; of: number } | null>(null);
@@ -64,6 +66,7 @@
   onMount(() => {
     app.dark = false;
     setWindowTitle("Download — Telly");
+    callKept<Settings>("settings").then((s) => (settings = s)).catch(() => {});
     let timer: ReturnType<typeof setTimeout>;
     let stopped = false;
     const loop = async () => {
@@ -145,7 +148,7 @@
     }
   }
 
-  /** Looks for a release of each episode of the AniList entry, for when nyaa has no one release of them all. */
+  /** Looks for a release of each episode of the AniList entry, for when the search site has no one release of them all. */
   async function findSet(run: number, query: string) {
     set = null;
     const forEntry = anilistId && query === asked.trim() ? anilistId : null;
@@ -289,9 +292,15 @@
     </p>
   {/if}
 
-  <section aria-label="Find on nyaa.si">
+  {#if settings && !downloadsOn(settings)}
+    <p class="note">
+      <span>Downloading is off. Telly has no site of its own to find releases on: add one you have the right to download from, and Download… appears on shows and in Recommended.</span>
+      <a href="/settings#downloads" class="link-btn">Settings → Library and downloads</a>
+    </p>
+  {:else}
+  <section aria-label="Find a release">
     <form class="find" onsubmit={(e) => { e.preventDefault(); search(); }}>
-      <input class="input grow" bind:value={q} placeholder="Sousou no Frieren 1080p" aria-label="Search nyaa.si" />
+      <input class="input grow" bind:value={q} placeholder="Sousou no Frieren 1080p" aria-label="Search for a release" />
       <button type="submit" class="btn" disabled={searching || !q.trim()}>{searching && pageNo === 1 ? "Searching…" : "Search"}</button>
     </form>
     <div class="filters">
@@ -311,7 +320,7 @@
 
     {#if searchError}<p class="err">{searchError}</p>{/if}
     {#if searched && !releases.length && !searching && !searchError}
-      <p class="hint">nyaa has nothing for “{searched}”.</p>
+      <p class="hint">The search site has nothing for “{searched}”.</p>
     {/if}
     {#if set && entry}
       {@const s = set}
@@ -320,11 +329,11 @@
         <div class="row-body">
           <span class="row-title">{s.missing.length ? plural(s.episodes, "episode") : `All ${plural(s.episodes, "episode")}`}{s.releases.length === s.episodes ? ", one torrent each" : ` in ${plural(s.releases.length, "torrent")}`}</span>
           <span class="row-meta">
-            {s.batch ? "" : "No one release on nyaa has every episode, so Telly found one for each. "}Named like {s.releases[0].title} ·
+            {s.batch ? "" : "No one release on the search site has every episode, so Telly found one for each. "}Named like {s.releases[0].title} ·
             {bytes(s.bytes)} ·
             <span class:warn={s.seeders === 0}>{s.seeders === 0 ? "One of them no one is sharing" : `At least ${plural(s.seeders, "person", "people")} sharing each`}</span>
           </span>
-          {#if s.missing.length}<span class="row-meta warn">Telly found no release of {episodesText(s.missing).toLowerCase()} from them on nyaa.</span>{/if}
+          {#if s.missing.length}<span class="row-meta warn">Telly found no release of {episodesText(s.missing).toLowerCase()} from them on the search site.</span>{/if}
         </div>
         <button type="button" class="btn small" disabled={sending !== null || left === 0} onclick={() => intoLibrary(`All ${plural(s.episodes, "episode")}`, (library) => downloadAll(s, library))} title="Telly downloads each episode’s torrent into its place in your library">
           {#if sending}<span>Starting {Math.min(sending.done + 1, sending.of)} of {sending.of}…</span>{:else if left === 0}<Icon name="check" /><span>Downloading</span>{:else}<Icon name="download" /><span>Download {left === s.releases.length ? "all" : "the other"} {left}</span>{/if}
@@ -334,7 +343,7 @@
       <div class="set looking" role="status">
         <div class="row-body">
           <span class="row-title"><span class="spin"></span> Looking for a release of each episode…</span>
-          <span class="row-meta">Telly is reading nyaa’s pages in case no one release has them all, which takes a little while. Wait for it before picking one below: if it finds them, <b>Download all</b> appears here.</span>
+          <span class="row-meta">Telly is reading the search site’s pages in case no one release has them all, which takes a little while. Wait for it before picking one below: if it finds them, <b>Download all</b> appears here.</span>
           <span class="bar busy" aria-hidden="true"><i></i></span>
         </div>
       </div>
@@ -344,7 +353,7 @@
         {#each releases as r (r.id)}
           <li class="row">
             <div class="row-body">
-              <button type="button" class="row-title link" onclick={() => openPage(r)} title="Open its page on nyaa.si">{r.title}</button>
+              <button type="button" class="row-title link" onclick={() => openPage(r)} title="Open its page on the search site">{r.title}</button>
               <span class="row-meta">
                 {r.size} ·
                 <span class:warn={r.seeders === 0}>{r.seeders === 0 ? "No one sharing it" : `${plural(r.seeders, "person", "people")} sharing it`}</span>
@@ -364,6 +373,7 @@
       {/if}
     {/if}
   </section>
+  {/if}
 </div>
 
 {#if choosing && !plan}

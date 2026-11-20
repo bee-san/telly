@@ -596,14 +596,14 @@ export interface TmdbTitle {
   score: number;
 }
 
-/** A release on nyaa.si. */
+/** A release on the search site. */
 export interface Release {
   id: number;
   title: string;
   magnet: string;
   /** Its .torrent file. */
   torrent: string;
-  /** As nyaa shows it: "1.4 GiB". */
+  /** As the search site shows it: "1.4 GiB". */
   size: string;
   bytes: number;
   seeders: number;
@@ -612,11 +612,11 @@ export interface Release {
   completed: number;
   /** When it was uploaded (unix seconds). */
   date: number;
-  /** From one of nyaa's trusted uploaders. */
+  /** From one of the search site's trusted uploaders. */
   trusted: boolean;
   /** Someone else's release uploaded again. */
   remake: boolean;
-  /** Its page on nyaa. */
+  /** Its page on the search site. */
   page: string;
 }
 
@@ -632,12 +632,12 @@ export interface EpisodeSet {
   releases: Release[];
   /** How many of the anime's episodes they have. */
   episodes: number;
-  /** The episodes that are out but nyaa has none of, from this group. */
+  /** The episodes that are out but the search site has none of, from this group. */
   missing: number[];
   /** The fewest people sharing any one of them. */
   seeders: number;
   bytes: number;
-  /** Whether nyaa has a release of several episodes in one that people are sharing. */
+  /** Whether the search site has a release of several episodes in one that people are sharing. */
   batch: boolean;
 }
 
@@ -843,6 +843,9 @@ export interface Status {
 }
 
 export type Settings = Record<string, unknown>;
+
+/** Whether downloading is on: it is once you've added a search site in Settings → Library and downloads. */
+export const downloadsOn = (settings: Settings | null | undefined) => String(settings?.["nyaa.site"] ?? "").trim() !== "";
 
 /** What Settings → Cards and Anki → Known words chooses from: Anki's decks, its note types with the word's field, and how many notes the choice finds. */
 export interface KnownSources {

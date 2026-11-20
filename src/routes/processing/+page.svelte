@@ -3,7 +3,7 @@
   import { onMount } from "svelte";
   import AddSheet from "$lib/AddSheet.svelte";
   import Icon from "$lib/Icon.svelte";
-  import { call, callKept, errorText, kept, setWindowTitle, type DownloadsView, type Queue, type Queued, type Torrent } from "$lib/api";
+  import { call, callKept, errorText, kept, setWindowTitle, type DownloadsView, type Queue, type Queued, type Settings, type Torrent, downloadsOn } from "$lib/api";
   import { bytes } from "$lib/format";
   import { app } from "$lib/state.svelte";
   import { toast } from "$lib/toast-store.svelte";
@@ -13,6 +13,7 @@
 
   let downloads = $state.raw<DownloadsView | null>(kept<DownloadsView>("downloads"));
   let queue = $state.raw<Queue | null>(null);
+  let settings = $state.raw<Settings>(kept<Settings>("settings") ?? {});
   /** A folder of downloads being added to the library. */
   let adding = $state<string | null>(null);
 
@@ -20,6 +21,7 @@
   const finished = $derived(downloads?.torrents.filter((t) => t.state === "done").slice(0, FINISHED_SHOWN) ?? []);
 
   onMount(() => {
+    callKept<Settings>("settings").then((s) => (settings = s)).catch(() => {});
     app.dark = false;
     setWindowTitle("Processing — Telly");
     let stopped = false;
@@ -87,7 +89,7 @@
   <div class="pr-top">
     <button type="button" class="back" onclick={() => goto("/")}><Icon name="back" /><span>Library</span></button>
     <span class="grow"></span>
-    <a class="btn quiet" href="/downloads"><Icon name="download" /><span>Download…</span></a>
+    {#if downloadsOn(settings)}<a class="btn quiet" href="/downloads"><Icon name="download" /><span>Download…</span></a>{/if}
   </div>
   <div class="pr-head">
     <h2>Processing</h2>
@@ -135,8 +137,8 @@
           </li>
         {/each}
       </ul>
-    {:else if downloads && !downloads.offers.length}
-      <p class="hint">Nothing is downloading. <a href="/downloads" class="link-btn">Download from nyaa.si…</a></p>
+    {:else if downloads && !downloads.offers.length && downloadsOn(settings)}
+      <p class="hint">Nothing is downloading. <a href="/downloads" class="link-btn">Download…</a></p>
     {/if}
     {#if finished.length}
       <h4>Finished</h4>

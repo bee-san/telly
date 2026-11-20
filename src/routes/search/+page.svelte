@@ -7,7 +7,7 @@
   import Cover from "$lib/Cover.svelte";
   import Icon from "$lib/Icon.svelte";
   import Scene from "$lib/Scene.svelte";
-  import { callKept, errorText, kept, mediaUrl, setWindowTitle, type FoundLine, type Library, type LineSearch, type Pick, type Settings, type ShowCard } from "$lib/api";
+  import { callKept, errorText, kept, mediaUrl, setWindowTitle, type FoundLine, type Library, type LineSearch, type Pick, type Settings, type ShowCard, downloadsOn } from "$lib/api";
   import { clock, plural, statusOf } from "$lib/format";
   import { downloadLink, findLines, findOnAniList, findShows, groupLines, pickMeta } from "$lib/search";
   import { app } from "$lib/state.svelte";
@@ -176,8 +176,8 @@
                 <span class="c-sub">{pickMeta(p)}</span>
                 {#if p.unreleased}
                   <span class="c-sub">Not out yet</span>
-                {:else}
-                  <a class="btn quiet small dl" href={downloadLink(p)} title="Find it on nyaa.si, most shared first, and pick a release for Telly to download">Download…</a>
+                {:else if downloadsOn(settings)}
+                  <a class="btn quiet small dl" href={downloadLink(p)} title="Find it on your search site, most shared first, and pick a release for Telly to download">Download…</a>
                 {/if}
               </div>
             {/each}

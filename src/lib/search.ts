@@ -52,7 +52,7 @@ export function groupLines(found: LineSearch, shows: ShowCard[]): LineGroup[] {
     .sort((a, b) => reach(a.lines[0]) - reach(b.lines[0]) || (b.show.lastWatchedAt ?? 0) - (a.show.lastWatchedAt ?? 0));
 }
 
-/** Where Download… goes for an anime on AniList: nyaa.si's search for it. */
+/** Where Download… goes for an anime on AniList: the search site's search for it. */
 export const downloadLink = (p: Pick) => `/downloads?anilist=${p.id}&q=${encodeURIComponent(p.romaji || p.english || p.title)}`;
 
 const FORMATS: Record<string, string> = { TV: "TV", TV_SHORT: "TV short", MOVIE: "Movie", SPECIAL: "Special", OVA: "OVA", ONA: "ONA", MUSIC: "Music" };

@@ -20,16 +20,24 @@ npx tauri android build --debug --target x86_64 --apk    # for an x86_64 emulato
 
 `npm run android` does the first three steps and the build.
 
-A release APK comes out unsigned (`src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk`). Sign it with `apksigner` from the SDK's build-tools before installing it:
+A release APK is signed with the key in `src-tauri/gen/android/keystore.properties` (kept out of git):
 
-```sh
-apksigner sign --ks <your keystore> --out telly.apk app-universal-release-unsigned.apk
-adb install -r telly.apk
+```properties
+storeFile=/path/to/telly.jks
+storePassword=…
+keyAlias=…
+keyPassword=…
 ```
+
+Without that file it comes out unsigned (`app-universal-release-unsigned.apk`), and you sign it with `apksigner` from the SDK's build-tools before installing it.
+
+## Releases and updates
+
+Publishing a release builds the APK on GitHub Actions (`.github/workflows/release.yml`) and attaches it as `Telly_<version>_android.apk`, signed with the key in the repository secrets `ANDROID_KEYSTORE` (the `.jks` file, base64), `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD`. That has to be the key every Telly on a phone was signed with: Android installs an update only over an app signed with the same key. The phone finds the APK on the latest release (`update.rs`) and hands it to Android's installer (`installApk` in `TellyPlugin.kt`).
 
 ## Clips on cards: FFmpegKit
 
-Cards' pictures and audio are cut with [FFmpegKitNext](https://github.com/arthenica/ffmpeg-kit-next), which publishes no packages. Build its Android `.aar` with SVT-AV1 and Opus (its `android.sh`, for arm64-v8a and x86_64) and put it in `src-tauri/gen/android/app/libs/`; the next build includes it. Without it, cards are added without their picture and audio.
+Cards' pictures and audio are cut with [FFmpegKitNext](https://github.com/arthenica/ffmpeg-kit-next), which publishes no packages. Build its Android `.aar` with SVT-AV1 and Opus (its `android.sh`, for arm64-v8a and x86_64) and commit it in `src-tauri/gen/android/app/libs/`; every build after, the release's included, has it. Without it, cards are added without their picture and audio.
 
 ## What's different on the phone
 

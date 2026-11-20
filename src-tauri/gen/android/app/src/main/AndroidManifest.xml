@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Installing a newer Telly from its release on GitHub (TellyPlugin.installApk). -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- Adding cards to AnkiDroid, and seeing whether it's installed. -->
     <uses-permission android:name="com.ichi2.anki.permission.READ_WRITE_DATABASE" />
     <queries>

@@ -463,6 +463,8 @@ Telly for Android plays episodes your PC got ready, anywhere, with or without a 
 
 The phone's Library has only what it got: what you're watching first, then every show with its episodes, which are on the phone, and which are being got. **Remove** deletes the phone's copy; it stays on your PC. Watched copies stay until the phone needs the room for new ones, the longest-watched going first.
 
+Telly for Android is on each [release](https://github.com/bee-san/telly/releases/latest) beside the Windows installer, as `Telly_<version>_android.apk`. Once a day the phone asks GitHub what the latest release is, as the PC does, and when that's newer its Library says **Telly 0.14.0 is out**. **Install Telly 0.14.0** downloads the release's APK and Android asks you to update; the first time, it asks you to let Telly install apps, then press Install again. Your phone's episodes and where you got to stay as they are.
+
 Each time the Library opens, and with **Sync now**, the phone gives the PC where you got to, what you watched and what Claude said, and takes in what changed on the PC for its shows: every episode's subtitles (Previously on tells the story from them), your dictionaries, and the settings for Explain, Previously on and cards. Where you are in an episode is wherever you played it last.
 
 On the phone the player takes the whole screen, sideways. A tap shows the controls or hides them; two quick taps to the left or right go back or on 10 seconds.

@@ -646,6 +646,7 @@ impl Backend {
         {
             crate::phone::start_getting(self.clone());
             search::start(self.clone());
+            crate::update::start(self.clone());
         }
         #[cfg(not(target_os = "android"))]
         let backend = self.clone();
@@ -1476,10 +1477,8 @@ impl Backend {
             }
             "knownSources" => known::sources(self),
             "status" => Ok(self.status()),
-            "installUpdate" => {
-                crate::update::install(self.clone())?;
-                Ok(json!({}))
-            }
+            "installUpdate" => crate::update::install(self.clone()),
+            "newer" => to_value(self.newer()),
             "findTools" => {
                 self.refind_tools();
                 Ok(self.status())

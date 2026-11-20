@@ -3,6 +3,9 @@ package com.telly.player
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.ActivityInfo
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import android.view.View
 import android.view.WindowManager
 import androidx.core.content.FileProvider
@@ -30,9 +33,15 @@ class ImmersiveArgs {
 /** AnkiDroid's permission to add notes. */
 private const val ANKI_PERMISSION = "com.ichi2.anki.permission.READ_WRITE_DATABASE"
 
+@InvokeArg
+class InstallArgs {
+  var path: String = ""
+}
+
 /**
  * What Telly's pages ask of Android itself: the player's whole screen, the
- * clip of a line cut by FFmpegKit, and cards added to AnkiDroid.
+ * clip of a line cut by FFmpegKit, cards added to AnkiDroid, and a newer
+ * Telly installed.
  */
 @TauriPlugin(permissions = [Permission(strings = [ANKI_PERMISSION], alias = "anki")])
 class TellyPlugin(private val activity: Activity) : Plugin(activity) {
@@ -165,6 +174,39 @@ class TellyPlugin(private val activity: Activity) : Plugin(activity) {
         invoke.resolve(result)
       } catch (e: Exception) {
         invoke.reject("AnkiDroid: ${e.message}")
+      }
+    }.start()
+  }
+
+  /**
+   * Hands the newer Telly's APK (`path`, downloaded by the backend) to
+   * Android's installer, which asks you to update. The first time, Android
+   * asks you to let Telly install apps: allowed, press Install again.
+   */
+  @Command
+  fun installApk(invoke: Invoke) {
+    val kept = File(invoke.parseArgs(InstallArgs::class.java).path)
+    if (!kept.isFile) return invoke.reject("The newer Telly didn’t download")
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !activity.packageManager.canRequestPackageInstalls()) {
+      activity.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${activity.packageName}")))
+      return invoke.reject("Let Telly install apps, then press Install again")
+    }
+    Thread {
+      try {
+        // Shared from the cache, the folder FileProvider lends out (file_paths.xml).
+        val file = File(File(activity.cacheDir, "update").apply { deleteRecursively(); mkdirs() }, "Telly.apk")
+        kept.copyTo(file, overwrite = true)
+        kept.delete()
+        val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.fileprovider", file)
+        val install = Intent(Intent.ACTION_VIEW)
+          .setDataAndType(uri, "application/vnd.android.package-archive")
+          .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        activity.runOnUiThread {
+          activity.startActivity(install)
+          invoke.resolve(JSObject())
+        }
+      } catch (e: Exception) {
+        invoke.reject("Android’s installer didn’t open: ${e.message}")
       }
     }.start()
   }

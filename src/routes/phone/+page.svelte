@@ -1,7 +1,8 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
   import { onMount } from "svelte";
-  import { call, errorText, mediaUrl } from "$lib/api";
+  import { invoke } from "@tauri-apps/api/core";
+  import { call, errorText, mediaUrl, type Newer } from "$lib/api";
   import { bytes, clock } from "$lib/format";
   import { gettingText, phonePlays, type PhoneEpisode, type PhoneLibrary, type PhoneShow } from "$lib/phone";
   import { app } from "$lib/state.svelte";
@@ -11,8 +12,12 @@
   let error = $state("");
   let open = $state<number | null>(null);
   let syncing = $state(false);
+  /** A newer Telly that's out, once GitHub has said so. */
+  let newer = $state.raw<Newer | null>(null);
+  let updating = $state(false);
 
   async function load() {
+    call<Newer | null>("newer").then((n) => (newer = n)).catch(() => {});
     try {
       lib = await call<PhoneLibrary>("phoneLibrary");
       error = "";
@@ -75,6 +80,20 @@
     }
   }
 
+  /** Downloads the newer Telly and hands it to Android's installer, which asks you to update. */
+  async function installNewer() {
+    if (!newer) return;
+    updating = true;
+    try {
+      const { apk } = await call<{ apk: string }>("installUpdate");
+      await invoke("plugin:telly|installApk", { path: apk });
+    } catch (e) {
+      toast({ key: "update", state: "failed", title: `Telly ${newer.version} isn’t installed`, text: errorText(e) });
+    } finally {
+      updating = false;
+    }
+  }
+
   const get = (ids: number[]) => act(async () => call("phoneGet", { ids, plays: await phonePlays() }));
   const remove = (ids: number[]) => act(() => call("phoneRemove", { ids }));
   const play = (e: PhoneEpisode) => goto(`/watch?ep=${e.id}`);
@@ -85,6 +104,17 @@
     <div class="brand"><span class="logo">T</span><h1>Telly</h1></div>
     <button type="button" class="btn" onclick={() => goto("/phone/get")} title="Choose episodes to copy from your PC">Get from PC</button>
   </header>
+
+  {#if newer}
+    <div class="newer">
+      <span>Telly {newer.version} is out{newer.size ? ` (${bytes(newer.size)})` : ""}</span>
+      {#if newer.installer}
+        <button type="button" class="btn primary" disabled={updating} onclick={installNewer}>{updating ? "Downloading…" : `Install Telly ${newer.version}`}</button>
+      {:else}
+        <span class="muted">Its APK is still being built</span>
+      {/if}
+    </div>
+  {/if}
 
   {#if error}<p class="error">{error}</p>{/if}
 
@@ -184,6 +214,8 @@
   .muted { color: var(--ink-3); font-size: 13px; }
   .pad { padding: 4px 0; }
   .error { color: var(--bad); }
+  .newer { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 12px; padding: 10px 14px; margin: 0 0 12px; border: 1px solid var(--rule-2); border-radius: 10px; background: var(--surface); font-weight: 600; }
+  .newer .muted { color: var(--ink-2); font-weight: 500; font-size: 14px; }
   .empty { margin-top: 18vh; text-align: center; padding: 0 8px; }
   .empty h2 { font: 700 24px/1.2 var(--font-display); }
   .empty p { color: var(--ink-2); line-height: 1.5; }

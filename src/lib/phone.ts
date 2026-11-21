@@ -61,6 +61,17 @@ export interface PcLibrary {
   free: number;
 }
 
+/** The episodes the phone gets without being asked: of each show you're part-way through on the PC,
+ *  the last watched first, those of its next `n` not watched that the phone hasn't got and isn't getting. */
+export function nextToGet(lib: PcLibrary, n = 3): number[] {
+  return lib.shows
+    .filter((s) => s.episodes.some((e) => e.episode.watchedAt || e.episode.position > 30))
+    .sort((a, b) => (b.show.lastWatchedAt ?? 0) - (a.show.lastWatchedAt ?? 0))
+    .flatMap((s) => s.episodes.filter((e) => !e.episode.watchedAt).slice(0, n))
+    .filter((e) => e.onPhone === "no")
+    .map((e) => e.episode.id);
+}
+
 /** What getting an episode is doing, in a few words. */
 export function gettingText(g: { state: Getting["state"]; progress: number; error: string }): string {
   const pct = `${Math.round(g.progress * 100)}%`;

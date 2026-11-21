@@ -4,7 +4,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { call, errorText, mediaUrl, type Newer } from "$lib/api";
   import { bytes, clock } from "$lib/format";
-  import { gettingText, phonePlays, type PhoneEpisode, type PhoneLibrary, type PhoneShow } from "$lib/phone";
+  import { gettingText, nextToGet, phonePlays, type PcLibrary, type PhoneEpisode, type PhoneLibrary, type PhoneShow } from "$lib/phone";
   import { app } from "$lib/state.svelte";
   import { toast } from "$lib/toast-store.svelte";
 
@@ -15,6 +15,8 @@
   /** A newer Telly that's out, once GitHub has said so. */
   let newer = $state.raw<Newer | null>(null);
   let updating = $state(false);
+  /** Whether a sync also gets the next episodes of what you're watching. */
+  let autoGet = $state(true);
 
   async function load() {
     call<Newer | null>("newer").then((n) => (newer = n)).catch(() => {});
@@ -33,6 +35,10 @@
     syncing = true;
     try {
       await call("phoneSync");
+      if (autoGet) {
+        const ids = nextToGet(await call<PcLibrary>("phonePcLibrary"));
+        if (ids.length) await call("phoneGet", { ids, plays: await phonePlays() });
+      }
       await load();
       // Dictionaries the PC has that the phone's lookups haven't installed yet.
       import("$lib/lookup.svelte").then((l) => l.installDictionaries()).catch(() => {});
@@ -53,7 +59,7 @@
       if (stopped) return;
       timer = setTimeout(loop, lib?.state.getting.length ? 1500 : 6000);
     };
-    loop().then(() => sync(false));
+    Promise.all([loop(), call<Record<string, unknown>>("settings").then((s) => (autoGet = s["phone.autoGet"] !== false)).catch(() => {})]).then(() => sync(false));
     return () => {
       stopped = true;
       clearTimeout(timer);
@@ -94,6 +100,12 @@
     }
   }
 
+  function setAutoGet(on: boolean) {
+    autoGet = on;
+    call("setSetting", { key: "phone.autoGet", value: on }).catch(() => {});
+    if (on) sync(false);
+  }
+
   const get = (ids: number[]) => act(async () => call("phoneGet", { ids, plays: await phonePlays() }));
   const remove = (ids: number[]) => act(() => call("phoneRemove", { ids }));
   const play = (e: PhoneEpisode) => goto(`/watch?ep=${e.id}`);
@@ -129,6 +141,10 @@
       <span>{lib.state.pc?.name} · {bytes(lib.state.free)} free</span>
       <button type="button" class="link" disabled={syncing} onclick={() => sync(true)}>{syncing ? "Syncing…" : "Sync now"}</button>
     </div>
+    <label class="auto">
+      <input type="checkbox" checked={autoGet} onchange={(e) => setAutoGet(e.currentTarget.checked)} />
+      Get the next 3 episodes of what you’re watching
+    </label>
 
     {#if watching.length}
       <h2 class="section">Currently watching</h2>
@@ -207,6 +223,8 @@
   h1 { font: 700 22px/1 var(--font-display); margin: 0; }
   .section { font: 600 13px/1.2 var(--font-ui); text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); margin: 22px 0 10px; }
   .status { display: flex; justify-content: space-between; align-items: center; color: var(--ink-2); font-size: 14px; }
+  .auto { display: flex; align-items: center; gap: 10px; padding: 10px 0 0; color: var(--ink-2); font-size: 14px; }
+  .auto input { width: 20px; height: 20px; flex: none; accent-color: var(--btn); }
   .btn { border: 1px solid var(--rule-2); background: var(--surface); color: var(--ink); border-radius: 10px; padding: 10px 14px; font: 600 15px var(--font-ui); }
   .btn.primary { background: var(--btn); color: var(--btn-ink); border-color: var(--btn); }
   .btn.small { padding: 7px 12px; font-size: 14px; }

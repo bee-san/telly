@@ -25,6 +25,14 @@ class MainActivity : TauriActivity() {
 
   override fun onWebViewCreate(webView: WebView) {
     page = webView
+    // The page keeps the focus through a touch: without it, Android spends the next press of the D-pad on giving the focus back, and the page never hears it.
+    webView.isFocusableInTouchMode = true
+    webView.requestFocus()
+  }
+
+  override fun onWindowFocusChanged(hasFocus: Boolean) {
+    super.onWindowFocusChanged(hasFocus)
+    if (hasFocus) page?.requestFocus()
   }
 
   override fun dispatchKeyEvent(event: KeyEvent): Boolean = pad.key(event) || super.dispatchKeyEvent(event)

@@ -32,8 +32,10 @@
 
   /** Shows the words tapped. Not again for a lookup inside the popup, which changes the styles kept but not the words. */
   function show() {
+    // Read even while the popup is still loading, so the next words looked up are shown too.
+    const words = entries;
     if (said) popup?.notice(said);
-    else popup?.render(entries, { styles: untrack(() => dictionaryStyles.list) });
+    else popup?.render(words, { styles: untrack(() => dictionaryStyles.list) });
   }
 
   onMount(() => {
@@ -56,6 +58,35 @@
   });
 
   $effect(show);
+
+  /** The entry a controller is on. */
+  let current = 0;
+  $effect(() => {
+    void entries;
+    current = 0;
+  });
+
+  /** A controller's L1 and R1: on to the entry before or after. */
+  export function step(by: number) {
+    current = Math.min(entries.length - 1, Math.max(0, current + by));
+    popup?.setCurrent(current);
+  }
+
+  /** A controller's A: adds the card of the entry it's on. */
+  export function add() {
+    if (entries[current]) onadd(entries[current]);
+  }
+
+  /** A controller's right stick: scrolls the definitions. */
+  export function scroll(by: number) {
+    const inside = popup?.element.shadowRoot?.querySelectorAll<HTMLElement>("*") ?? [];
+    [...inside].find((el) => el.scrollHeight > el.clientHeight + 1 && /auto|scroll/.test(getComputedStyle(el).overflowY))?.scrollBy(0, by);
+  }
+
+  /** A controller's B: back from a word looked up in a definition. False when there's nothing to go back to. */
+  export function back(): boolean {
+    return popup?.back() ?? false;
+  }
 </script>
 
 <div class="popup" role="dialog" aria-label="What it means">

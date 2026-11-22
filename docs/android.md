@@ -45,6 +45,7 @@ Cards' pictures and audio are cut with [FFmpegKitNext](https://github.com/arthen
 - The backend starts only what the phone does: copying episodes from the PC (`phone.rs`) and line search. Nothing is converted, synced, downloaded or premined there.
 - FireRedVAD (subtitle sync), the single-instance plugin and Hachidori's windows are left out of the Android build.
 - `TellyPlugin.kt` is what the pages ask of Android: the player's whole screen, FFmpegKit, and AnkiDroid's API.
+- A controller's buttons reach `MainActivity` as keys and stick movements; `Pad.kt` names them and tells the page (`src/lib/pad.svelte.ts`), which moves the ring and repeats a held direction. Nothing depends on what the WebView does with a controller.
 - Lookups are the backend's (`lookups.rs`): Hoshidicts is compiled into the app (`build.rs`), and each of your dictionaries is installed into a folder on the phone and read from there. `TELLY_NATIVE_LOOKUPS=1` builds it into Telly on a PC too, which is how `lookups.rs`'s tests run: `TELLY_NATIVE_LOOKUPS=1 cargo test --manifest-path src-tauri/Cargo.toml --lib lookups`.
 
 ## Trying it against a PC

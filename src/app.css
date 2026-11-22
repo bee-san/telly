@@ -63,6 +63,8 @@ h1, h2, h3, h4, p, ul, ol { margin: 0; }
 button { font: inherit; color: inherit; }
 a { color: inherit; }
 :focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+/* What a controller's ring is on (pad.svelte.ts): yellow with a dark edge inside it, so it shows on a light page and on the player. */
+.pad-focus, .pad-focus:focus-visible { outline: 3px solid var(--mark); outline-offset: 2px; box-shadow: 0 0 0 2px #151516; }
 [lang="ja"] { font-family: var(--font-jp); }
 code, .mono { font-family: var(--font-mono); font-size: .9em; }
 .grow { flex: 1; }

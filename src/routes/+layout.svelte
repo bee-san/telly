@@ -6,14 +6,21 @@
   import "@fontsource/ibm-plex-mono/400.css";
   import "@fontsource/ibm-plex-mono/500.css";
   import "../app.css";
-  import { onMount, type Snippet } from "svelte";
+  import { onMount, tick, type Snippet } from "svelte";
+  import { afterNavigate } from "$app/navigation";
   import TitleBar from "$lib/TitleBar.svelte";
   import Toasts from "$lib/Toasts.svelte";
   import { hachidoriStart } from "$lib/api";
+  import { padStart, startPad } from "$lib/pad.svelte";
   import { onPhone } from "$lib/phone";
   import { app, watchActivity } from "$lib/state.svelte";
 
   let { children }: { children: Snippet } = $props();
+
+  // With a controller, a new page starts with the ring on it.
+  afterNavigate(() => {
+    if (onPhone) tick().then(padStart);
+  });
 
   onMount(() => {
     // The phone has no background work to show, and no Hachidori: its backend looks words up.
@@ -24,7 +31,8 @@
       } catch {
         // Nothing was kept there.
       }
-      return;
+      // A controller moves a ring around the page (pad.svelte.ts).
+      return startPad();
     }
     const stop = watchActivity();
     // WebView2 has loaded Hachidori by the time the page is up: start its engine.

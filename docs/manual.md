@@ -469,6 +469,33 @@ Each time the Library opens, and with **Sync now**, the phone gives the PC where
 
 On the phone the player takes the whole screen, sideways. A tap shows the controls or hides them; two quick taps to the left or right go back or on 10 seconds.
 
+**With a controller** (a handheld's own, like the AYN Thor's, or one paired with the phone), nothing needs a touch. In the Library and Get from PC the D-pad or the left stick moves a yellow ring over what can be pressed, **A** presses it, **B** goes back and the right stick scrolls; a held direction keeps moving. A field you type in (the PC's address and code, once) brings up Android's keyboard. A touch takes the ring away until a button is pressed again. In the player the buttons are LFG's: the D-pad steps words and lines, the left stick characters, A adds the card, B closes, and the shoulder buttons change entry.
+
+| Watching | |
+|---|---|
+| A | Play or pause |
+| D-pad ↑ and ↓ | Previous and next line |
+| D-pad ← and → | Pause and look up the last or first word of the line on screen (or the last one said) |
+| L1 and R1, or the left stick ← and → | Back and on 10 seconds |
+| Y | Replay the line |
+| X | Skip the opening or outro while that's offered, otherwise Explain the line |
+| Start | The controls stay up and the ring moves around them (A presses, B or Start leaves); the transcript, filters, Sync and Explain are reached this way |
+| Select | Show this list |
+| B | Close what's open, or leave the episode |
+
+| With a word looked up | |
+|---|---|
+| D-pad ← and → | Previous and next word (your dictionaries say where words start and end) |
+| D-pad ↑ and ↓ | Previous and next line, at its first word |
+| Left stick ← and → | One character back or on |
+| L1 and R1 | Previous and next entry |
+| Right stick | Scroll the definitions |
+| A | Add the card of the entry you're on |
+| Y | Hear the line, stopping at its end |
+| B | Close, and carry on |
+
+On the cards over the player (the end of an episode, Previously on, a video that won't play) the D-pad moves between their buttons and A presses; the ring starts on the one that carries on.
+
 **Looking words up on the phone.** Tap a word in a line: the episode pauses, the word is marked, and what your dictionaries say about each word starting there shows above, the longest first, in Hachidori's own popup, as your PC shows a word: the reading over the word with its pitch drawn on it, how common it is and its pitch accents where your dictionaries say, the inflections undone to find it, then each dictionary's definitions in that dictionary's own style. Tap a word in a definition, or a link to another entry, and that's looked up in its place, with **Back** to return. Tap anywhere else and it carries on. The phone has the dictionaries in your PC's dictionaries folder (Settings → Lookups and names), installed once each the first time the phone has them, which takes a while for a big one, and read from the phone's storage after that, so a big one costs it no memory; it uses Hoshidicts, the engine inside Hachidori. One that can't be installed is left out until your PC has a newer one, and a lookup says which.
 
 **Cards on the phone.** The **+** beside a word adds a note to AnkiDroid while the episode carries on: the note type, deck, tags and field names your PC's cards use, with the word, its reading and furigana, the dictionaries' definitions, the line with the word in bold, and the line's picture and audio. The first time, Android asks whether Telly may add to AnkiDroid. AnkiDroid needs your note type, so sync it with AnkiWeb first; it then syncs the cards to your PC's Anki. A Telly built without FFmpegKit adds the card without its picture and audio, and says so.

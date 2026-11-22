@@ -3,6 +3,9 @@
   import { lookUp, type Found } from "$lib/lookup.svelte";
   import { addPhoneCard } from "$lib/phone-cards";
   import { onPhone } from "$lib/phone";
+  import { wayOf, type Press } from "$lib/pad";
+  import { onPad, padStart } from "$lib/pad.svelte";
+  import { stepCharacter, stepWord, wordsOf, type Word } from "$lib/words";
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { onDestroy, onMount, tick as nextTick } from "svelte";
@@ -77,8 +80,8 @@
   /** The popup of what a tapped word means, and whether the video carries on when it closes. */
   let look = $state<{ found: Found[]; error: string; resume: boolean; line: Line | null } | null>(null);
 
-  /** The text of a subtitle line as it's shown (its furigana and speaker left out), and where (x, y) falls in it. */
-  function textAt(el: HTMLElement, x: number, y: number): { text: string; offset: number; nodes: [Text, number][] } | null {
+  /** The text of a subtitle line as it's shown (its furigana and speaker left out), and where each piece of it starts. */
+  function lineText(el: HTMLElement): { text: string; nodes: [Text, number][] } {
     const nodes: [Text, number][] = [];
     let text = "";
     const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
@@ -88,6 +91,12 @@
       nodes.push([n, text.length]);
       text += n.data;
     }
+    return { text, nodes };
+  }
+
+  /** A subtitle line's text, and where (x, y) falls in it. */
+  function textAt(el: HTMLElement, x: number, y: number): { text: string; offset: number; nodes: [Text, number][] } | null {
+    const { text, nodes } = lineText(el);
     const caret = document.caretRangeFromPoint?.(x, y);
     const hit = caret && nodes.find(([n]) => n === caret.startContainer);
     if (!hit || !caret) return null;
@@ -120,29 +129,211 @@
     highlights.set("telly-look", new (globalThis as any).Highlight(range));
   }
 
+  /** Where in the line what's looked up starts: a controller's cursor steps on from it. */
+  let cursor: { text: string; offset: number } | null = null;
+  /** Goes up with each lookup, so one that's been overtaken shows nothing. */
+  let lookRun = 0;
+
+  /** Looks up what starts at `offset` of `line`, which `el` shows, and marks it. The video carries on after if `resume`. */
+  async function lookAt(line: Line, el: HTMLElement, offset: number, resume = look ? look.resume : !!video && !video.paused) {
+    const { text, nodes } = lineText(el);
+    const run = ++lookRun;
+    video?.pause();
+    look = { found: look?.found ?? [], error: "", resume, line };
+    cursor = { text, offset };
+    try {
+      const found = await lookUp(text.slice(offset));
+      if (!look || run !== lookRun) return;
+      look = { ...look, found };
+      markWord(nodes, offset, found[0]?.matched.length ?? 1);
+    } catch (err) {
+      if (look && run === lookRun) look = { ...look, found: [], error: errorText(err) };
+    }
+  }
+
   async function tapWord(e: MouseEvent, line: Line) {
     if (!onPhone) return;
     e.stopPropagation();
-    const at = textAt(e.currentTarget as HTMLElement, e.clientX, e.clientY);
-    if (!at) return;
-    const resume = look ? look.resume : !!video && !video.paused;
-    video?.pause();
-    look = { found: [], error: "", resume, line };
-    try {
-      const found = await lookUp(at.text.slice(at.offset));
-      if (!look) return;
-      look = { ...look, found };
-      markWord(at.nodes, at.offset, found[0]?.matched.length ?? 1);
-    } catch (err) {
-      if (look) look = { ...look, error: errorText(err) };
-    }
+    const el = e.currentTarget as HTMLElement;
+    const at = textAt(el, e.clientX, e.clientY);
+    if (at) await lookAt(line, el, at.offset);
   }
 
   function closeLook() {
     (globalThis.CSS as any)?.highlights?.delete("telly-look");
+    lookRun++;
+    cursor = null;
     if (look?.resume) video?.play().catch(() => {});
     look = null;
   }
+
+  // ---- a controller in the player (pad.svelte.ts) ---------------------------------------
+
+  /** Start was pressed: the D-pad moves around the player's controls, which stay up. */
+  let controls = $state(false);
+  let popup = $state<ReturnType<typeof LookupPopup> | null>(null);
+  /** When the step of the cursor still being looked up began (0 when none is): a held direction waits for it. */
+  let stepping = 0;
+  /** Each line's words, once your dictionaries have said where they are. */
+  const lineWords = new Map<string, Promise<Word[]>>();
+
+  function wordsIn(text: string): Promise<Word[]> {
+    let words = lineWords.get(text);
+    if (!words) {
+      words = wordsOf(text, async (rest) => (await lookUp(rest, 1))[0]?.matched.length ?? 0);
+      lineWords.set(text, words);
+      // Asked again next time, if the dictionaries couldn't say.
+      words.catch(() => lineWords.delete(text));
+    }
+    return words;
+  }
+
+  /** The element showing `line`, going to the line first when it isn't on screen. */
+  async function shown(line: Line): Promise<HTMLElement | null> {
+    if (!active.includes(line)) {
+      seekTo(lineStart(line));
+      await nextTick();
+    }
+    const i = active.indexOf(line);
+    return i < 0 ? null : (document.querySelectorAll<HTMLElement>(".subs:not(.montage-subs) .sub-line")[i] ?? null);
+  }
+
+  /** Puts the cursor on a line's first word, or its last, and looks it up: the line on screen, or the last one said. */
+  async function padLook(line: Line | undefined, last = false) {
+    if (!line) return flash("No line here to look up");
+    const resume = look ? look.resume : !!video && !video.paused;
+    video?.pause();
+    const el = await shown(line);
+    if (!el) return void (resume && video?.play().catch(() => {}));
+    const words = await wordsIn(lineText(el).text).catch(() => []);
+    await lookAt(line, el, (last ? words[words.length - 1] : words[0])?.at ?? 0, resume);
+  }
+
+  /** Moves the cursor to where `to` says, given the line's text, where the cursor is, and the line's words when asked for. */
+  async function padStep(to: (text: string, offset: number, words: () => Promise<Word[]>) => number | Promise<number>) {
+    if (!look?.line || !cursor) return;
+    const line = look.line;
+    const offset = await to(cursor.text, cursor.offset, () => wordsIn(cursor?.text ?? "").catch(() => []));
+    const el = await shown(line);
+    if (el && look?.line === line && offset !== cursor?.offset) await lookAt(line, el, offset);
+  }
+
+  const padWord = (by: number) => padStep(async (_, offset, words) => stepWord(await words(), offset, by)?.at ?? offset);
+  const padCharacter = (by: number) => padStep((text, offset) => stepCharacter(text, offset, by));
+
+  /** Moves the cursor to the line before or after, at its first word. */
+  async function padLine(by: number) {
+    const next = look?.line ? dialogue[dialogue.indexOf(look.line) + by] : undefined;
+    if (next) await padLook(next);
+  }
+
+  /** Plays the line being looked at, and stops at its end. */
+  function hearLine() {
+    const line = look?.line;
+    if (!line || !video) return;
+    const run = lookRun;
+    seekTo(lineStart(line));
+    video.play().catch(() => {});
+    // Stopped just short of its end, so the line stays on screen.
+    setTimeout(() => run === lookRun && look?.line === line && video?.pause(), Math.max(200, ((line.end - line.start) / rate) * 1000 - 120));
+  }
+
+  /** Back or on some seconds. */
+  function jump(by: number) {
+    if (video) video.currentTime = Math.min(duration || Infinity, Math.max(0, video.currentTime + by));
+    flash(`${by < 0 ? "−" : "+"}${Math.abs(by)} s`);
+  }
+
+  /** One step of the cursor at a time: a held direction waits for the last step's lookup. */
+  function oneStep(step: () => Promise<void>) {
+    // A lookup that never answers doesn't hold the cursor for good.
+    if (Date.now() - stepping < 3000) return;
+    const began = (stepping = Date.now());
+    step().finally(() => stepping === began && (stepping = 0));
+  }
+
+  /** A controller's button in the player. Cards and panels with buttons of their own are left to the ring, but for B. */
+  function padPress({ button, repeat }: Press): boolean {
+    const way = wayOf(button);
+    const ring = !(way || button === "a");
+    if (controls && idle) controls = false;
+    if (help) {
+      // The list is longer than a small screen: up and down move through it, and any button closes it.
+      if (way === "up" || way === "down") document.querySelector(".keys-card")?.scrollBy(0, way === "up" ? -120 : 120);
+      else if (!way && !repeat) help = false;
+      return true;
+    }
+    if (bridge && !bridge.out) {
+      if (button === "a" || button === "b") playFromBridge();
+      return true;
+    }
+    if (montage) {
+      if (button === "a") endMontage(true);
+      else if (button === "b") endMontage(false);
+      return true;
+    }
+    if (recap) {
+      if (button === "b") closeRecap(recapResume);
+      return ring;
+    }
+    if (error || videoError || (ended && !straightOn)) {
+      if (button === "b") leave("/");
+      return ring;
+    }
+    if (look) {
+      if (button === "left") oneStep(() => padWord(-1));
+      else if (button === "right") oneStep(() => padWord(1));
+      else if (button === "stick-left") oneStep(() => padCharacter(-1));
+      else if (button === "stick-right") oneStep(() => padCharacter(1));
+      else if (way) oneStep(() => padLine(way === "up" ? -1 : 1));
+      else if (button === "a") popup?.add();
+      else if (button === "b") popup?.back() || closeLook();
+      else if (button === "y") hearLine();
+      else if (button === "l1") popup?.step(-1);
+      else if (button === "r1") popup?.step(1);
+      else if (button === "select") help = true;
+      return true;
+    }
+    if (explaining || transcript || filterPanel) {
+      if (button === "b") {
+        if (explaining) closeExplain();
+        transcript = filterPanel = false;
+      }
+      return ring;
+    }
+    if (controls) {
+      if (button === "b" || button === "start") {
+        if (subMenu || audioMenu) subMenu = audioMenu = false;
+        else controls = false;
+      }
+      return ring;
+    }
+    const line = active[0] ?? dialogue[current];
+    if (button === "a") togglePlay();
+    else if (button === "b") leave("/");
+    else if (button === "left") oneStep(() => padLook(line, true));
+    else if (button === "right") oneStep(() => padLook(line));
+    else if (way === "up") prevLine();
+    else if (way === "down") nextLine();
+    else if (button === "l1" || button === "stick-left") jump(-10);
+    else if (button === "r1" || button === "stick-right") jump(10);
+    else if (button === "y") replayLine();
+    else if (button === "x") {
+      if (inOpening && view?.opening) seekTo(view.opening.end);
+      else if (inEnding && view?.ending) skipOutro();
+      else explainLine();
+    } else if (button === "start") {
+      controls = true;
+      wake();
+    } else if (button === "select") help = true;
+    return true;
+  }
+
+  // What's up changed: a controller's ring starts on it, or goes with it.
+  $effect(() => {
+    void [!!recap, ended, !!error, !!videoError, !!explaining, transcript, filterPanel, controls, subMenu, audioMenu];
+    if (onPhone) nextTick().then(padStart);
+  });
 
   /** Adds a card for the word, and carries on: the card is finished while the episode plays. */
   async function addWordCard(f: Found) {
@@ -600,8 +791,7 @@
       if (clickTimer && side) {
         clearTimeout(clickTimer);
         clickTimer = null;
-        if (video) video.currentTime = Math.min(duration || Infinity, Math.max(0, video.currentTime + side));
-        flash(side < 0 ? "−10 s" : "+10 s");
+        jump(side);
         return;
       }
       const wasIdle = idle;
@@ -1552,7 +1742,7 @@
     idle = false;
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
-      if (video && !video.paused && !subMenu && !audioMenu && !help && !document.querySelector(".ptop:hover, .pctl:hover")) idle = true;
+      if (video && !video.paused && !subMenu && !audioMenu && !help && !controls && !document.querySelector(".ptop:hover, .pctl:hover")) idle = true;
     }, 2500);
   }
 
@@ -1748,8 +1938,12 @@
     leaveCompact(false).catch(() => {});
     // The phone plays on the whole screen, sideways.
     if (onPhone && !app.fullscreen) toggleFull();
+    const stopPad = onPhone ? onPad({ press: padPress, scroll: (by) => !!look && (popup?.scroll(by), true) }) : () => {};
     wake();
-    return () => window.removeEventListener("beforeunload", unload);
+    return () => {
+      stopPad();
+      window.removeEventListener("beforeunload", unload);
+    };
   });
 
   onDestroy(() => {
@@ -1794,7 +1988,7 @@
   }
 </script>
 
-<div class="player" class:idle class:paused class:compact={app.compact} onpointermove={wake} role="application" aria-label="Player">
+<div class="player" class:idle class:paused class:compact={app.compact} data-pad-scope={controls ? "" : undefined} onpointermove={wake} role="application" aria-label="Player">
   <div class="pic" onpointerdown={picDown} onpointermove={picMove} onpointerleave={clearResume} onclick={picClick} ondblclick={picDoubleClick} role="presentation">
     {#if view && view.episode.mediaState === "ready"}
       {#each [0, 1] as k (k)}
@@ -1840,7 +2034,7 @@
 
   {#if look}
     <div class="look-scrim" role="presentation" onclick={closeLook}></div>
-    <LookupPopup found={look.found} error={look.error} onadd={addWordCard} />
+    <LookupPopup bind:this={popup} found={look.found} error={look.error} onadd={addWordCard} />
   {/if}
   <div class="subs" class:off={!subsOn} class:looking={!!look} style:--sub-size={subFont}>
     {#each translated as line (line.start + line.text)}
@@ -1878,7 +2072,7 @@
   </div>
 
   {#if error || videoError}
-    <div class="perr">
+    <div class="perr" data-pad-scope>
       <p>{error || videoError}</p>
       <div class="end-actions">
         {#if videoError && view}
@@ -1911,7 +2105,7 @@
       {/if}
     </div>
     <div class="prow">
-      <button type="button" class="pbtn big" aria-label={paused ? "Play" : "Pause"} onclick={togglePlay}><Icon name={paused ? "play" : "pause"} /></button>
+      <button type="button" class="pbtn big" data-pad-first aria-label={paused ? "Play" : "Pause"} onclick={togglePlay}><Icon name={paused ? "play" : "pause"} /></button>
       <button type="button" class="pbtn" aria-label="Previous line" title="Previous line (←)" onclick={prevLine}><Icon name="prevLine" /></button>
       <button type="button" class="pbtn" aria-label="Replay the line" title="Replay the line (↓)" onclick={replayLine}><Icon name="replay" /></button>
       <button type="button" class="pbtn" aria-label="Next line" title="Next line (→)" onclick={nextLine}><Icon name="nextLine" /></button>
@@ -1978,7 +2172,7 @@
   </div>
 
   {#if filterPanel && !explaining}
-    <aside class="tx" aria-label="Filters">
+    <aside class="tx" aria-label="Filters" data-pad-scope>
       <div class="tx-head"><b>Filters</b><button type="button" class="ex-close" title="Close (V)" onclick={() => (filterPanel = false)}>Close</button></div>
       <div class="fx-grid scroll">
         {#each filters as f (f.id)}
@@ -1996,7 +2190,7 @@
   {/if}
 
   {#if transcript && !explaining && !filterPanel}
-    <aside class="tx">
+    <aside class="tx" data-pad-scope>
       <div class="tx-head"><b>Transcript</b><span>{dialogue.length} lines</span></div>
       <ol class="tx-list scroll" bind:this={txList}>
         {#each dialogue as l, i (i)}
@@ -2013,7 +2207,7 @@
   {/if}
 
   {#if explaining && view}
-    <aside class="tx ex" aria-label="Explain this line">
+    <aside class="tx ex" aria-label="Explain this line" data-pad-scope>
       <div class="tx-head"><b>Explain line</b><button type="button" class="ex-close" title="Close (E)" onclick={() => closeExplain()}>Close</button></div>
       <div class="ex-body scroll" bind:this={exBody}>
         {#if lines[explaining.index]}<p class="ex-line" lang="ja" onpointerenter={hoverText}>{@html lineHtml(lines[explaining.index])}</p>{/if}
@@ -2061,7 +2255,7 @@
 
   {#if recap && view && !montage}
     <div class="endov recapov">
-      <div class="end-card recap-card">
+      <div class="end-card recap-card" data-pad-scope>
         <span class="small">Previously on</span>
         <h3>{recap.data?.season ?? view.show.title}</h3>
         {#if recap.state === "writing"}
@@ -2096,7 +2290,7 @@
           {#if recap.state === "error"}
             <button type="button" class="btn quiet" onclick={retryRecap}>Try again</button>
           {/if}
-          <button type="button" class="btn" title="{startLabel} (Enter)" onclick={() => closeRecap(true)}><Icon name="play" /><span>{startLabel}</span></button>
+          <button type="button" class="btn" data-pad-first title="{startLabel} (Enter)" onclick={() => closeRecap(true)}><Icon name="play" /><span>{startLabel}</span></button>
         </div>
       </div>
     </div>
@@ -2175,6 +2369,9 @@
   .sub-line.blur { filter: blur(9px); }
   .sub-line.blur:hover { filter: none; }
   .subs.off .sub-line { visibility: hidden; }
+  /* A line being looked up shows, whatever hides the subtitles. */
+  .subs.off.looking .sub-line { visibility: visible; }
+  .subs.looking .sub-line.blur { filter: none; }
   .speaker { font-size: .5em; font-weight: 500; opacity: .75; margin-right: .5em; vertical-align: middle; }
   .paused-note { position: absolute; top: 62px; left: 20px; z-index: 6; font: 500 13px/1 var(--font-ui); color: var(--vid-ink-2); text-shadow: 0 1px 3px rgba(0, 0, 0, .9); pointer-events: none; }
   .flash { position: absolute; top: 62px; left: 50%; transform: translateX(-50%); z-index: 8; font: 600 14px/1 var(--font-ui); background: var(--vid-panel); border: 1px solid var(--vid-edge); padding: 9px 14px; border-radius: 8px; pointer-events: none; }

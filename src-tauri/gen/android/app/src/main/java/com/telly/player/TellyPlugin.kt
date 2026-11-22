@@ -8,6 +8,8 @@ import android.os.Build
 import android.provider.Settings
 import android.view.View
 import android.view.WindowManager
+import android.view.inputmethod.InputMethodManager
+import android.webkit.WebView
 import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
@@ -45,6 +47,12 @@ class InstallArgs {
  */
 @TauriPlugin(permissions = [Permission(strings = [ANKI_PERMISSION], alias = "anki")])
 class TellyPlugin(private val activity: Activity) : Plugin(activity) {
+  private var page: WebView? = null
+
+  override fun load(webView: WebView) {
+    page = webView
+  }
+
   /** The player takes the whole screen, sideways, with the screen kept on; or gives it back. */
   @Command
   fun immersive(invoke: Invoke) {
@@ -65,6 +73,19 @@ class TellyPlugin(private val activity: Activity) : Plugin(activity) {
       }
       val content = activity.findViewById<View>(android.R.id.content)
       ViewCompat.requestApplyInsets(content)
+      invoke.resolve(JSObject())
+    }
+  }
+
+  /** Brings up Android's keyboard for the field a controller pressed A on, which a touch does by itself. */
+  @Command
+  fun keyboard(invoke: Invoke) {
+    activity.runOnUiThread {
+      // Until it's touched, the page isn't what Android's keyboard types into.
+      page?.let {
+        it.requestFocus()
+        activity.getSystemService(InputMethodManager::class.java).showSoftInput(it, 0)
+      }
       invoke.resolve(JSObject())
     }
   }

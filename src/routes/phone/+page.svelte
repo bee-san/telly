@@ -4,6 +4,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { call, errorText, mediaUrl, type Newer } from "$lib/api";
   import { bytes, clock } from "$lib/format";
+  import { pad } from "$lib/pad.svelte";
   import { gettingText, nextToGet, phonePlays, type PcLibrary, type PhoneEpisode, type PhoneLibrary, type PhoneShow } from "$lib/phone";
   import { app } from "$lib/state.svelte";
   import { toast } from "$lib/toast-store.svelte";
@@ -211,6 +212,7 @@
       {/each}
     </ul>
   {/if}
+  {#if pad.used}<p class="muted pad-keys">D-pad moves · A presses · B goes back · the right stick scrolls · in the player, Select shows the buttons</p>{/if}
 </div>
 
 <style>
@@ -229,6 +231,7 @@
   .link { border: 0; background: none; color: var(--ink-2); text-decoration: underline; font: 500 14px var(--font-ui); padding: 6px; }
   .muted { color: var(--ink-3); font-size: 13px; }
   .pad { padding: 4px 0; }
+  .pad-keys { margin-top: 18px; text-align: center; }
   .error { color: var(--bad); }
   .newer { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 12px; padding: 10px 14px; margin: 0 0 12px; border: 1px solid var(--rule-2); border-radius: 10px; background: var(--surface); font-weight: 600; }
   .newer .muted { color: var(--ink-2); font-weight: 500; font-size: 14px; }

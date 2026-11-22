@@ -35,7 +35,7 @@
 </script>
 
 <div class="endov">
-  <div class="end-card">
+  <div class="end-card" data-pad-scope>
     <span class="small">{view.movie ? view.show.title : `Episode ${view.episode.number}`} done{sat.seconds > 30 ? ` · logged to Tidepool` : ""}</span>
     <h3>{view.next ? `Next: ${nextName(view.next)}` : `That’s the last episode here`}</h3>
     <div class="end-stats">
@@ -54,7 +54,7 @@
       {/if}
       {#if view.next}
         <button type="button" class="btn quiet" onclick={onstop} disabled={countdown === null}>Stop</button>
-        <button type="button" class="btn" onclick={onplaynext} disabled={!view.next.ready}><Icon name="play" /><span>Play now</span></button>
+        <button type="button" class="btn" data-pad-first onclick={onplaynext} disabled={!view.next.ready}><Icon name="play" /><span>Play now</span></button>
       {/if}
     </div>
     {#if countdown !== null}

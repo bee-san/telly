@@ -92,7 +92,8 @@ class SecondScreen(private val activity: MainActivity) {
   /** The main page's WebView is there now, or will be once it's been set up. */
   fun refresh() {
     update()
-    if (started && !serving()) main.postDelayed({ refresh() }, 200)
+    // Asked again shortly, only where there's a client to wait for.
+    if (started && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !serving()) main.postDelayed({ refresh() }, 200)
   }
 
   /** Whether the main page's WebView can serve the second page: it has the client that answers for Telly's own addresses. */
@@ -160,6 +161,8 @@ class SecondScreen(private val activity: MainActivity) {
     presentation.setOnDismissListener {
       if (shown === presentation) {
         forget()
+        // Said as gone, so that the pages say what to show again when it's back.
+        activity.tell("telly-second", "{type:'hidden'}")
         main.post { update() }
       }
     }

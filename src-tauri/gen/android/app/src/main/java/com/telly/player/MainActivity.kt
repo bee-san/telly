@@ -12,15 +12,20 @@ import androidx.core.view.WindowInsetsCompat
 class MainActivity : TauriActivity() {
   /** Whether the player has the whole screen, under the status and navigation bars. */
   var wholeScreen = false
-  private var page: WebView? = null
+  /** The WebView Telly's pages are in, once there is one. */
+  var page: WebView? = null
+    private set
   /** A controller's buttons, told to the page (src/lib/pad.ts). */
   private val pad = Pad(
-    { button, down -> tell("{button:'$button',down:$down}") },
-    { speed -> tell("{button:'scroll',speed:$speed}") },
+    { button, down -> tell("telly-pad", "{button:'$button',down:$down}") },
+    { speed -> tell("telly-pad", "{button:'scroll',speed:$speed}") },
   )
+  /** Telly on the device's other screen, when it has one. */
+  val second by lazy { SecondScreen(this) }
 
-  private fun tell(detail: String) {
-    page?.evaluateJavascript("window.dispatchEvent(new CustomEvent('telly-pad',{detail:$detail}))", null)
+  /** Tells the page something happened, as an event on its window with `detail` (JavaScript) as its detail. */
+  fun tell(event: String, detail: String) {
+    page?.evaluateJavascript("window.dispatchEvent(new CustomEvent('$event',{detail:$detail}))", null)
   }
 
   override fun onWebViewCreate(webView: WebView) {
@@ -28,16 +33,31 @@ class MainActivity : TauriActivity() {
     // The page keeps the focus through a touch: without it, Android spends the next press of the D-pad on giving the focus back, and the page never hears it.
     webView.isFocusableInTouchMode = true
     webView.requestFocus()
+    second.refresh()
   }
 
   override fun onWindowFocusChanged(hasFocus: Boolean) {
     super.onWindowFocusChanged(hasFocus)
     if (hasFocus) page?.requestFocus()
+    second.keys = !hasFocus
   }
 
   override fun dispatchKeyEvent(event: KeyEvent): Boolean = pad.key(event) || super.dispatchKeyEvent(event)
 
-  override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean = pad.motion(event) || super.dispatchGenericMotionEvent(event)
+  override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean = padMotion(event) || super.dispatchGenericMotionEvent(event)
+
+  /** A controller's stick moved, wherever Android sent it. */
+  fun padMotion(event: MotionEvent): Boolean = pad.motion(event)
+
+  override fun onStart() {
+    super.onStart()
+    second.start()
+  }
+
+  override fun onStop() {
+    super.onStop()
+    second.stop()
+  }
 
   override fun onPause() {
     super.onPause()

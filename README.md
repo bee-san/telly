@@ -62,7 +62,7 @@ Telly builds a dictionary of the characters in what you're watching, with their 
 
 ## 📱 Take it with you
 
-Telly for Android copies the episodes you pick from your PC over your Wi-Fi and plays them anywhere. Tap a word to look it up, add it to AnkiDroid, and your PC knows where you got to when you're home. A handheld's controller does all of it too. See [Telly on your phone](docs/manual.md#-telly-on-your-phone).
+Telly for Android copies the episodes you pick from your PC over your Wi-Fi and plays them anywhere. Tap a word to look it up, add it to AnkiDroid, and your PC knows where you got to when you're home. A handheld's controller does all of it too. On one with two screens, the second lists the lines and shows what a word means. See [Telly on your phone](docs/manual.md#-telly-on-your-phone).
 
 ## 💡 Find what to watch next
 

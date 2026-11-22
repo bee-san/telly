@@ -36,14 +36,22 @@ class ImmersiveArgs {
 private const val ANKI_PERMISSION = "com.ichi2.anki.permission.READ_WRITE_DATABASE"
 
 @InvokeArg
+class SecondArgs {
+  var about: String = ""
+  var json: String = "null"
+  var keep: Boolean = true
+}
+
+@InvokeArg
 class InstallArgs {
   var path: String = ""
 }
 
 /**
  * What Telly's pages ask of Android itself: the player's whole screen, the
- * clip of a line cut by FFmpegKit, cards added to AnkiDroid, and a newer
- * Telly installed.
+ * clip of a line cut by FFmpegKit, cards added to AnkiDroid, a newer Telly
+ * installed, Android's keyboard for a controller, and what the second screen
+ * shows.
  */
 @TauriPlugin(permissions = [Permission(strings = [ANKI_PERMISSION], alias = "anki")])
 class TellyPlugin(private val activity: Activity) : Plugin(activity) {
@@ -86,6 +94,26 @@ class TellyPlugin(private val activity: Activity) : Plugin(activity) {
         it.requestFocus()
         activity.getSystemService(InputMethodManager::class.java).showSoftInput(it, 0)
       }
+      invoke.resolve(JSObject())
+    }
+  }
+
+  /** Whether Telly is on a second screen (SecondScreen.kt). */
+  @Command
+  fun secondState(invoke: Invoke) {
+    activity.runOnUiThread {
+      val result = JSObject()
+      result.put("on", (activity as? MainActivity)?.second?.showing == true)
+      invoke.resolve(result)
+    }
+  }
+
+  /** Shows `json` on the second screen as what it has about `about`; kept, it's shown again when that screen comes back. */
+  @Command
+  fun second(invoke: Invoke) {
+    val args = invoke.parseArgs(SecondArgs::class.java)
+    activity.runOnUiThread {
+      (activity as? MainActivity)?.second?.say(args.about, args.json, args.keep)
       invoke.resolve(JSObject())
     }
   }

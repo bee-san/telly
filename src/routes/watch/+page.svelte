@@ -1,10 +1,12 @@
 <script lang="ts">
   import LookupPopup from "$lib/player/LookupPopup.svelte";
-  import { lookUp, type Found } from "$lib/lookup.svelte";
+  import { dictionaryStyles, lookUp, type Found } from "$lib/lookup.svelte";
   import { addPhoneCard } from "$lib/phone-cards";
   import { onPhone } from "$lib/phone";
   import { wayOf, type Press } from "$lib/pad";
   import { onPad, padStart } from "$lib/pad.svelte";
+  import { lineText, markWord, textAt, unmark } from "$lib/line-text";
+  import { onSecond, second, showSecond, tellSecond, type Touched } from "$lib/second.svelte";
   import { stepCharacter, stepWord, wordsOf, type Word } from "$lib/words";
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
@@ -78,56 +80,7 @@
   // ---- looking words up on the phone (lookup.svelte.ts) -------------------------------
 
   /** The popup of what a tapped word means, and whether the video carries on when it closes. */
-  let look = $state<{ found: Found[]; error: string; resume: boolean; line: Line | null } | null>(null);
-
-  /** The text of a subtitle line as it's shown (its furigana and speaker left out), and where each piece of it starts. */
-  function lineText(el: HTMLElement): { text: string; nodes: [Text, number][] } {
-    const nodes: [Text, number][] = [];
-    let text = "";
-    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
-      acceptNode: (n) => (n.parentElement?.closest("rt, rp, .speaker") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
-    });
-    for (let n = walker.nextNode() as Text | null; n; n = walker.nextNode() as Text | null) {
-      nodes.push([n, text.length]);
-      text += n.data;
-    }
-    return { text, nodes };
-  }
-
-  /** A subtitle line's text, and where (x, y) falls in it. */
-  function textAt(el: HTMLElement, x: number, y: number): { text: string; offset: number; nodes: [Text, number][] } | null {
-    const { text, nodes } = lineText(el);
-    const caret = document.caretRangeFromPoint?.(x, y);
-    const hit = caret && nodes.find(([n]) => n === caret.startContainer);
-    if (!hit || !caret) return null;
-    // The caret falls between characters: a tap on a character's right half is still that character.
-    let offset = hit[1] + caret.startOffset;
-    if (caret.startOffset > 0) {
-      const r = document.createRange();
-      r.setStart(hit[0], caret.startOffset - 1);
-      r.setEnd(hit[0], caret.startOffset);
-      const box = r.getBoundingClientRect();
-      if (x >= box.left && x <= box.right) offset -= 1;
-    }
-    return offset < text.length ? { text, offset, nodes } : null;
-  }
-
-  /** Marks `length` characters of the tapped line from `offset`, as the word looked up. */
-  function markWord(nodes: [Text, number][], offset: number, length: number) {
-    const highlights = (globalThis.CSS as any)?.highlights;
-    if (!highlights || !length) return;
-    const place = (at: number): [Text, number] | null => {
-      for (const [n, start] of nodes) if (at <= start + n.data.length) return [n, at - start];
-      return null;
-    };
-    const a = place(offset);
-    const b = place(offset + length);
-    if (!a || !b) return;
-    const range = document.createRange();
-    range.setStart(a[0], a[1]);
-    range.setEnd(b[0], b[1]);
-    highlights.set("telly-look", new (globalThis as any).Highlight(range));
-  }
+  let look = $state<{ found: Found[]; error: string; resume: boolean; line: Line | null; offset: number; length: number } | null>(null);
 
   /** Where in the line what's looked up starts: a controller's cursor steps on from it. */
   let cursor: { text: string; offset: number } | null = null;
@@ -139,13 +92,13 @@
     const { text, nodes } = lineText(el);
     const run = ++lookRun;
     video?.pause();
-    look = { found: look?.found ?? [], error: "", resume, line };
+    look = { found: look?.found ?? [], error: "", resume, line, offset, length: 1 };
     cursor = { text, offset };
     try {
       const found = await lookUp(text.slice(offset));
       if (!look || run !== lookRun) return;
-      look = { ...look, found };
-      markWord(nodes, offset, found[0]?.matched.length ?? 1);
+      look = { ...look, found, length: found[0]?.matched.length ?? 1 };
+      markWord(nodes, offset, look.length);
     } catch (err) {
       if (look && run === lookRun) look = { ...look, found: [], error: errorText(err) };
     }
@@ -160,7 +113,7 @@
   }
 
   function closeLook() {
-    (globalThis.CSS as any)?.highlights?.delete("telly-look");
+    unmark();
     lookRun++;
     cursor = null;
     if (look?.resume) video?.play().catch(() => {});
@@ -288,11 +241,11 @@
       else if (button === "stick-left") oneStep(() => padCharacter(-1));
       else if (button === "stick-right") oneStep(() => padCharacter(1));
       else if (way) oneStep(() => padLine(way === "up" ? -1 : 1));
-      else if (button === "a") popup?.add();
+      else if (button === "a") inPopup({ add: true });
       else if (button === "b") popup?.back() || closeLook();
       else if (button === "y") hearLine();
-      else if (button === "l1") popup?.step(-1);
-      else if (button === "r1") popup?.step(1);
+      else if (button === "l1") inPopup({ step: -1 });
+      else if (button === "r1") inPopup({ step: 1 });
       else if (button === "select") help = true;
       return true;
     }
@@ -329,6 +282,54 @@
       wake();
     } else if (button === "select") help = true;
     return true;
+  }
+
+  /** A controller's buttons for the popup, wherever it is: over the picture, or on the second screen. */
+  function inPopup(press: { step?: number; scroll?: number; add?: boolean }) {
+    if (second.on) return tellSecond("popup", press);
+    if (press.step) popup?.step(press.step);
+    if (press.scroll) popup?.scroll(press.scroll);
+    if (press.add) popup?.add();
+  }
+
+  // ---- a second screen (second.svelte.ts): the lines, and what a word means -------------
+
+  $effect(() => {
+    if (second.on && view) showSecond("playing", { title: view.show.title, episode: view.movie ? "" : `Episode ${view.episode.number} of ${view.count}` });
+  });
+  $effect(() => {
+    if (second.on) showSecond("lines", dialogue.map((l) => ({ start: l.start, speaker: l.speaker ?? "", html: lineHtml(l) })));
+  });
+  $effect(() => {
+    if (second.on) showSecond("at", { line: current, paused });
+  });
+  $effect(() => {
+    if (second.on) showSecond("styles", dictionaryStyles.list);
+  });
+  $effect(() => {
+    if (second.on) showSecond("look", look?.line ? { line: dialogue.indexOf(look.line), offset: look.offset, length: look.length, found: look.found, error: look.error } : null);
+  });
+
+  /** Something was touched on the second screen. */
+  function touched(t: Touched) {
+    const line = "line" in t ? dialogue[t.line] : undefined;
+    if (t.type === "seek" && line) {
+      if (look) closeLook();
+      seekTo(lineStart(line));
+    } else if (t.type === "look" && line) {
+      oneStep(async () => {
+        const resume = look ? look.resume : !!video && !video.paused;
+        video?.pause();
+        const el = await shown(line);
+        if (el) await lookAt(line, el, t.offset, resume);
+      });
+    } else if (t.type === "lookup") {
+      lookUp(t.text)
+        .catch(() => [])
+        .then((found) => tellSecond("answer", { id: t.id, found, styles: dictionaryStyles.list }));
+    } else if (t.type === "add") addWordCard(t.word);
+    else if (t.type === "close") closeLook();
+    else if (t.type === "press") ({ play: togglePlay, previous: prevLine, next: nextLine, replay: replayLine })[t.button]();
   }
 
   // What's up changed: a controller's ring starts on it, or goes with it.
@@ -1940,15 +1941,20 @@
     leaveCompact(false).catch(() => {});
     // The phone plays on the whole screen, sideways.
     if (onPhone && !app.fullscreen) toggleFull();
-    const stopPad = onPhone ? onPad({ press: padPress, scroll: (by) => !!look && (popup?.scroll(by), true) }) : () => {};
+    const stopPad = onPhone ? onPad({ press: padPress, scroll: (by) => !!look && (inPopup({ scroll: by }), true) }) : () => {};
+    const stopSecond = onPhone ? onSecond(touched) : () => {};
     wake();
     return () => {
       stopPad();
+      stopSecond();
       window.removeEventListener("beforeunload", unload);
     };
   });
 
   onDestroy(() => {
+    // The second screen goes back to what to watch.
+    showSecond("look", null);
+    showSecond("playing", null);
     closeExplain(false);
     recapRun++;
     cancelAnimationFrame(frame);
@@ -2036,9 +2042,10 @@
 
   {#if look}
     <div class="look-scrim" role="presentation" onclick={closeLook}></div>
-    <LookupPopup bind:this={popup} found={look.found} error={look.error} onadd={addWordCard} under={subsBox} />
+    <!-- With a second screen, what the word means is there, off the picture. -->
+    {#if !second.on}<LookupPopup bind:this={popup} found={look.found} error={look.error} onadd={addWordCard} under={subsBox} />{/if}
   {/if}
-  <div class="subs" class:off={!subsOn} class:looking={!!look} style:--sub-size={subFont} bind:this={subsBox}>
+  <div class="subs" class:off={!subsOn} class:looking={!!look} class:beside={second.on} style:--sub-size={subFont} bind:this={subsBox}>
     {#each translated as line (line.start + line.text)}
       <p class="tr-line">{line.speaker ? `(${line.speaker}) ` : ""}{line.text}</p>
     {/each}
@@ -2357,6 +2364,9 @@
   /* While a word is looked up its line is small along the bottom, over the controls, and the popup has the rest of the screen. */
   .subs.looking { z-index: 31; bottom: 0; padding: 14px 0 6px; background: linear-gradient(to top, rgba(0, 0, 0, .92) 62%, transparent); }
   .subs.looking .sub-line { font-size: min(var(--sub-size, 36px), 24px); }
+  /* With a second screen the popup is there, and the line stays where and as big as it was. */
+  .subs.looking.beside { bottom: 96px; padding: 0; background: none; }
+  .subs.looking.beside .sub-line { font-size: var(--sub-size, 36px); }
   /* --mark and --mark-ink, written out: an Android WebView before 111 reads no var() in a highlight, and marks nothing. */
   :global(::highlight(telly-look)) { background-color: #ffd84a; color: #151516; }
   .player { position: absolute; inset: 0; background: var(--vid); color: var(--vid-ink); overflow: hidden; user-select: none; -webkit-user-select: none; }

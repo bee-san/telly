@@ -6,6 +6,7 @@
   import { bytes, clock } from "$lib/format";
   import { pad } from "$lib/pad.svelte";
   import { gettingText, nextToGet, phonePlays, type PcLibrary, type PhoneEpisode, type PhoneLibrary, type PhoneShow } from "$lib/phone";
+  import { onSecond, second, showSecond } from "$lib/second.svelte";
   import { app } from "$lib/state.svelte";
   import { toast } from "$lib/toast-store.svelte";
 
@@ -68,6 +69,22 @@
   const watching = $derived(
     (lib?.shows ?? []).filter((s) => s.show.lastWatchedAt && s.next !== null).slice(0, 6),
   );
+
+  // A second screen offers what you're watching that's on the phone, and plays what's touched there.
+  $effect(() => {
+    if (!second.on) return;
+    showSecond(
+      "watching",
+      (lib?.shows ?? [])
+        .filter((s) => nextOf(s)?.onPhone)
+        .sort((a, b) => (b.show.lastWatchedAt ?? 0) - (a.show.lastWatchedAt ?? 0))
+        .map((s) => {
+          const n = nextOf(s) as PhoneEpisode;
+          return { episode: n.id, title: s.show.title, label: `${epLabel(s, n)}${n.position > 30 ? ` · from ${clock(n.position)}` : ""}`, cover: mediaUrl(`/cover/${s.show.id}`) };
+        }),
+    );
+  });
+  onMount(() => onSecond((touched) => touched.type === "watch" && goto(`/watch?ep=${touched.episode}`)));
 
   const onPhoneCount = (s: PhoneShow) => s.episodes.filter((e) => e.onPhone).length;
   const nextOf = (s: PhoneShow) => s.episodes.find((e) => e.id === s.next) ?? null;

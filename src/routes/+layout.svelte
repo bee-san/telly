@@ -13,6 +13,7 @@
   import { hachidoriStart } from "$lib/api";
   import { padStart, startPad } from "$lib/pad.svelte";
   import { onPhone } from "$lib/phone";
+  import { startSecond } from "$lib/second.svelte";
   import { app, watchActivity } from "$lib/state.svelte";
 
   let { children }: { children: Snippet } = $props();
@@ -31,8 +32,11 @@
       } catch {
         // Nothing was kept there.
       }
-      // A controller moves a ring around the page (pad.svelte.ts).
-      return startPad();
+      // The page on a second screen (routes/second) is told everything by this one, on the main screen.
+      if (location.pathname === "/second") return;
+      // A controller moves a ring around the page (pad.svelte.ts), and a second screen shows the lines (second.svelte.ts).
+      const stops = [startPad(), startSecond()];
+      return () => stops.forEach((stop) => stop());
     }
     const stop = watchActivity();
     // WebView2 has loaded Hachidori by the time the page is up: start its engine.

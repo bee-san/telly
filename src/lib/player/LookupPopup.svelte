@@ -9,7 +9,8 @@
   import type { DictionaryPopup } from "$lib/dictionary-popup";
   import { dictionaryStyles, lookUp, progress, type Found } from "$lib/lookup.svelte";
 
-  let { found, error, onadd, under = null }: { found: Found[]; error: string; onadd: (f: Found) => void; under?: HTMLElement | null } = $props();
+  /** `under`: the line being read, which the popup takes the room above. `fill`: on the second screen it takes the room it's given instead. `ask`: how a word tapped in a definition is looked up there. */
+  let { found, error, onadd, under = null, fill = false, ask = lookUp }: { found: Found[]; error: string; onadd: (f: Found) => void; under?: HTMLElement | null; fill?: boolean; ask?: (text: string) => Promise<Found[]> } = $props();
 
   /** One entry per word and reading: a word the deinflector found twice is shown once. */
   function once(list: Found[]): Found[] {
@@ -50,7 +51,7 @@
         // Nearly solid, where Hachidori's is 85%: over a page that's enough, but the player's own words showed through.
         opacity: 97,
         onAddCard: (f) => onadd(f),
-        lookup: async (text) => ({ results: once(await lookUp(text)), styles: dictionaryStyles.list }),
+        lookup: async (text) => ({ results: once(await ask(text)), styles: dictionaryStyles.list }),
       });
       show();
     });
@@ -117,7 +118,7 @@
   }
 </script>
 
-<div class="popup" class:over role="dialog" aria-label="What it means" bind:this={box} style:max-height={room ? `${room}px` : null}>
+<div class="popup" class:over={over && !fill} class:fill role="dialog" aria-label="What it means" bind:this={box} style:max-height={room && !fill ? `${room}px` : null}>
   <div class="entries" bind:this={host}></div>
   {#if progress.failed && !error}<p class="note">{progress.failed}</p>{/if}
 </div>
@@ -128,5 +129,6 @@
   .popup.over { z-index: 32; }
   /* Hachidori's popup draws its own box. It's as tall as its entries, and no taller than this may be: past that the definitions scroll inside. */
   .entries { flex: 0 1 auto; min-height: 0; display: flex; flex-direction: column; }
+  .popup.fill { position: static; transform: none; width: auto; max-height: none; flex: 1; min-height: 0; }
   .note { flex: none; margin: 0; padding: 6px 12px; border-radius: 10px; background: rgba(39, 38, 48, .92); color: var(--vid-ink-2); font-size: 14px; }
 </style>

@@ -1,181 +1,532 @@
 // @ts-nocheck: plain JavaScript; src/index.d.ts says what it exports.
-// dictionary-popup: LFG's dictionary popup for any web page. A looked-up word
-// as LFG (bee-san/LearnFromGames) shows it: the headword with its reading over
-// it, its pitch drawn beside it, round buttons to hear it, note it and add its
-// card, how common it is, the inflections undone to find it, then each
-// dictionary's definitions in that dictionary's own styles.
+// dictionary-popup: Hachidori's dictionary popup for any web page. A looked-up
+// word as Hachidori (bee-san/hachidori) shows it: the headword with its reading
+// and pitch over it, small buttons to add its card and hear it, a tab for each
+// dictionary, how common it is, its pitch accent, the inflections undone to
+// find it, then each dictionary's definitions in that dictionary's own styles.
 //
-// It draws in a shadow root, so its styles and your page's never meet, and it
-// runs no script of its own in the page: nothing a Content Security Policy
-// minds but the inline styles dictionaries use.
+// The popup itself is Hachidori's own code and stylesheet, copied as they are
+// into src/hachidori (scripts/sync-from-hachidori.mjs). This file is what the
+// extension's content script is to them: it gives the popup an element with a
+// shadow root, hands it results, puts the Anki button in, and tells the host
+// when a button is pressed or a word in a definition is tapped.
 // SPDX-License-Identifier: GPL-3.0-or-later
-import { BASE_CSS } from "./base-css.js";
-import { CARD_STATES, listBody, scope, toEntry } from "./entry-html.js";
-import { colours, paletteOf } from "./palette.js";
+import "./hachidori/external-links.js";
+import HDGlossary from "./hachidori/glossary.js";
+import HDPopup from "./hachidori/popup.js";
+import READER_CSS from "./hachidori/reader-css.js";
+import ICONS_CSS from "./hachidori/icons-css.js";
+import { EMBED_CSS } from "./embed-css.js";
 
-export { CARD_STATES, body, escape, furigana, glossary, graph, listBody, path, scope, toEntry } from "./entry-html.js";
-export { PALETTES, colours, paletteOf } from "./palette.js";
-export { KINDS, accents, frequencyRank, morae, shortName } from "./pronunciation.js";
+export { HDGlossary, HDPopup, READER_CSS, ICONS_CSS, EMBED_CSS };
+
+/** Hachidori's palettes: its own ("default"), the system's light or dark ("auto"), and the rest of its catalogue. */
+export const THEMES = [
+  "default", "auto", "miku", "catppuccin-mocha", "solarized-dark", "dark", "synthwave", "halloween", "forest", "aqua", "black", "luxury",
+  "dracula", "business", "night", "coffee", "dim", "sunset", "abyss", "girlypop", "solarized-light", "light", "cupcake", "bumblebee",
+  "emerald", "corporate", "retro", "cyberpunk", "valentine", "garden", "lofi", "pastel", "fantasy", "wireframe", "cmyk", "autumn", "acid",
+  "lemonade", "winter", "nord", "caramellatte", "silk", "high-contrast",
+];
+
+/** How Hachidori shows an entry until its Design settings are changed (reader-options.js). */
+export const DEFAULT_DISPLAY = Object.freeze({
+  averageFrequency: false,
+  showFrequencyTagsWithAverage: false,
+  showFrequencyDictionaryNames: false,
+  compactFrequencyNumbers: false,
+  showPitchAccentFurigana: true,
+  pitchAccentFuriganaDictionary: "",
+  pitchAccentFuriganaStyle: "contour",
+  showPitchAccentBadge: true,
+  showPitchAccentDictionaryNames: true,
+  showPitchAccentText: true,
+  showPitchAccentPosition: true,
+  showPitchAccentGraph: false,
+  showPitchAccentColors: false,
+  hidePopupGrammarTags: true,
+  glossaryLayoutMode: "default",
+  popupColumns: 1,
+  showCompactDefinitionSummary: false,
+  compactDefinitionSummaryCount: 3,
+  compactDefinitionSummaryDictionary: "",
+});
 
 /**
- * LFG's page styles, for a shadow root: what it sets on `html` goes on the
- * host, and what it sets on `body` on the list inside.
+ * The Anki button's states: the name a host says, then Hachidori's own state
+ * (which picks the icon and colour), what the button says, and whether it's
+ * waiting on something.
  */
-export function hostCss() {
-  return (
-    BASE_CSS.replace(/^html\{/m, ":host{display:block;overflow-y:auto;overscroll-behavior:contain;").replace(/^body\{/m, ".lfg-list{") +
-    // What LFG's WebView does by itself: a button looks pressable, and its focus shows.
-    ".lfg-button{cursor:pointer;text-decoration:none}.lfg-button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}" +
-    ".lfg-card[data-state=adding] .lfg-i-adding{animation:lfg-turn 1s linear infinite}@keyframes lfg-turn{to{transform:rotate(360deg)}}"
-  );
+export const CARD_STATES = Object.freeze({
+  add: { state: "ready", icon: "add", title: "Mine to Anki" },
+  adding: { state: "mining", icon: "arrow-sync", title: "Adding note", busy: true },
+  "in-anki": { state: "success", icon: "book-search", title: "Note added" },
+  duplicate: { state: "add-duplicate", icon: "document-add", title: "Add duplicate to Anki" },
+  waiting: { state: "checking", icon: "arrow-clockwise", title: "Checking Anki card status", busy: true },
+  error: { state: "error", icon: "error-circle", title: "Could not add note" },
+  unavailable: { state: "unavailable", icon: "subtract", title: "Anki mining is unavailable" },
+});
+
+/** How many popups have been made, so each one's ids are its own. */
+let made = 0;
+
+/** How much of a definition is looked up from the character that was tapped. */
+const NESTED_LOOKUP_LENGTH = 40;
+
+/** Which of the results it was given a result the popup hands back is: the popup copies a result to show one dictionary's part of it. */
+const INDEX = Symbol("dictionary-popup result");
+
+const nameOf = (group) => String(group.dictionary ?? group.dictName ?? "");
+
+/**
+ * A result as Hachidori's popup reads it, which is as Hachidori's engine gives
+ * it: the inflections undone are its `trace`, and every list is there, empty
+ * or not. LFG's spellings (dictName, values, pitchPositions) are taken too.
+ */
+export function toHachidori(result, index = 0) {
+  const term = result.term ?? {};
+  return {
+    ...result,
+    [INDEX]: index,
+    matched: String(result.matched ?? term.expression ?? ""),
+    deinflected: String(result.deinflected ?? term.expression ?? ""),
+    trace: (result.trace ?? result.process ?? []).map((step) => ({ name: String(step.name ?? ""), description: String(step.description ?? "") })),
+    term: {
+      ...term,
+      expression: String(term.expression ?? ""),
+      reading: String(term.reading ?? ""),
+      rules: String(term.rules ?? ""),
+      glossaries: (term.glossaries ?? []).map((g) => ({ ...g, dictionary: nameOf(g), glossary: String(g.glossary ?? ""), definitionTags: String(g.definitionTags ?? ""), termTags: String(g.termTags ?? "") })),
+      frequencies: (term.frequencies ?? []).map((group) => ({
+        ...group,
+        dictionary: nameOf(group),
+        frequencies: (group.frequencies ?? group.values ?? []).map((f) => ({ ...f, value: Number(f.value), displayValue: String(f.displayValue ?? f.display ?? f.value) })),
+      })),
+      pitches: (term.pitches ?? []).map((group) => ({
+        ...group,
+        dictionary: nameOf(group),
+        transcriptions: group.transcriptions ?? [],
+        pitches: (group.pitches ?? group.values ?? (group.pitchPositions ?? []).map((position) => ({ position }))).map((pitch) => ({
+          ...pitch,
+          position: Number(pitch.position) || 0,
+          pattern: String(pitch.pattern ?? ""),
+          nasal: pitch.nasal ?? [],
+          devoice: pitch.devoice ?? [],
+        })),
+      })),
+    },
+  };
+}
+
+/** The text from a point in a definition to the end of its block, furigana left out, and no longer than a lookup needs. */
+function textFrom(node, offset, within) {
+  const block = (n) => {
+    for (let e = n.parentElement; e && e !== within; e = e.parentElement) {
+      const display = e.ownerDocument.defaultView.getComputedStyle(e).display;
+      if (!display.startsWith("inline") && display !== "ruby" && display !== "ruby-base" && display !== "contents") return e;
+    }
+    return within;
+  };
+  const home = block(node);
+  const walker = node.ownerDocument.createTreeWalker(home, 4 /* NodeFilter.SHOW_TEXT */, {
+    acceptNode: (n) => (n.parentElement?.closest("rt, rp") ? 2 /* FILTER_REJECT */ : 1 /* FILTER_ACCEPT */),
+  });
+  walker.currentNode = node;
+  let text = node.data.slice(offset);
+  while (text.length < NESTED_LOOKUP_LENGTH) {
+    const next = walker.nextNode();
+    if (!next || block(next) !== home) break;
+    text += next.data;
+  }
+  return text.slice(0, NESTED_LOOKUP_LENGTH);
+}
+
+/** The text node and offset of the character at a point inside a shadow root. */
+function characterAt(root, x, y) {
+  const document = root.ownerDocument ?? root.host.ownerDocument;
+  let node = null;
+  let offset = 0;
+  try {
+    const caret = document.caretPositionFromPoint?.(x, y, { shadowRoots: [root] });
+    if (caret) [node, offset] = [caret.offsetNode, caret.offset];
+  } catch {
+    // An older browser's caretPositionFromPoint takes no shadow roots.
+  }
+  if (!node) {
+    const range = document.caretRangeFromPoint?.(x, y);
+    if (range) [node, offset] = [range.startContainer, range.startOffset];
+  }
+  if (!node || node.nodeType !== 3 || node.getRootNode() !== root) return null;
+  // The caret falls between characters: a tap on a character's right half is still that character.
+  const range = document.createRange();
+  const holds = (at) => {
+    if (at < 0 || at >= node.data.length) return false;
+    range.setStart(node, at);
+    range.setEnd(node, at + 1);
+    return [...range.getClientRects()].some((box) => x >= box.left && x <= box.right && y >= box.top && y <= box.bottom);
+  };
+  if (holds(offset)) return { node, offset };
+  if (holds(offset - 1)) return { node, offset: offset - 1 };
+  return null;
 }
 
 /**
- * Puts a dictionary popup in `container` and returns its handle.
+ * Puts Hachidori's dictionary popup in `container` and returns its handle.
  *
  * Options:
- *   theme       "dark" (default) or "light".
- *   scheme      LFG's colour scheme: "pink" (default), "mono", "amber", "teal" or "purple".
- *   colors      any of {bg, surface, border, borderStrong, text, dim, accent, soft, ok, okSoft, chip, freqName, freqNameText} over the scheme's.
- *   fontSize    in px (default 16).
+ *   theme       one of THEMES: "default" (Hachidori's own, dark), "auto", "light", "dark" …
+ *   opacity     how solid the popup's background is, 0 to 100 (default 85, as Hachidori's).
+ *   display     Hachidori's Design settings for an entry, over DEFAULT_DISPLAY.
+ *   dictionaries  [{title, displayName, frequencyMode}], what Hachidori knows of each dictionary: the name to show
+ *               for it and whether its frequencies are ranks ("rank-based") or counts ("occurrence-based").
+ *   tabGroups   [{id, name, dictionaries: [title]}], dictionaries that share a tab.
  *   css         extra CSS for the popup.
- *   onAddCard(result, index)     the card button of a word not added yet. Without it there's no card button.
- *   onOpenCard(result, index)    the card button of a word that's in Anki (its state "in-anki").
+ *   initialResultCount  how many results are drawn at once; the rest follow as the page is idle (default 1).
+ *   onAddCard(result, index)     the Anki button of a word not added yet. Without it there's no Anki button.
+ *   onOpenCard(result, index)    the Anki button of a word that's in Anki.
  *   onPlayAudio(result, index)   the audio button. Without it there's no audio button.
  *   hasAudio(result)             whether a word has audio to play (default: every word).
- *   onNote(result, index)        the note button. Without it there's no note button.
- *   mediaUrl(dictionary, path)   a URL for a dictionary's picture. Without it pictures are left out.
+ *   lookup(text)                 looks up the words `text` starts with, for a word tapped in a definition, a link
+ *                                to another entry and a kanji of the headword: results, or {results, styles}, or
+ *                                a promise of either. Without it definitions aren't looked up.
+ *   media(dictionary, path)      a dictionary's picture: a URL, a Blob, or a promise of either. Without it
+ *                                pictures are left out.
+ *   onExternalLink(url)          a link out of a definition (default: opens it in a new tab).
+ *   onClose()                    a close button at the top of the popup. Without it there's none.
  */
 export function createDictionaryPopup(container, options = {}) {
+  options = { ...options };
+  const document = container.ownerDocument;
+  const window = document.defaultView;
   const host = document.createElement("div");
   host.className = "dictionary-popup";
   const root = host.attachShadow({ mode: "open" });
-  const theme = document.createElement("style");
   const base = document.createElement("style");
-  const dictionaries = document.createElement("style");
+  base.textContent = `${READER_CSS}\n${ICONS_CSS}\n${EMBED_CSS}`;
   const custom = document.createElement("style");
-  const list = document.createElement("div");
-  list.className = "lfg-list";
-  root.append(theme, base, dictionaries, custom, list);
-  base.textContent = hostCss();
+  const popup = document.createElement("div");
+  popup.className = "gsm-hoshidicts-popup";
+  popup.hidden = true;
+  root.append(base, custom, popup);
+  container.appendChild(host);
 
-  let shown = [];
-  let states = [];
-  let styled = "";
-  // Scoping a stylesheet is most of the time a lookup takes to show (a grammar dictionary's is 48 KB), and stylesheets rarely change.
-  const scoped = new Map();
+  const appearance = HDPopup.createPopupAppearance(host);
+  const display = () => ({ ...DEFAULT_DISPLAY, ...options.display });
 
-  function applyTheme() {
-    theme.textContent = colours(paletteOf(options)) + (options.fontSize ? `:host{font-size:${Number(options.fontSize) || 16}px}` : "");
+  function applyLook() {
+    appearance.update({
+      ...display(),
+      popupTheme: THEMES.includes(options.theme) ? options.theme : "default",
+      popupOpacityPercent: Number.isFinite(options.opacity) ? Math.min(100, Math.max(0, options.opacity)) : 85,
+      // The popup is as wide as its element and as tall as its entries (embed-css.js).
+      popupWidthPx: 560,
+      popupHeightPx: 420,
+      popupScalePercent: 100,
+      showPopupAudioButton: typeof options.onPlayAudio === "function",
+      // Hachidori's own notes, a dictionary of the reader's, aren't part of this.
+      personalDictionaryEnabled: false,
+    });
     custom.textContent = options.css ?? "";
   }
-  applyTheme();
+  applyLook();
 
-  function paintStates() {
-    states.forEach((state, i) => {
-      const button = root.getElementById(`c${i}`);
-      if (!button) return;
-      button.dataset.state = state;
-      button.setAttribute("aria-label", CARD_STATES[state]);
-      button.title = CARD_STATES[state];
+  /** What's shown, and what was shown before each word tapped in a definition. */
+  let shown = null;
+  const history = [];
+  let styled = null;
+  let generation = 0;
+  let asked = 0;
+  /** Which result each audio button plays. */
+  const heard = new WeakMap();
+  const pictures = new Map();
+
+  const view = HDPopup.createPopupView({
+    document,
+    window,
+    popup,
+    appendExpressionRuby: HDGlossary.appendExpressionRuby,
+    createPronunciationPitchAccent: HDGlossary.createPronunciationPitchAccent,
+    appendTextOnlyGlossary: HDGlossary.appendTextOnlyGlossary,
+    appendStructuredImage: HDGlossary.appendStructuredImage,
+    parseTagList: HDGlossary.parseTagList,
+    getPopupColumns: () => display().popupColumns,
+    getImageHoverPreview: () => "off",
+    initialResultCount: Number.isInteger(options.initialResultCount) ? options.initialResultCount : undefined,
+    idPrefix: `dictionary-popup-${(made += 1)}`,
+    positionPopup() {},
+    sourceHighlightEnabled: false,
+    onKanjiClick: (character) => void follow(character),
+    onResultsRendered: bindActions,
+    onResultsExpanded: bindActions,
+  });
+
+  /** The Anki button of one result, as Hachidori's content script draws it. */
+  function paintCard(button, name) {
+    const said = CARD_STATES[name] ?? CARD_STATES.add;
+    const opens = name === "in-anki";
+    button.dataset.state = said.state;
+    button.dataset.cardState = name;
+    button.dataset.action = opens ? "view" : "add";
+    button.title = opens && typeof options.onOpenCard === "function" ? "View note in Anki" : said.title;
+    button.setAttribute("aria-label", button.title);
+    button.setAttribute("aria-busy", String(said.busy === true));
+    button.disabled = said.busy === true || name === "unavailable" || (opens && typeof options.onOpenCard !== "function");
+    const icon = document.createElement("span");
+    icon.className = "gsm-hoshidicts-mine-icon hd-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.dataset.icon = said.icon;
+    button.replaceChildren(icon);
+  }
+
+  function cardButtons() {
+    return [...popup.querySelectorAll(".gsm-hoshidicts-mine-button[data-result-index]")];
+  }
+
+  /** Puts each result's Anki button in, and listens to its audio button. The popup calls this as it draws results. */
+  function bindActions({ audioButtons = [], miningActions = [] }) {
+    if (!shown) return;
+    for (const item of miningActions) {
+      const index = item.result?.[INDEX];
+      if (!Number.isInteger(index) || typeof options.onAddCard !== "function" || !item.actions) continue;
+      // The first result's row is kept from one drawing to the next, with its button.
+      let button = item.actions.querySelector(":scope > .gsm-hoshidicts-mine-button");
+      if (!button) {
+        button = document.createElement("button");
+        button.type = "button";
+        button.className = "gsm-hoshidicts-mine-button";
+        button.addEventListener("click", () => {
+          const at = Number(button.dataset.resultIndex);
+          const [state, result] = [shown?.states[at], shown?.given[at]];
+          if (!result) return;
+          if (state === "in-anki") options.onOpenCard?.(result, at);
+          else if (state === "add" || state === "duplicate" || state === "error") options.onAddCard?.(result, at);
+        });
+        const leading = item.actions.firstElementChild;
+        if (leading?.matches(".gsm-hoshidicts-popup-close, .gsm-hoshidicts-kanji-back")) leading.after(button);
+        else item.actions.prepend(button);
+      }
+      if (button.dataset.resultIndex !== String(index) || button.dataset.cardState !== shown.states[index]) {
+        button.dataset.resultIndex = String(index);
+        paintCard(button, shown.states[index]);
+      }
+    }
+    for (const item of audioButtons) {
+      const index = item.result?.[INDEX];
+      if (!Number.isInteger(index) || !item.button) continue;
+      const control = item.button.closest(".gsm-hoshidicts-audio-control");
+      if (control) control.hidden = typeof options.hasAudio === "function" && !options.hasAudio(shown.given[index]);
+      if (heard.has(item.button)) {
+        heard.set(item.button, index);
+        continue;
+      }
+      heard.set(item.button, index);
+      // Hachidori's button also opens a list of pronunciations; here it only plays.
+      item.button.title = "Play pronunciation";
+      item.button.removeAttribute("aria-haspopup");
+      item.button.removeAttribute("aria-expanded");
+      item.button.addEventListener("click", () => {
+        const at = heard.get(item.button);
+        if (shown?.given[at]) options.onPlayAudio?.(shown.given[at], at);
+      });
+    }
+  }
+
+  function applyStyles(styles) {
+    const list = (styles ?? []).map((s) => ({ dictionary: s.dictionary ?? s.dictName ?? "", styles: s.styles ?? s.css ?? "" }));
+    const key = list.map((s) => `${s.dictionary}\u0000${s.styles}`).join("\u0001");
+    // Scoping a stylesheet is most of the time a lookup takes to show, and stylesheets rarely change.
+    if (key === styled) return;
+    styled = key;
+    HDGlossary.applyDictionaryStyles(document, root, (generation += 1), list);
+  }
+
+  /** A dictionary's picture as a blob: or data: URL, the only kinds the popup shows. */
+  async function picture({ dictionary, path }) {
+    const key = `${dictionary}\u0000${path}`;
+    if (!pictures.has(key)) {
+      pictures.set(
+        key,
+        Promise.resolve(options.media(dictionary, path)).then(async (found) => {
+          if (found instanceof window.Blob) return window.URL.createObjectURL(found);
+          if (typeof found !== "string" || !found) throw new Error("dictionary image is unavailable");
+          if (/^(?:blob|data):/u.test(found)) return found;
+          const response = await window.fetch(found);
+          if (!response.ok) throw new Error("dictionary image is unavailable");
+          return window.URL.createObjectURL(await response.blob());
+        }),
+      );
+    }
+    return pictures.get(key);
+  }
+
+  function draw(restore = null) {
+    const { results, styles } = shown;
+    if (styles) applyStyles(styles);
+    popup.hidden = false;
+    const first = results[0];
+    view.renderResults(results, { query: first.matched ?? first.term.expression, sentence: "", matchOffset: 0, sourceElements: [], sourceText: "", sourceOffset: 0 }, {
+      ...HDPopup.metadataOptions(display()),
+      showCompactDefinitionSummary: display().showCompactDefinitionSummary,
+      compactDefinitionSummaryCount: display().compactDefinitionSummaryCount,
+      compactDefinitionSummaryDictionary: display().compactDefinitionSummaryDictionary,
+      dictionaryPresentation: options.dictionaries ?? [],
+      dictionaryTabGroups: options.tabGroups ?? [],
+      generation,
+      resolveMedia: typeof options.media === "function" ? picture : undefined,
+      onInternalLink: ({ query }) => void follow(query),
+      onExternalLink: ({ url }) => (typeof options.onExternalLink === "function" ? options.onExternalLink(url) : window.open(url, "_blank", "noopener")),
+      onBack: history.length ? back : undefined,
+      onClose: !history.length && typeof options.onClose === "function" ? () => options.onClose() : undefined,
+      onDictionaryTabSelected(selection) {
+        if (shown) shown.tab = selection;
+      },
+      selectedDictionaryTab: restore?.tab,
+      expandAll: restore?.expandAll,
+      restoreScrollTop: restore?.restoreScrollTop,
+      disclosures: restore?.disclosures,
     });
   }
 
-  function act(target) {
-    const button = target.closest?.("[data-action]");
-    if (!button) return false;
-    const index = Number(button.dataset.index);
-    const result = shown[index];
-    if (!result) return false;
-    if (button.dataset.action === "audio") options.onPlayAudio?.(result, index);
-    else if (button.dataset.action === "note") options.onNote?.(result, index);
-    else if (states[index] === "add") options.onAddCard?.(result, index);
-    else if (states[index] === "in-anki") options.onOpenCard?.(result, index);
+  function show(results, { styles, states = [], added = [] } = {}) {
+    const given = [...results];
+    const inAnki = new Set(added);
+    shown = {
+      given,
+      results: given.map(toHachidori),
+      styles,
+      states: given.map((result, i) => (states[i] in CARD_STATES ? states[i] : inAnki.has(result.term?.expression) ? "in-anki" : "add")),
+      tab: null,
+    };
+    draw();
+  }
+
+  /** Looks up a word of a definition, and shows it in place of what's there, with Back to return. */
+  async function follow(text) {
+    if (typeof options.lookup !== "function" || !shown || !text) return;
+    const [from, mine] = [shown, (asked += 1)];
+    let found;
+    try {
+      found = await options.lookup(text);
+    } catch (error) {
+      console.warn("dictionary-popup: a word in a definition could not be looked up", error);
+      return;
+    }
+    const results = Array.isArray(found) ? found : found?.results;
+    if (mine !== asked || shown !== from || !Array.isArray(results) || !results.length) return;
+    history.push({ ...from, restore: { ...view.captureTermView(), tab: from.tab } });
+    show(results, { styles: found?.styles, states: found?.states, added: found?.added });
+    popup.querySelector(".gsm-hoshidicts-kanji-back")?.focus({ preventScroll: true });
+  }
+
+  function back() {
+    const last = history.pop();
+    if (!last) return false;
+    asked += 1;
+    const { restore, ...was } = last;
+    shown = was;
+    draw(restore);
     return true;
   }
-  root.addEventListener("click", (e) => {
-    if (act(e.target)) e.preventDefault();
-  });
-  root.addEventListener("keydown", (e) => {
-    if ((e.key === "Enter" || e.key === " ") && act(e.target)) e.preventDefault();
-  });
 
-  container.appendChild(host);
+  // A tap on a word in a definition looks it up, as a click or hover does in Hachidori.
+  view.scrollElement.addEventListener("click", (event) => {
+    if (typeof options.lookup !== "function" || event.defaultPrevented || event.button !== 0) return;
+    const target = event.target;
+    if (!(target instanceof window.Element) || !target.closest(".gsm-hoshidicts-glossary-content")) return;
+    if (target.closest("a, button, summary, input, textarea, select, img, .gloss-image-link")) return;
+    if (!root.getSelection?.()?.isCollapsed && root.getSelection?.()) return;
+    const at = characterAt(root, event.clientX, event.clientY);
+    if (!at) return;
+    const text = textFrom(at.node, at.offset, view.scrollElement).trimEnd();
+    if (text && !/^[\s\p{P}\p{S}]/u.test(text)) void follow(text);
+  });
 
   return {
-    /** The element the popup is in: size it, or its container, as you like. It scrolls when its entries are taller than it. */
+    /** The element the popup is in. It's as wide as you make it and as tall as its entries; give it a max-height and the definitions scroll inside. */
     element: host,
 
     /**
-     * Shows `results` (see toEntry for their shape), one under the other.
+     * Shows `results` as Hoshidicts gives them, the first at the top.
      *   styles   [{dictionary, styles}], each dictionary's own CSS, limited to its entries.
-     *   states   each result's card state ("add", "adding", "in-anki", "waiting"); "add" where it's left out.
+     *   states   each result's card state ("add", "adding", "in-anki", "duplicate", "waiting", "error", "unavailable"); "add" where it's left out.
      *   added    expressions already in Anki, as a shorter way of saying "in-anki".
      */
-    render(results, { styles = [], states: given = [], added = [] } = {}) {
-      const key = styles.map((s) => `${s.dictionary ?? s.dictName}\u0000${s.styles ?? s.css ?? ""}`).join("\u0001");
-      if (key !== styled) {
-        styled = key;
-        dictionaries.textContent = styles
-          .map((s) => {
-            const [name, css] = [s.dictionary ?? s.dictName ?? "", s.styles ?? s.css ?? ""];
-            const id = `${name}\u0000${css}`;
-            if (!scoped.has(id)) scoped.set(id, scope(css, name));
-            return scoped.get(id);
-          })
-          .join("");
+    render(results, given = {}) {
+      history.length = 0;
+      asked += 1;
+      if (!results?.length) {
+        this.clear();
+        if (given.styles) applyStyles(given.styles);
+        return;
       }
-      shown = [...results];
-      const entries = shown.map(toEntry);
-      const inAnki = new Set(added);
-      states = entries.map((entry, i) => given[i] ?? (inAnki.has(entry.expression) ? "in-anki" : "add"));
-      list.innerHTML = listBody(entries, {
-        audio: options.onPlayAudio ? (entry) => (options.hasAudio ? !!options.hasAudio(shown[entries.indexOf(entry)]) : true) : null,
-        notes: !!options.onNote,
-        card: !!options.onAddCard,
-        mediaUrl: options.mediaUrl ?? null,
-      });
-      paintStates();
-      host.scrollTop = 0;
+      show(results, given);
     },
 
-    /** Sets one result's card state: "add", "adding", "in-anki" or "waiting". */
-    setCardState(index, state) {
-      if (index < 0 || index >= states.length || !(state in CARD_STATES)) return;
-      states[index] = state;
-      paintStates();
+    /** Shows a sentence in place of entries, as Hachidori says "No definition found." */
+    notice(message) {
+      history.length = 0;
+      asked += 1;
+      shown = null;
+      popup.hidden = false;
+      view.renderNotice(String(message), null, {});
     },
 
-    /** Marks these expressions as in Anki: their card button is a green tick. */
+    /** Sets one result's card state. `message` is what the button says of it, in place of the usual words. */
+    setCardState(index, state, message = "") {
+      if (!shown || index < 0 || index >= shown.states.length || !(state in CARD_STATES)) return;
+      shown.states[index] = state;
+      for (const button of cardButtons()) {
+        if (Number(button.dataset.resultIndex) !== index) continue;
+        paintCard(button, state);
+        if (message) {
+          button.title = message;
+          button.setAttribute("aria-label", message);
+        }
+      }
+    },
+
+    /** Marks these expressions as in Anki. */
     setAdded(expressions) {
+      if (!shown) return;
       const inAnki = new Set(expressions);
-      shown.forEach((result, i) => {
-        if (inAnki.has(toEntry(result).expression)) states[i] = "in-anki";
+      shown.given.forEach((result, i) => {
+        if (inAnki.has(result.term?.expression)) this.setCardState(i, "in-anki");
       });
-      paintStates();
     },
 
-    /** Marks the entry a controller or keyboard is on (its headword takes the accent colour), and scrolls to it if asked. */
-    setCurrent(index, { scroll = false } = {}) {
-      root.querySelectorAll(".lfg-entry").forEach((entry, i) => entry.toggleAttribute("data-current", i === index));
-      if (scroll) root.getElementById(`e${index}`)?.scrollIntoView({ block: "nearest" });
+    /** Moves to an entry of those shown, as Hachidori's next and previous entry keys do. */
+    setCurrent(index) {
+      if (!shown || index < 0 || index >= shown.results.length) return;
+      if (index === 0) view.focusEntry("first");
+      else view.focusEntry({ offset: index - view.currentEntryIndex() });
     },
 
-    /** Changes the theme, scheme, colours, font size or extra CSS. */
+    /** Goes back from a word looked up in a definition. False when there's nothing to go back to. */
+    back,
+
+    /** Changes the theme, opacity, display settings, dictionaries' names or extra CSS. */
     setTheme(change) {
       Object.assign(options, change);
-      applyTheme();
+      applyLook();
+      if (shown && (change.display || change.dictionaries || change.tabGroups)) draw({ ...view.captureTermView(), tab: shown.tab });
     },
 
-    /** Empties the popup. */
+    /** Empties the popup, and hides it. */
     clear() {
-      shown = [];
-      states = [];
-      list.innerHTML = "";
+      history.length = 0;
+      asked += 1;
+      shown = null;
+      view.clear();
+      popup.hidden = true;
     },
 
     /** Takes the popup out of the page. */
     destroy() {
+      asked += 1;
+      shown = null;
+      view.destroy();
+      appearance.destroy();
+      for (const url of pictures.values()) url.then((u) => u.startsWith("blob:") && window.URL.revokeObjectURL(u)).catch(() => {});
+      pictures.clear();
       host.remove();
     },
   };

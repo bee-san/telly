@@ -172,6 +172,8 @@
   /** Start was pressed: the D-pad moves around the player's controls, which stay up. */
   let controls = $state(false);
   let popup = $state<ReturnType<typeof LookupPopup> | null>(null);
+  /** The subtitles' box: the popup of a word looked up takes the room above it. */
+  let subsBox = $state<HTMLDivElement | null>(null);
   /** When the step of the cursor still being looked up began (0 when none is): a held direction waits for it. */
   let stepping = 0;
   /** Each line's words, once your dictionaries have said where they are. */
@@ -2034,9 +2036,9 @@
 
   {#if look}
     <div class="look-scrim" role="presentation" onclick={closeLook}></div>
-    <LookupPopup bind:this={popup} found={look.found} error={look.error} onadd={addWordCard} />
+    <LookupPopup bind:this={popup} found={look.found} error={look.error} onadd={addWordCard} under={subsBox} />
   {/if}
-  <div class="subs" class:off={!subsOn} class:looking={!!look} style:--sub-size={subFont}>
+  <div class="subs" class:off={!subsOn} class:looking={!!look} style:--sub-size={subFont} bind:this={subsBox}>
     {#each translated as line (line.start + line.text)}
       <p class="tr-line">{line.speaker ? `(${line.speaker}) ` : ""}{line.text}</p>
     {/each}
@@ -2352,8 +2354,11 @@
 
 <style>
   .look-scrim { position: absolute; inset: 0; z-index: 29; }
-  .subs.looking { z-index: 31; }
-  :global(::highlight(telly-look)) { background-color: var(--mark); color: var(--mark-ink); }
+  /* While a word is looked up its line is small along the bottom, over the controls, and the popup has the rest of the screen. */
+  .subs.looking { z-index: 31; bottom: 0; padding: 14px 0 6px; background: linear-gradient(to top, rgba(0, 0, 0, .92) 62%, transparent); }
+  .subs.looking .sub-line { font-size: min(var(--sub-size, 36px), 24px); }
+  /* --mark and --mark-ink, written out: an Android WebView before 111 reads no var() in a highlight, and marks nothing. */
+  :global(::highlight(telly-look)) { background-color: #ffd84a; color: #151516; }
   .player { position: absolute; inset: 0; background: var(--vid); color: var(--vid-ink); overflow: hidden; user-select: none; -webkit-user-select: none; }
   .player.idle .pic { cursor: none; }
   .pic { position: absolute; inset: 0; display: grid; place-items: center; cursor: pointer; }

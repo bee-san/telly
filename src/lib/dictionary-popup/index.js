@@ -17,6 +17,7 @@ import HDPopup from "./hachidori/popup.js";
 import READER_CSS from "./hachidori/reader-css.js";
 import ICONS_CSS from "./hachidori/icons-css.js";
 import { EMBED_CSS } from "./embed-css.js";
+import { customProperties, missing, olderDictionarySheet, olderSheet, plainColours, settle } from "./legacy.js";
 
 export { HDGlossary, HDPopup, READER_CSS, ICONS_CSS, EMBED_CSS };
 
@@ -143,6 +144,13 @@ function textFrom(node, offset, within) {
 /** The text node and offset of the character at a point inside a shadow root. */
 function characterAt(root, x, y) {
   const document = root.ownerDocument ?? root.host.ownerDocument;
+  const range = document.createRange();
+  const holds = (node, at) => {
+    if (at < 0 || at >= node.data.length) return false;
+    range.setStart(node, at);
+    range.setEnd(node, at + 1);
+    return [...range.getClientRects()].some((box) => x >= box.left && x <= box.right && y >= box.top && y <= box.bottom);
+  };
   let node = null;
   let offset = 0;
   try {
@@ -151,21 +159,23 @@ function characterAt(root, x, y) {
   } catch {
     // An older browser's caretPositionFromPoint takes no shadow roots.
   }
-  if (!node) {
-    const range = document.caretRangeFromPoint?.(x, y);
-    if (range) [node, offset] = [range.startContainer, range.startOffset];
+  if (node?.nodeType === 3 && node.getRootNode() === root) {
+    // The caret falls between characters: a tap on a character's right half is still that character.
+    if (holds(node, offset)) return { node, offset };
+    if (holds(node, offset - 1)) return { node, offset: offset - 1 };
+    return null;
   }
-  if (!node || node.nodeType !== 3 || node.getRootNode() !== root) return null;
-  // The caret falls between characters: a tap on a character's right half is still that character.
-  const range = document.createRange();
-  const holds = (at) => {
-    if (at < 0 || at >= node.data.length) return false;
-    range.setStart(node, at);
-    range.setEnd(node, at + 1);
-    return [...range.getClientRects()].some((box) => x >= box.left && x <= box.right && y >= box.top && y <= box.bottom);
-  };
-  if (holds(offset)) return { node, offset };
-  if (holds(offset - 1)) return { node, offset: offset - 1 };
+  // Before Chrome 128 nothing gives a caret inside a shadow root: find the
+  // element there, and which character of its text the point is on.
+  const element = root.elementFromPoint?.(x, y);
+  if (!element) return null;
+  const walker = document.createTreeWalker(element, 4 /* NodeFilter.SHOW_TEXT */);
+  for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+    range.selectNodeContents(text);
+    const box = range.getBoundingClientRect();
+    if (y < box.top || y > box.bottom || x < box.left || x > box.right) continue;
+    for (let at = 0; at < text.data.length; at += 1) if (holds(text, at)) return { node: text, offset: at };
+  }
   return null;
 }
 
@@ -201,7 +211,15 @@ export function createDictionaryPopup(container, options = {}) {
   host.className = "dictionary-popup";
   const root = host.attachShadow({ mode: "open" });
   const base = document.createElement("style");
-  base.textContent = `${READER_CSS}\n${ICONS_CSS}\n${EMBED_CSS}`;
+  // What this browser can't read of the stylesheets (legacy.js): nothing, on a current one.
+  const lacks = missing(window);
+  base.textContent = lacks.colours ? olderSheet(`${READER_CSS}\n${ICONS_CSS}\n${EMBED_CSS}`) : `${READER_CSS}\n${ICONS_CSS}\n${EMBED_CSS}`;
+  const coloured = lacks.colours ? customProperties(base.textContent) : [];
+  let settled = [];
+  /** The dictionaries' styles last given, and what they were scoped from. */
+  let lastStyles = null;
+  let styled = null;
+  let generation = 0;
   const custom = document.createElement("style");
   const popup = document.createElement("div");
   popup.className = "gsm-hoshidicts-popup";
@@ -226,14 +244,21 @@ export function createDictionaryPopup(container, options = {}) {
       personalDictionaryEnabled: false,
     });
     custom.textContent = options.css ?? "";
+    settleColours();
+  }
+
+  /** On an older browser, works out the palette's colours for it. They hang on the element being in the page. */
+  function settleColours() {
+    if (!lacks.colours || !host.isConnected) return;
+    settled = settle(popup, coloured, settled);
+    // A dictionary's stylesheet may use the palette's colours too.
+    if (lastStyles) applyStyles(lastStyles);
   }
   applyLook();
 
   /** What's shown, and what was shown before each word tapped in a definition. */
   let shown = null;
   const history = [];
-  let styled = null;
-  let generation = 0;
   let asked = 0;
   /** Which result each audio button plays. */
   const heard = new WeakMap();
@@ -331,12 +356,26 @@ export function createDictionaryPopup(container, options = {}) {
   }
 
   function applyStyles(styles) {
-    const list = (styles ?? []).map((s) => ({ dictionary: s.dictionary ?? s.dictName ?? "", styles: s.styles ?? s.css ?? "" }));
-    const key = list.map((s) => `${s.dictionary}\u0000${s.styles}`).join("\u0001");
+    lastStyles = styles;
+    let list = (styles ?? []).map((s) => ({ dictionary: s.dictionary ?? s.dictName ?? "", styles: s.styles ?? s.css ?? "" }));
+    const older = lacks.colours || lacks.nesting;
+    // On an older browser a stylesheet's colours are worked out from the palette, so they change with it.
+    const key = (older ? `${host.dataset.hoshidictsTheme}\u0002` : "") + list.map((s) => `${s.dictionary}\u0000${s.styles}`).join("\u0001");
     // Scoping a stylesheet is most of the time a lookup takes to show, and stylesheets rarely change.
     if (key === styled) return;
     styled = key;
-    HDGlossary.applyDictionaryStyles(document, root, (generation += 1), list);
+    if (!older) {
+      HDGlossary.applyDictionaryStyles(document, root, (generation += 1), list);
+      return;
+    }
+    const computed = window.getComputedStyle(popup);
+    const scheme = computed.getPropertyValue("--hoshidicts-palette-color-scheme").trim() === "light" ? "light" : "dark";
+    const lookup = (name) => computed.getPropertyValue(name);
+    // Before Hachidori reads a stylesheet, what the browser would drop from it is written plainly; and after, the
+    // colours Hachidori wraps in color-mix() to keep them colours (the popup's own --text-color and the like) are too.
+    list = list.map((s) => ({ ...s, styles: olderDictionarySheet(s.styles, { scheme, lookup, ...lacks }) }));
+    const applied = HDGlossary.applyDictionaryStyles(document, root, (generation += 1), list);
+    if (lacks.colours) for (const style of applied) style.textContent = plainColours(style.textContent, scheme, lookup);
   }
 
   /** A dictionary's picture as a blob: or data: URL, the only kinds the popup shows. */
@@ -360,6 +399,7 @@ export function createDictionaryPopup(container, options = {}) {
 
   function draw(restore = null) {
     const { results, styles } = shown;
+    settleColours();
     if (styles) applyStyles(styles);
     popup.hidden = false;
     const first = results[0];

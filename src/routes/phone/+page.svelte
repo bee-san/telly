@@ -40,8 +40,6 @@
         if (ids.length) await call("phoneGet", { ids, plays: await phonePlays() });
       }
       await load();
-      // Dictionaries the PC has that the phone's lookups haven't installed yet.
-      import("$lib/lookup.svelte").then((l) => l.installDictionaries()).catch(() => {});
       if (asked) toast({ key: "sync", state: "done", title: "Up to date with your PC", text: "Where you got to is on the PC, and the PC’s on the phone." });
     } catch (e) {
       if (asked) toast({ key: "sync", state: "failed", title: "Your PC isn’t reachable", text: errorText(e) });

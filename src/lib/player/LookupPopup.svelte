@@ -1,6 +1,7 @@
 <script lang="ts">
   // What a tapped word means, on the phone (lookup.svelte.ts): each word the
   // tap starts, the longest first, with what your dictionaries say, and Add card.
+  // A dictionary that couldn't be installed is said under them.
   import { glossaryHtml, progress, type Found } from "$lib/lookup.svelte";
 
   let {
@@ -38,6 +39,7 @@
       {/each}
     </article>
   {/each}
+  {#if progress.failed && !error}<p class="note" lang="en">{progress.failed}</p>{/if}
 </div>
 
 <style>

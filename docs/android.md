@@ -7,13 +7,14 @@ Telly for Android ([bee-san/telly#24](https://github.com/bee-san/telly/issues/24
 - The Android SDK with an NDK, and `ANDROID_HOME`, `ANDROID_SDK_ROOT` (the same folder, or Gradle refuses) and `NDK_HOME` pointing at them.
 - Rust with the Android targets: `rustup target add aarch64-linux-android x86_64-linux-android`.
 - JDK 17.
+- CMake and git, for Hoshidicts (the dictionary engine, C++), which the build compiles into the app.
 
 ## Building
 
 ```sh
 npm ci
-npm run prepare:hachidori    # the pinned Hachidori, whose dictionary engine the phone uses
-npm run prepare:hoshidicts   # copies that engine (hoshidicts.mjs and .wasm) into static/hoshi
+npm run prepare:hachidori    # the pinned Hachidori
+npm run prepare:hoshidicts   # the source of its dictionary engine, into src-tauri/vendor/hoshidicts
 npx tauri android build --target aarch64 --apk           # for a phone
 npx tauri android build --debug --target x86_64 --apk    # for an x86_64 emulator
 ```
@@ -44,7 +45,7 @@ Cards' pictures and audio are cut with [FFmpegKitNext](https://github.com/arthen
 - The backend starts only what the phone does: copying episodes from the PC (`phone.rs`) and line search. Nothing is converted, synced, downloaded or premined there.
 - FireRedVAD (subtitle sync), the single-instance plugin and Hachidori's windows are left out of the Android build.
 - `TellyPlugin.kt` is what the pages ask of Android: the player's whole screen, FFmpegKit, and AnkiDroid's API.
-- Lookups run Hoshidicts in the page (`src/lib/lookup.svelte.ts`), with your dictionaries kept in its IndexedDB.
+- Lookups are the backend's (`lookups.rs`): Hoshidicts is compiled into the app (`build.rs`), and each of your dictionaries is installed into a folder on the phone and read from there. `TELLY_NATIVE_LOOKUPS=1` builds it into Telly on a PC too, which is how `lookups.rs`'s tests run: `TELLY_NATIVE_LOOKUPS=1 cargo test --manifest-path src-tauri/Cargo.toml --lib lookups`.
 
 ## Trying it against a PC
 

@@ -29,4 +29,6 @@ export default defineConfig(() => ({
       ignored: ["**/src-tauri/**"],
     },
   },
+  // Telly's tests are beside what they test in src; Hoshidicts' source in src-tauri/vendor has its own.
+  test: { include: ["src/**/*.test.ts"] },
 }));

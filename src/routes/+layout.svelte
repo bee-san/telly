@@ -16,9 +16,14 @@
   let { children }: { children: Snippet } = $props();
 
   onMount(() => {
-    // The phone has no background work to show, and no Hachidori: its lookups install your dictionaries instead.
+    // The phone has no background work to show, and no Hachidori: its backend looks words up.
     if (onPhone) {
-      import("$lib/lookup.svelte").then((l) => l.installDictionaries()).catch(() => {});
+      // An older Telly kept your dictionaries in the page's storage: that copy goes.
+      try {
+        indexedDB.deleteDatabase("/dicts");
+      } catch {
+        // Nothing was kept there.
+      }
       return;
     }
     const stop = watchActivity();

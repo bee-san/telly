@@ -26,6 +26,7 @@ pub mod heard;
 pub mod jobs;
 pub mod known;
 pub mod library;
+pub mod lookups;
 pub mod log;
 pub mod matching;
 pub mod media;

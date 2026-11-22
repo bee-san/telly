@@ -666,7 +666,7 @@ fn copies(backend: &Backend) -> PathBuf {
     backend.dirs.local.join("episodes")
 }
 
-/// Where the phone keeps your dictionaries, as the PC has them.
+/// Where the phone keeps a dictionary's file from the PC until it's installed (lookups.rs).
 pub fn dictionaries_dir(backend: &Backend) -> PathBuf {
     backend.dirs.local.join("dictionaries")
 }
@@ -780,6 +780,8 @@ fn take_library(backend: &Backend, library: &Value, also: &[i64]) -> Result<()> 
 /// Gets the dictionaries the PC has that the phone hasn't (or has an older
 /// copy of), and lets go of those the PC no longer has.
 fn take_dictionaries(backend: &Backend, library: &Value) -> Result<()> {
+    // Not while one of these files is being installed.
+    let _installing = crate::lookups::hold(backend);
     let dir = dictionaries_dir(backend);
     std::fs::create_dir_all(&dir)?;
     let mut have = backend.db.setting(DICTIONARIES)?.and_then(|v| v.as_object().cloned()).unwrap_or_default();
@@ -806,17 +808,21 @@ fn take_dictionaries(backend: &Backend, library: &Value) -> Result<()> {
     Ok(())
 }
 
-/// Your dictionaries on the phone: each one's name and its revision, for the
-/// player to install what it hasn't.
-pub fn dictionaries(backend: &Backend) -> Value {
+/// Your dictionaries on the phone, each file's name with its revision on the
+/// PC, in the order lookups show them (lookups.rs installs them).
+pub fn dictionaries(backend: &Backend) -> Vec<(String, String)> {
     let have = backend.db.setting(DICTIONARIES).ok().flatten().and_then(|v| v.as_object().cloned()).unwrap_or_default();
-    let mut list: Vec<Value> = have
-        .iter()
-        .filter(|(name, _)| dictionaries_dir(backend).join(name).is_file())
-        .map(|(name, revision)| json!({ "name": name, "revision": revision, "url": format!("/dict/{}", percent_encoding::utf8_percent_encode(name, percent_encoding::NON_ALPHANUMERIC)) }))
-        .collect();
-    list.sort_by_key(|d| own_hachidori::install_order(d["name"].as_str().unwrap_or_default(), 0));
-    json!(list)
+    let mut list: Vec<(String, String)> = have.iter().map(|(name, revision)| (name.clone(), revision.as_str().unwrap_or_default().to_string())).collect();
+    list.sort_by_key(|(name, _)| own_hachidori::install_order(name, 0));
+    list
+}
+
+/// Forgets a dictionary the phone got, so the next sync gets it from the PC again.
+pub fn forget_dictionary(backend: &Backend, name: &str) -> Result<()> {
+    let mut have = backend.db.setting(DICTIONARIES)?.and_then(|v| v.as_object().cloned()).unwrap_or_default();
+    have.remove(name);
+    let _ = std::fs::remove_file(dictionaries_dir(backend).join(name));
+    backend.db.set_setting(DICTIONARIES, &Value::Object(have))
 }
 
 /// Downloads `path` from the PC into `to`, carrying on from a `.part` left

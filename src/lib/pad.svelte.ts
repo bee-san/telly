@@ -167,10 +167,11 @@ export function padStart() {
   if (!pad.used) return;
   const within = scope();
   const list = pressable(within);
+  // Off a card or panel, a page that listens for itself has no ring: it goes with what it was on.
+  if (within === document.body && listeners.length) return unring();
   if (ringedNow(list)) return;
   unring();
   if (within !== document.body) return void (list.length && ring(start(within, list) ?? list[0]));
-  if (listeners.length) return;
   lastBox = null;
   const first = start(within, list);
   if (first) ring(first);

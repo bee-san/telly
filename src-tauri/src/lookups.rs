@@ -421,7 +421,7 @@ mod engine {
                             .map(|e| {
                                 let of: Vec<Value> = list(e.pitches, e.pitches_count)
                                     .iter()
-                                    .map(|p| json!({ "position": p.position, "nasal": list(p.nasal, p.nasal_count), "devoice": list(p.devoice, p.devoice_count) }))
+                                    .map(|p| json!({ "position": p.position, "pattern": text(p.pattern), "nasal": list(p.nasal, p.nasal_count), "devoice": list(p.devoice, p.devoice_count) }))
                                     .collect();
                                 json!({ "dictionary": text(e.dict_name), "pitches": of })
                             })

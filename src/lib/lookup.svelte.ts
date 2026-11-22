@@ -27,7 +27,7 @@ export interface Found {
     /** How common it is, by each frequency dictionary. */
     frequencies: { dictionary: string; frequencies: { value: number; displayValue: string }[] }[];
     /** Its pitch accent, by each pitch dictionary. */
-    pitches: { dictionary: string; pitches: { position: number; nasal: number[]; devoice: number[] }[] }[];
+    pitches: { dictionary: string; pitches: { position: number; pattern: string; nasal: number[]; devoice: number[] }[] }[];
   };
 }
 

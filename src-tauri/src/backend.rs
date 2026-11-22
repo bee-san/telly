@@ -1774,8 +1774,13 @@ impl Backend {
             // A clip's file name alone: on Windows "C:\…" joined to the folder would be anywhere.
             ["clip", name] if !name.contains("..") && !name.contains(['/', '\\', ':']) => self.dirs.clips().join(name),
             ["names", "telly-characters.zip"] => names::zip_path(self),
-            // Your dictionaries on the phone, for its lookups to install (phone.rs).
-            ["dict", name] if !name.contains("..") && !name.contains(['/', '\\', ':']) => crate::phone::dictionaries_dir(self).join(name),
+            // Your dictionaries on the phone, for its lookups to install (phone.rs), a piece
+            // at a time from `?from=<byte>`: Android runs out of memory handing the page a
+            // big one whole. An empty answer is the end.
+            ["dict", name] if !name.contains("..") && !name.contains(['/', '\\', ':']) => {
+                let from: u64 = query.strip_prefix("from=").and_then(|n| n.parse().ok()).unwrap_or(0);
+                return read_range(&crate::phone::dictionaries_dir(self).join(name), Some(&format!("bytes={from}-")));
+            }
             ["hd", "dictionaries", "file", name] => own_hachidori::dictionary_file(self, name)?,
             _ => return Err(anyhow!("nothing at {path}")),
         };
@@ -2420,6 +2425,27 @@ mod tests {
         assert_eq!(paths(&disc), [[(1, "01.mkv".to_string()), (2, "02.mkv".to_string())]]);
         // A folder with nothing to watch is no show.
         assert!(found(vec![file("Trailer.mkv", None, "Under 5 minutes")]).shows().is_empty());
+    }
+
+    #[test]
+    fn a_dictionary_is_served_a_piece_at_a_time() {
+        let dir = std::env::temp_dir().join(format!("telly-dict-pieces-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        std::fs::create_dir_all(crate::phone::dictionaries_dir(&backend)).unwrap();
+        let whole: Vec<u8> = (0..CHUNK + 1000).map(|i| (i % 251) as u8).collect();
+        std::fs::write(crate::phone::dictionaries_dir(&backend).join("big dict.zip"), &whole).unwrap();
+        let mut got = Vec::new();
+        loop {
+            let piece = backend.serve(&format!("/dict/big%20dict.zip?from={}", got.len()), None).unwrap().bytes;
+            assert!(piece.len() as u64 <= CHUNK);
+            if piece.is_empty() {
+                break;
+            }
+            got.extend(piece);
+        }
+        assert!(got == whole);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

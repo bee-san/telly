@@ -88,9 +88,34 @@ function removeTree(e: Engine, path: string) {
   e.FS.rmdir(path);
 }
 
+/** Copies a dictionary into the engine's /import.zip a piece at a time, as the backend gives it. */
+async function fetchDictionary(e: Engine, url: string): Promise<void> {
+  const file = e.FS.open("/import.zip", "w");
+  try {
+    for (let from = 0; ; ) {
+      const answer = await fetch(`${mediaUrl(url)}?from=${from}`);
+      if (!answer.ok) throw new Error(await answer.text());
+      const piece = new Uint8Array(await answer.arrayBuffer());
+      if (!piece.length) break;
+      e.FS.write(file, piece, 0, piece.length);
+      from += piece.length;
+    }
+  } finally {
+    e.FS.close(file);
+  }
+}
+
+let installs: Promise<void> = Promise.resolve();
+
 /** Installs the dictionaries the phone has that the engine hasn't (or has an
- *  older one of), and lets go of those the phone no longer has. */
-export async function installDictionaries(): Promise<void> {
+ *  older one of), and lets go of those the phone no longer has. One at a time:
+ *  asked again while it's installing, it looks again once that's done. */
+export function installDictionaries(): Promise<void> {
+  installs = installs.catch(() => {}).then(install);
+  return installs;
+}
+
+async function install(): Promise<void> {
   const e = await start();
   const have = await call<{ name: string; revision: string; url: string }[]>("phoneDictionaries");
   let changed = false;
@@ -105,8 +130,7 @@ export async function installDictionaries(): Promise<void> {
     if (installed[d.name]?.revision === d.revision) continue;
     progress.installing = d.name;
     try {
-      const bytes = new Uint8Array(await (await fetch(mediaUrl(d.url))).arrayBuffer());
-      e.FS.writeFile("/import.zip", bytes);
+      await fetchDictionary(e, d.url);
       const report = JSON.parse(e.ccall("hdw_import", "string", ["string", "string", "number"], ["/import.zip", ROOT, 1]));
       e.FS.unlink("/import.zip");
       if (!report.success) throw new Error(report.error || lastError(e));

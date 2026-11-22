@@ -76,8 +76,6 @@
 
   /** The popup of what a tapped word means, and whether the video carries on when it closes. */
   let look = $state<{ found: Found[]; error: string; resume: boolean; line: Line | null } | null>(null);
-  /** The word whose card is being added. */
-  let adding = $state("");
 
   /** The text of a subtitle line as it's shown (its furigana and speaker left out), and where (x, y) falls in it. */
   function textAt(el: HTMLElement, x: number, y: number): { text: string; offset: number; nodes: [Text, number][] } | null {
@@ -150,7 +148,6 @@
   async function addWordCard(f: Found) {
     if (!view || !look?.line) return;
     const [playing, line] = [view, look.line];
-    adding = f.term.expression;
     closeLook();
     toast({ key: "card", state: "working", title: `Adding ${f.term.expression}`, text: line.text });
     try {
@@ -158,8 +155,6 @@
       toast({ key: "card", state: "done", title: `Added ${f.term.expression} to AnkiDroid`, text: withClip ? line.text : `${line.text} (no picture or audio: this Telly was built without FFmpegKit)` });
     } catch (err) {
       toast({ key: "card", state: "failed", title: "The card wasn’t added", text: errorText(err) });
-    } finally {
-      adding = "";
     }
   }
 
@@ -1845,7 +1840,7 @@
 
   {#if look}
     <div class="look-scrim" role="presentation" onclick={closeLook}></div>
-    <LookupPopup found={look.found} error={look.error} {adding} onadd={addWordCard} />
+    <LookupPopup found={look.found} error={look.error} onadd={addWordCard} />
   {/if}
   <div class="subs" class:off={!subsOn} class:looking={!!look} style:--sub-size={subFont}>
     {#each translated as line (line.start + line.text)}

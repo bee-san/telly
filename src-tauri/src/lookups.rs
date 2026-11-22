@@ -182,20 +182,23 @@ fn open(backend: &Backend) -> Result<engine::Engine> {
     Ok(engine)
 }
 
-/// The words `text` starts with, the longest first, with how your dictionaries'
-/// installing is going: {found, count, installing, failed}.
+/// The words `text` starts with, the longest first, each with what your
+/// dictionaries say of it, how common it is, its pitch and the inflections
+/// undone to find it; your dictionaries' own styles; and how their installing
+/// is going: {found, styles, count, installing, failed}.
 pub fn look_up(backend: &Backend, text: &str, max: usize) -> Result<Value> {
-    let found = if text.trim().is_empty() {
-        Vec::new()
+    let (found, styles) = if text.trim().is_empty() {
+        (Vec::new(), Vec::new())
     } else {
         let mut engine = lock(&backend.lookups.engine);
         if engine.is_none() {
             *engine = Some(open(backend)?);
         }
-        engine.as_ref().map(|e| e.look_up(text, max)).transpose()?.unwrap_or_default()
+        let engine = engine.as_ref().expect("opened above");
+        (engine.look_up(text, max)?, engine.styles())
     };
     let progress = lock(&backend.lookups.progress);
-    Ok(json!({ "found": found, "count": progress.count, "installing": progress.installing, "failed": progress.failed }))
+    Ok(json!({ "found": found, "styles": styles, "count": progress.count, "installing": progress.installing, "failed": progress.failed }))
 }
 
 /// Hoshidicts itself, through its C interface (vendor/hoshidicts/include/hoshidicts_c.h).
@@ -222,6 +225,38 @@ mod engine {
     }
 
     #[repr(C)]
+    struct Frequency {
+        value: i32,
+        display_value: Str,
+    }
+
+    #[repr(C)]
+    struct FrequencyEntry {
+        dict_name: Str,
+        frequencies: *const Frequency,
+        frequencies_count: usize,
+    }
+
+    #[repr(C)]
+    struct Pitch {
+        position: i32,
+        pattern: Str,
+        nasal: *const i32,
+        nasal_count: usize,
+        devoice: *const i32,
+        devoice_count: usize,
+    }
+
+    #[repr(C)]
+    struct PitchEntry {
+        dict_name: Str,
+        pitches: *const Pitch,
+        pitches_count: usize,
+        transcriptions: *const Str,
+        transcriptions_count: usize,
+    }
+
+    #[repr(C)]
     struct Term {
         expression: Str,
         reading: Str,
@@ -229,20 +264,33 @@ mod engine {
         score: f64,
         glossaries: *const Glossary,
         glossaries_count: usize,
-        frequencies: *const c_void,
+        frequencies: *const FrequencyEntry,
         frequencies_count: usize,
-        pitches: *const c_void,
+        pitches: *const PitchEntry,
         pitches_count: usize,
+    }
+
+    /// One inflection undone on the way from the text to the word.
+    #[repr(C)]
+    struct Step {
+        name: Str,
+        description: Str,
     }
 
     #[repr(C)]
     struct Found {
         matched: Str,
         deinflected: Str,
-        trace: *const c_void,
+        trace: *const Step,
         trace_count: usize,
         term: Term,
         preprocessor_steps: i32,
+    }
+
+    #[repr(C)]
+    struct Style {
+        dict_name: Str,
+        styles: Str,
     }
 
     unsafe extern "C" {
@@ -258,6 +306,8 @@ mod engine {
         fn hd_query_add_pitch_dict(q: *mut c_void, path: *const c_char) -> c_int;
         fn hd_query_add_kanji_dict(q: *mut c_void, path: *const c_char) -> c_int;
         fn hd_query_max_long_key_length(q: *const c_void) -> usize;
+        fn hd_query_get_styles(q: *const c_void, out: *mut *const Style, count: *mut usize) -> *mut c_void;
+        fn hd_styles_free(s: *mut c_void);
         fn hd_languages_new() -> *mut c_void;
         fn hd_languages_free(languages: *mut c_void);
         fn hd_lookup_new_with_languages(q: *mut c_void, languages: *const c_void) -> *mut c_void;
@@ -268,6 +318,17 @@ mod engine {
 
     fn c_path(path: &Path) -> Result<CString> {
         CString::new(path.to_string_lossy().as_bytes()).map_err(|_| anyhow!("{} can't be a path here", path.display()))
+    }
+
+    /// What Hoshidicts gives as a start and a count, as a slice.
+    ///
+    /// SAFETY: `start` points at `count` values that outlive the slice's use, or `count` is 0.
+    unsafe fn list<'a, T>(start: *const T, count: usize) -> &'a [T] {
+        if start.is_null() || count == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(start, count) }
+        }
     }
 
     fn text(s: Str) -> String {
@@ -341,24 +402,64 @@ mod engine {
                 if results.is_null() {
                     return Err(anyhow!("the dictionary engine failed"));
                 }
-                let list = (0..count)
-                    .map(|i| {
-                        let f = &*found.add(i);
-                        let glossaries: Vec<Value> = (0..f.term.glossaries_count)
-                            .map(|j| {
-                                let g = &*f.term.glossaries.add(j);
-                                json!({ "dictionary": text(g.dict_name), "glossary": text(g.glossary), "definitionTags": text(g.definition_tags), "termTags": text(g.term_tags) })
+                let words = list(found, count)
+                    .iter()
+                    .map(|f| {
+                        let glossaries: Vec<Value> = list(f.term.glossaries, f.term.glossaries_count)
+                            .iter()
+                            .map(|g| json!({ "dictionary": text(g.dict_name), "glossary": text(g.glossary), "definitionTags": text(g.definition_tags), "termTags": text(g.term_tags) }))
+                            .collect();
+                        let frequencies: Vec<Value> = list(f.term.frequencies, f.term.frequencies_count)
+                            .iter()
+                            .map(|e| {
+                                let of: Vec<Value> = list(e.frequencies, e.frequencies_count).iter().map(|v| json!({ "value": v.value, "displayValue": text(v.display_value) })).collect();
+                                json!({ "dictionary": text(e.dict_name), "frequencies": of })
                             })
                             .collect();
+                        let pitches: Vec<Value> = list(f.term.pitches, f.term.pitches_count)
+                            .iter()
+                            .map(|e| {
+                                let of: Vec<Value> = list(e.pitches, e.pitches_count)
+                                    .iter()
+                                    .map(|p| json!({ "position": p.position, "nasal": list(p.nasal, p.nasal_count), "devoice": list(p.devoice, p.devoice_count) }))
+                                    .collect();
+                                json!({ "dictionary": text(e.dict_name), "pitches": of })
+                            })
+                            .collect();
+                        let process: Vec<Value> = list(f.trace, f.trace_count).iter().map(|s| json!({ "name": text(s.name), "description": text(s.description) })).collect();
                         json!({
                             "matched": text(f.matched),
                             "deinflected": text(f.deinflected),
-                            "term": { "expression": text(f.term.expression), "reading": text(f.term.reading), "glossaries": glossaries },
+                            "process": process,
+                            "term": {
+                                "expression": text(f.term.expression),
+                                "reading": text(f.term.reading),
+                                "rules": text(f.term.rules),
+                                "glossaries": glossaries,
+                                "frequencies": frequencies,
+                                "pitches": pitches,
+                            },
                         })
                     })
                     .collect();
                 hd_lookup_results_free(results);
-                Ok(list)
+                Ok(words)
+            }
+        }
+
+        /// Each dictionary's own CSS for its entries, [{dictionary, styles}].
+        pub fn styles(&self) -> Vec<Value> {
+            let mut styles: *const Style = std::ptr::null();
+            let mut count = 0usize;
+            // SAFETY: `styles` points at `count` styles that live until hd_styles_free.
+            unsafe {
+                let held = hd_query_get_styles(self.query, &mut styles, &mut count);
+                if held.is_null() {
+                    return Vec::new();
+                }
+                let all = list(styles, count).iter().map(|s| json!({ "dictionary": text(s.dict_name), "styles": text(s.styles) })).collect();
+                hd_styles_free(held);
+                all
             }
         }
     }
@@ -397,6 +498,10 @@ mod engine {
 
         pub fn look_up(&self, _text: &str, _max: usize) -> Result<Vec<Value>> {
             Ok(Vec::new())
+        }
+
+        pub fn styles(&self) -> Vec<Value> {
+            Vec::new()
         }
     }
 }
@@ -445,6 +550,10 @@ mod tests {
         assert_eq!(said["found"][0]["term"]["reading"], "たべる");
         assert_eq!(said["found"][0]["term"]["glossaries"][0]["dictionary"], "Words");
         assert!(said["found"][0]["term"]["glossaries"][0]["glossary"].as_str().unwrap().contains("to eat"));
+        // What the popup shows beside the definitions: the word's kind, and the inflections undone.
+        assert_eq!(said["found"][0]["term"]["rules"], "v1");
+        let undone: Vec<&str> = said["found"][0]["process"].as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect();
+        assert!(undone.contains(&"negative"), "{undone:?}");
         // Nothing is installed twice, and a Telly opened again reads the same folder.
         install(&backend).unwrap();
         *lock(&backend.lookups.engine) = None;

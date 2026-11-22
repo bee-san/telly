@@ -16,15 +16,36 @@ export interface Found {
   /** The text it was found as, from the start of what was looked up. */
   matched: string;
   deinflected: string;
-  term: { expression: string; reading: string; glossaries: Glossary[] };
+  /** The inflections undone to get from `matched` to the word. */
+  process: { name: string; description: string }[];
+  term: {
+    expression: string;
+    reading: string;
+    /** The word's parts of speech ("v1 vt"). */
+    rules: string;
+    glossaries: Glossary[];
+    /** How common it is, by each frequency dictionary. */
+    frequencies: { dictionary: string; frequencies: { value: number; displayValue: string }[] }[];
+    /** Its pitch accent, by each pitch dictionary. */
+    pitches: { dictionary: string; pitches: { position: number; nasal: number[]; devoice: number[] }[] }[];
+  };
+}
+
+/** One dictionary's own CSS for its entries. */
+export interface DictionaryStyle {
+  dictionary: string;
+  styles: string;
 }
 
 /** How many dictionaries the phone has open, the one being installed, and what couldn't be installed. */
 export const progress = $state({ installing: "", failed: "", count: 0 });
+/** Your dictionaries' own styles, as the last lookup had them. */
+export const dictionaryStyles = $state<{ list: DictionaryStyle[] }>({ list: [] });
 
 /** The words `text` starts with, the longest first. */
 export async function lookUp(text: string, max = 6): Promise<Found[]> {
-  const said = await call<{ found: Found[]; count: number; installing: string; failed: string }>("phoneLookUp", { text, max });
+  const said = await call<{ found: Found[]; styles: DictionaryStyle[]; count: number; installing: string; failed: string }>("phoneLookUp", { text, max });
+  if (said.styles.length) dictionaryStyles.list = said.styles;
   progress.installing = said.installing;
   progress.failed = said.failed;
   progress.count = said.count;

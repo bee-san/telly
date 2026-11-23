@@ -102,8 +102,8 @@
     <div class="means">
       <LookupPopup bind:this={popup} fill found={look.found} error={look.error} {ask} onadd={(word) => post({ type: "add", word })} />
     </div>
-    <nav class="foot">
-      <button type="button" class="wide" onclick={() => post({ type: "close" })}>Back to the lines</button>
+    <nav class="foot slim">
+      <button type="button" title="Back to the lines (B)" onclick={() => post({ type: "close" })}>Back to the lines <kbd>B</kbd></button>
     </nav>
   {:else if shows.playing}
     <ol class="lines" bind:this={list} ontouchmove={() => (scrolledAt = Date.now())} onwheel={() => (scrolledAt = Date.now())}>
@@ -143,13 +143,14 @@
 
 <style>
   .second { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--vid); color: var(--vid-ink); user-select: none; -webkit-user-select: none; }
-  header { flex: none; display: flex; align-items: center; gap: 10px; padding: 10px 8px 10px 14px; border-bottom: 1px solid var(--vid-edge); }
-  .logo { flex: none; width: 24px; height: 24px; border-radius: 6px; display: grid; place-items: center; background: var(--vid-ink); color: var(--vid); font: 700 13px/1 var(--font-ui); }
+  /* One thin line, as LFG's panel has: the screen is small, and the room is the word's. */
+  header { flex: none; display: flex; align-items: center; gap: 8px; padding: 2px 2px 2px 12px; border-bottom: 1px solid var(--vid-edge); }
+  .logo { flex: none; width: 18px; height: 18px; border-radius: 5px; display: grid; place-items: center; background: var(--vid-ink); color: var(--vid); font: 700 11px/1 var(--font-ui); }
   .what { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; }
-  .what b { font: 600 15px/1.2 var(--font-ui); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .what span { flex: none; font-size: 13px; color: var(--vid-ink-2); }
-  .ibtn { flex: none; width: 40px; height: 40px; display: grid; place-items: center; border: 0; border-radius: 8px; background: none; color: var(--vid-ink-2); }
-  .ibtn :global(svg) { width: 18px; height: 18px; }
+  .what b { font: 600 13px/1.2 var(--font-ui); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .what span { flex: none; font-size: 12px; color: var(--vid-ink-2); }
+  .ibtn { flex: none; width: 34px; height: 34px; display: grid; place-items: center; border: 0; border-radius: 8px; background: none; color: var(--vid-ink-2); }
+  .ibtn :global(svg) { width: 16px; height: 16px; }
 
   .lines { flex: 1; min-height: 0; overflow-y: auto; list-style: none; margin: 0; padding: 30vh 0; }
   .lines li { display: flex; align-items: flex-start; gap: 4px; padding: 0 12px 0 0; border-left: 3px solid transparent; }
@@ -164,10 +165,10 @@
   .none, .hint { padding: 24px 16px; color: var(--vid-ink-2); font-size: 15px; }
   .lines .none { border: 0; }
 
-  .looked { flex: none; margin: 0; padding: 12px 16px; font: 700 24px/1.5 var(--font-jp); border-bottom: 1px solid var(--vid-edge); }
+  .looked { flex: none; margin: 0; padding: 8px 14px; font: 500 20px/1.55 var(--font-jp); border-bottom: 1px solid var(--vid-edge); }
   /* --mark and --mark-ink, written out: an Android WebView before 111 reads no var() in a highlight. */
   :global(::highlight(telly-look)) { background-color: #ffd84a; color: #151516; }
-  .means { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 8px; }
+  .means { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
   .foot { flex: none; display: flex; justify-content: center; gap: 8px; padding: 8px 12px 10px; border-top: 1px solid var(--vid-edge); }
   .foot button { min-width: 64px; height: 48px; display: grid; place-items: center; border: 0; border-radius: 10px; background: rgba(255, 255, 255, .08); color: var(--vid-ink); font: 600 15px var(--font-ui); }
@@ -175,6 +176,9 @@
   .foot .big { min-width: 96px; }
   .foot .wide { flex: 1; }
   .foot :global(svg) { width: 22px; height: 22px; }
+  .foot.slim { justify-content: flex-end; padding: 4px 8px; }
+  .foot.slim button { height: 32px; min-width: 0; padding: 0 12px; display: flex; align-items: center; gap: 8px; background: none; color: var(--vid-ink-2); font: 500 13px var(--font-ui); }
+  .foot.slim kbd { padding: 1px 6px; border: 1px solid var(--vid-edge); border-radius: 4px; font: 600 11px/1.4 var(--font-ui); }
 
   h2 { margin: 18px 16px 8px; font: 600 13px/1.2 var(--font-ui); text-transform: uppercase; letter-spacing: .06em; color: var(--vid-ink-2); }
   .watching { flex: 1; min-height: 0; overflow-y: auto; list-style: none; margin: 0; padding: 0 12px 12px; display: flex; flex-direction: column; gap: 8px; }

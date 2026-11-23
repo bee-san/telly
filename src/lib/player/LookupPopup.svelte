@@ -29,6 +29,14 @@
             : "No word starts here."),
   );
 
+  /** The popup flat on the page, for the second screen. */
+  const FLAT = `
+    .gsm-hoshidicts-popup { border: 0 !important; border-radius: 0 !important; box-shadow: none !important; }
+    .gsm-hoshidicts-primary-header { padding: 4px 14px !important; }
+    .gsm-hoshidicts-content-scroll { padding: 2px 14px 10px !important; }
+    .gsm-hoshidicts-glossary-card { border: 0 !important; border-radius: 0 !important; padding: 2px 0 6px !important; background: none !important; }
+  `;
+
   let host = $state<HTMLDivElement | null>(null);
   let popup: DictionaryPopup<Found> | null = null;
 
@@ -50,6 +58,8 @@
         theme: "default",
         // Nearly solid, where Hachidori's is 85%: over a page that's enough, but the player's own words showed through.
         opacity: 97,
+        // On the second screen it's the whole page, as LFG's panel is: no box around it, nor around each definition.
+        css: fill ? FLAT : undefined,
         onAddCard: (f) => onadd(f),
         lookup: async (text) => ({ results: once(await ask(text)), styles: dictionaryStyles.list }),
       });

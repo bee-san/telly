@@ -79,20 +79,20 @@
 
   // ---- looking words up on the phone (lookup.svelte.ts) -------------------------------
 
-  /** The popup of what a tapped word means, and whether the video carries on when it closes. */
-  let look = $state<{ found: Found[]; error: string; resume: boolean; line: Line | null; offset: number; length: number } | null>(null);
+  /** The popup of what a tapped word means, and whether the video carries on when it closes. `there`: the word was picked in the second screen's lines, which then shows what it means; otherwise it's over the video, as LFG's popup is over the game. */
+  let look = $state<{ found: Found[]; error: string; resume: boolean; line: Line | null; offset: number; length: number; there: boolean } | null>(null);
 
   /** Where in the line what's looked up starts: a controller's cursor steps on from it. */
   let cursor: { text: string; offset: number } | null = null;
   /** Goes up with each lookup, so one that's been overtaken shows nothing. */
   let lookRun = 0;
 
-  /** Looks up what starts at `offset` of `line`, which `el` shows, and marks it. The video carries on after if `resume`. */
-  async function lookAt(line: Line, el: HTMLElement, offset: number, resume = look ? look.resume : !!video && !video.paused) {
+  /** Looks up what starts at `offset` of `line`, which `el` shows, and marks it. The video carries on after if `resume`; `there`, it shows on the second screen. */
+  async function lookAt(line: Line, el: HTMLElement, offset: number, resume = look ? look.resume : !!video && !video.paused, there = look?.there ?? false) {
     const { text, nodes } = lineText(el);
     const run = ++lookRun;
     video?.pause();
-    look = { found: look?.found ?? [], error: "", resume, line, offset, length: 1 };
+    look = { found: look?.found ?? [], error: "", resume, line, offset, length: 1, there };
     cursor = { text, offset };
     try {
       const found = await lookUp(text.slice(offset));
@@ -109,7 +109,7 @@
     e.stopPropagation();
     const el = e.currentTarget as HTMLElement;
     const at = textAt(el, e.clientX, e.clientY);
-    if (at) await lookAt(line, el, at.offset);
+    if (at) await lookAt(line, el, at.offset, undefined, false);
   }
 
   function closeLook() {
@@ -295,7 +295,7 @@
 
   /** A controller's buttons for the popup, wherever it is: over the picture, or on the second screen. */
   function inPopup(press: { step?: number; scroll?: number; add?: boolean }) {
-    if (second.on) return tellSecond("popup", press);
+    if (second.on && look?.there) return tellSecond("popup", press);
     if (press.step) popup?.step(press.step);
     if (press.scroll) popup?.scroll(press.scroll);
     if (press.add) popup?.add();
@@ -316,7 +316,7 @@
     if (second.on) showSecond("styles", dictionaryStyles.list);
   });
   $effect(() => {
-    if (second.on) showSecond("look", look?.line ? { line: dialogue.indexOf(look.line), offset: look.offset, length: look.length, found: look.found, error: look.error } : null);
+    if (second.on) showSecond("look", look?.line && look.there ? { line: dialogue.indexOf(look.line), offset: look.offset, length: look.length, found: look.found, error: look.error } : null);
   });
 
   /** Something was touched on the second screen. */
@@ -330,7 +330,7 @@
         const resume = look ? look.resume : !!video && !video.paused;
         video?.pause();
         const el = await shown(line);
-        if (el) await lookAt(line, el, t.offset, resume);
+        if (el) await lookAt(line, el, t.offset, resume, true);
       });
     } else if (t.type === "lookup") {
       lookUp(t.text)
@@ -2059,9 +2059,9 @@
   {#if look}
     <div class="look-scrim" role="presentation" onclick={closeLook}></div>
     <!-- With a second screen, what the word means is there, off the picture. -->
-    {#if !second.on}<LookupPopup bind:this={popup} found={look.found} error={look.error} onadd={addWordCard} under={subsBox} />{/if}
+    {#if !(second.on && look.there)}<LookupPopup bind:this={popup} found={look.found} error={look.error} onadd={addWordCard} under={subsBox} />{/if}
   {/if}
-  <div class="subs" class:off={!subsOn} class:looking={!!look} class:beside={second.on} style:--sub-size={subFont} bind:this={subsBox}>
+  <div class="subs" class:off={!subsOn} class:looking={!!look} class:beside={second.on && look?.there} style:--sub-size={subFont} bind:this={subsBox}>
     {#each translated as line (line.start + line.text)}
       <p class="tr-line">{line.speaker ? `(${line.speaker}) ` : ""}{line.text}</p>
     {/each}

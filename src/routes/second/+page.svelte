@@ -174,7 +174,6 @@
   .foot button { min-width: 64px; height: 48px; display: grid; place-items: center; border: 0; border-radius: 10px; background: rgba(255, 255, 255, .08); color: var(--vid-ink); font: 600 15px var(--font-ui); }
   .foot button:active, .watching button:active { background: rgba(255, 255, 255, .18); }
   .foot .big { min-width: 96px; }
-  .foot .wide { flex: 1; }
   .foot :global(svg) { width: 22px; height: 22px; }
   .foot.slim { justify-content: flex-end; padding: 4px 8px; }
   .foot.slim button { height: 32px; min-width: 0; padding: 0 12px; display: flex; align-items: center; gap: 8px; background: none; color: var(--vid-ink-2); font: 500 13px var(--font-ui); }

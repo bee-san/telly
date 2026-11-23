@@ -265,6 +265,7 @@
       return ring;
     }
     if (controls) {
+      wake();
       if (button === "b" || button === "start") {
         if (subMenu || audioMenu) subMenu = audioMenu = false;
         else controls = false;
@@ -1749,12 +1750,19 @@
 
   // ---- keys and the idle chrome ----------------------------------------------------
 
+  /** Shows the controls, and hides them again after a while untouched: on the phone after 10 s even when paused, or with the ring on them. */
   function wake() {
     idle = false;
     if (idleTimer) clearTimeout(idleTimer);
+    const playing = !!video && !video.paused;
     idleTimer = setTimeout(() => {
-      if (video && !video.paused && !subMenu && !audioMenu && !help && !controls && !document.querySelector(".ptop:hover, .pctl:hover")) idle = true;
-    }, 2500);
+      if (!video || subMenu || audioMenu || help || document.querySelector(".ptop:hover, .pctl:hover")) return;
+      if (playing && !video.paused && !controls) idle = true;
+      else if (onPhone) {
+        idle = true;
+        controls = false;
+      }
+    }, playing && !controls ? 2500 : onPhone ? 10000 : 2500);
   }
 
   function onKey(e: KeyboardEvent) {
@@ -2184,7 +2192,7 @@
       <button type="button" class="pbtn txt wide" class:on={help} aria-label="Show shortcuts" title="Show shortcuts (?)" onclick={() => (help = !help)}>?</button>
       <button type="button" class="pbtn" class:on={app.compact} aria-label={app.compact ? "Back to the full window" : "Small player on top of other windows"}
         title="{app.compact ? "Back to the full window" : "Small player on top of other windows"} (I)" onclick={toggleCompact}><Icon name="mini" /></button>
-      <button type="button" class="pbtn wide" aria-label="Fullscreen" title="Fullscreen (F)" onclick={toggleFull}><Icon name={app.fullscreen ? "exitFull" : "full"} /></button>
+      {#if !onPhone}<button type="button" class="pbtn wide" aria-label="Fullscreen" title="Fullscreen (F)" onclick={toggleFull}><Icon name={app.fullscreen ? "exitFull" : "full"} /></button>{/if}
     </div>
   </div>
 

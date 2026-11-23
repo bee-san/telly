@@ -7,10 +7,12 @@ import android.view.View
 import android.webkit.WebView
 import androidx.activity.enableEdgeToEdge
 import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 
 class MainActivity : TauriActivity() {
-  /** Whether the player has the whole screen, under the status and navigation bars. */
+  /** Whether the player has the whole screen, its cutout too. */
   var wholeScreen = false
   /** The WebView Telly's pages are in, once there is one. */
   var page: WebView? = null
@@ -38,7 +40,10 @@ class MainActivity : TauriActivity() {
 
   override fun onWindowFocusChanged(hasFocus: Boolean) {
     super.onWindowFocusChanged(hasFocus)
-    if (hasFocus) page?.requestFocus()
+    if (hasFocus) {
+      page?.requestFocus()
+      hideBars()
+    }
     second.keys = !hasFocus
   }
 
@@ -64,13 +69,21 @@ class MainActivity : TauriActivity() {
     pad.release()
   }
 
+  /** Telly has the whole screen: the status and navigation bars are hidden, and a swipe from an edge shows them for a moment. */
+  fun hideBars() {
+    val controller = WindowCompat.getInsetsController(window, window.decorView)
+    controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+    controller.hide(WindowInsetsCompat.Type.systemBars())
+  }
+
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
-    // Telly's pages sit between the status bar and the navigation bar, but for the player's.
+    hideBars()
+    // Telly's pages keep clear of a camera's cutout and the keyboard, but for the player's.
     val content = findViewById<View>(android.R.id.content)
     ViewCompat.setOnApplyWindowInsetsListener(content) { view, insets ->
-      val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout() or WindowInsetsCompat.Type.ime())
+      val bars = insets.getInsets(WindowInsetsCompat.Type.displayCutout() or WindowInsetsCompat.Type.ime())
       if (wholeScreen) view.setPadding(0, 0, 0, 0) else view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
       WindowInsetsCompat.CONSUMED
     }

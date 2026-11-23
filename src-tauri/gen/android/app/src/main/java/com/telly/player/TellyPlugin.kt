@@ -12,9 +12,6 @@ import android.view.inputmethod.InputMethodManager
 import android.webkit.WebView
 import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
-import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 import app.tauri.PermissionState
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
@@ -61,21 +58,20 @@ class TellyPlugin(private val activity: Activity) : Plugin(activity) {
     page = webView
   }
 
-  /** The player takes the whole screen, sideways, with the screen kept on; or gives it back. */
+  /** The player takes the whole screen, sideways, with the screen kept on; or gives it back. Android's bars stay hidden either way (MainActivity). */
   @Command
   fun immersive(invoke: Invoke) {
     val on = invoke.parseArgs(ImmersiveArgs::class.java).on
     activity.runOnUiThread {
-      (activity as? MainActivity)?.wholeScreen = on
+      (activity as? MainActivity)?.let {
+        it.wholeScreen = on
+        it.hideBars()
+      }
       val window = activity.window
-      val controller = WindowCompat.getInsetsController(window, window.decorView)
       if (on) {
-        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        controller.hide(WindowInsetsCompat.Type.systemBars())
         activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
       } else {
-        controller.show(WindowInsetsCompat.Type.systemBars())
         activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
       }

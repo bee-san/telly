@@ -469,13 +469,14 @@ Each time the Library opens, and with **Sync now**, the phone gives the PC where
 
 On the phone the player takes the whole screen, sideways. A tap shows the controls or hides them; two quick taps to the left or right go back or on 10 seconds.
 
-**With a controller** (a handheld's own, like the AYN Thor's, or one paired with the phone), nothing needs a touch. In the Library and Get from PC the D-pad or the left stick moves a yellow ring over what can be pressed, **A** presses it, **B** goes back and the right stick scrolls; a held direction keeps moving. A field you type in (the PC's address and code, once) brings up Android's keyboard. A touch takes the ring away until a button is pressed again. In the player the buttons are LFG's: the D-pad steps words and lines, the left stick characters, A adds the card, B closes, and the shoulder buttons change entry.
+**With a controller** (a handheld's own, like the AYN Thor's, or one paired with the phone), nothing needs a touch. In the Library and Get from PC the D-pad or the left stick moves a yellow ring over what can be pressed, **A** presses it, **B** goes back and the right stick scrolls; a held direction keeps moving. A field you type in (the PC's address and code, once) brings up Android's keyboard. A touch takes the ring away until a button is pressed again. In the player the buttons are LFG's as it's set up on the Thor: L3 starts looking words up and ends it, the left stick steps words and lines, the D-pad characters, A adds the card, B closes, and the shoulder buttons change entry.
 
 | Watching | |
 |---|---|
 | A | Play or pause |
 | D-pad ↑ and ↓ | Previous and next line |
-| D-pad ← and → | Pause and look up the last or first word of the line on screen (or the last one said) |
+| L3 (or R3, or the two together) | Pause and look up the first word of the line on screen (or the last one said) |
+| D-pad ← and → | Pause and look up the last or first word of that line |
 | L1 and R1, or the left stick ← and → | Back and on 10 seconds |
 | Y | Replay the line |
 | X | Skip the opening or outro while that's offered, otherwise Explain the line |
@@ -485,14 +486,14 @@ On the phone the player takes the whole screen, sideways. A tap shows the contro
 
 | With a word looked up | |
 |---|---|
-| D-pad ← and → | Previous and next word (your dictionaries say where words start and end) |
-| D-pad ↑ and ↓ | Previous and next line, at its first word |
-| Left stick ← and → | One character back or on |
+| Left stick ← and → | Previous and next word (your dictionaries say where words start and end) |
+| Left stick or D-pad ↑ and ↓ | Previous and next line, at its first word |
+| D-pad ← and → | One character back or on |
 | L1 and R1 | Previous and next entry |
 | Right stick | Scroll the definitions |
 | A | Add the card of the entry you're on |
 | Y | Hear the line, stopping at its end |
-| B | Close, and carry on |
+| B, or L3 again | Close, and carry on |
 
 On the cards over the player (the end of an episode, Previously on, a video that won't play) the D-pad moves between their buttons and A presses; the ring starts on the one that carries on.
 

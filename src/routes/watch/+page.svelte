@@ -129,6 +129,8 @@
   let subsBox = $state<HTMLDivElement | null>(null);
   /** When the step of the cursor still being looked up began (0 when none is): a held direction waits for it. */
   let stepping = 0;
+  /** When L3 or R3 was last pressed: the other of the two pressed with it is the same press. */
+  let shortcutAt = 0;
   /** Each line's words, once your dictionaries have said where they are. */
   const lineWords = new Map<string, Promise<Word[]>>();
 
@@ -235,12 +237,18 @@
       if (button === "b") leave("/");
       return ring;
     }
+    // L3 or R3 (or the two together) starts looking words up and ends it, as LFG's shortcut does.
+    const shortcut = button === "l3" || button === "r3";
+    if (shortcut && Date.now() - shortcutAt < 300) return true;
+    if (shortcut) shortcutAt = Date.now();
     if (look) {
-      if (button === "left") oneStep(() => padWord(-1));
-      else if (button === "right") oneStep(() => padWord(1));
-      else if (button === "stick-left") oneStep(() => padCharacter(-1));
-      else if (button === "stick-right") oneStep(() => padCharacter(1));
+      // The left stick, where the thumb rests, goes word by word, and the D-pad a character at a time: LFG's "Stick by word".
+      if (button === "stick-left") oneStep(() => padWord(-1));
+      else if (button === "stick-right") oneStep(() => padWord(1));
+      else if (button === "left") oneStep(() => padCharacter(-1));
+      else if (button === "right") oneStep(() => padCharacter(1));
       else if (way) oneStep(() => padLine(way === "up" ? -1 : 1));
+      else if (shortcut) closeLook();
       else if (button === "a") inPopup({ add: true });
       else if (button === "b") popup?.back() || closeLook();
       else if (button === "y") hearLine();
@@ -267,7 +275,7 @@
     if (button === "a") togglePlay();
     else if (button === "b") leave("/");
     else if (button === "left") oneStep(() => padLook(line, true));
-    else if (button === "right") oneStep(() => padLook(line));
+    else if (button === "right" || shortcut) oneStep(() => padLook(line));
     else if (way === "up") prevLine();
     else if (way === "down") nextLine();
     else if (button === "l1" || button === "stick-left") jump(-10);

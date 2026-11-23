@@ -43,6 +43,8 @@ class Pad(private val press: (String, Boolean) -> Unit, private val scroll: (Flo
       KeyEvent.KEYCODE_BUTTON_R1 -> "r1"
       KeyEvent.KEYCODE_BUTTON_L2 -> "l2"
       KeyEvent.KEYCODE_BUTTON_R2 -> "r2"
+      KeyEvent.KEYCODE_BUTTON_THUMBL -> "l3"
+      KeyEvent.KEYCODE_BUTTON_THUMBR -> "r3"
       KeyEvent.KEYCODE_BUTTON_START -> "start"
       KeyEvent.KEYCODE_BUTTON_SELECT -> "select"
       else -> return KeyEvent.isGamepadButton(event.keyCode)

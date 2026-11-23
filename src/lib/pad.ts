@@ -5,7 +5,7 @@
 export type PadButton =
   | "up" | "down" | "left" | "right"
   | "stick-up" | "stick-down" | "stick-left" | "stick-right"
-  | "a" | "b" | "x" | "y" | "l1" | "r1" | "l2" | "r2" | "start" | "select";
+  | "a" | "b" | "x" | "y" | "l1" | "r1" | "l2" | "r2" | "l3" | "r3" | "start" | "select";
 
 export type Way = "up" | "down" | "left" | "right";
 

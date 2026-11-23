@@ -31,7 +31,8 @@
   const BUTTONS: [string, string][] = [
     ["A", "Play or pause"],
     ["D-pad ↑ and ↓", "Previous and next line"],
-    ["D-pad ← and →", "Look up the line’s last or first word"],
+    ["L3, or D-pad →", "Look up the line’s first word"],
+    ["D-pad ←", "Look up the line’s last word"],
     ["L1 and R1, or the left stick", "Back and on 10 seconds"],
     ["Y", "Replay the line"],
     ["X", "Skip the opening or outro when offered, else explain the line"],
@@ -40,14 +41,14 @@
     ["B", "Close what’s open, or leave the episode"],
   ];
   const LOOKING: [string, string][] = [
-    ["D-pad ← and →", "Previous and next word"],
-    ["D-pad ↑ and ↓", "Previous and next line"],
-    ["Left stick ← and →", "One character back or on"],
+    ["Left stick ← and →", "Previous and next word"],
+    ["Left stick or D-pad ↑ and ↓", "Previous and next line"],
+    ["D-pad ← and →", "One character back or on"],
     ["L1 and R1", "Previous and next entry"],
     ["Right stick", "Scroll the definitions"],
     ["A", "Add the entry’s card"],
     ["Y", "Hear the line"],
-    ["B", "Close, and carry on"],
+    ["B or L3", "Close, and carry on"],
   ];
 </script>
 

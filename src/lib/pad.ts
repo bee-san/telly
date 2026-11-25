@@ -9,10 +9,11 @@ export type PadButton =
 
 export type Way = "up" | "down" | "left" | "right";
 
-/** A button going down, or still held (`repeat`). */
+/** A button going down, or still held (`repeat`). Start is said when it's let go, or once it's `held` a while, as LFG's shortcut is. */
 export interface Press {
   button: PadButton;
   repeat: boolean;
+  held?: boolean;
 }
 
 /** The way a press of the D-pad or the left stick points, if it's one of them. */

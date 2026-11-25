@@ -469,18 +469,18 @@ Each time the Library opens, and with **Sync now**, the phone gives the PC where
 
 On the phone Telly has the whole screen, with Android's bars hidden (a swipe from the edge shows them for a moment), and the player turns it sideways by itself. A tap shows the controls or hides them, and they hide by themselves after 10 seconds untouched, paused too; two quick taps to the left or right go back or on 10 seconds.
 
-**With a controller** (a handheld's own, like the AYN Thor's, or one paired with the phone), nothing needs a touch. In the Library and Get from PC the D-pad or the left stick moves a yellow ring over what can be pressed, **A** presses it, **B** goes back and the right stick scrolls; a held direction keeps moving. A field you type in (the PC's address and code, once) brings up Android's keyboard. A touch takes the ring away until a button is pressed again. In the player the buttons are LFG's as it's set up on the Thor: L3 starts looking words up and ends it, the left stick steps words and lines, the D-pad characters, A adds the card, B closes, and the shoulder buttons change entry.
+**With a controller** (a handheld's own, like the AYN Thor's, or one paired with the phone), nothing needs a touch. In the Library and Get from PC the D-pad or the left stick moves a yellow ring over what can be pressed, **A** presses it, **B** goes back and the right stick scrolls; a held direction keeps moving. A field you type in (the PC's address and code, once) brings up Android's keyboard. A touch takes the ring away until a button is pressed again. In the player the buttons are LFG's as it's set up on the Thor: Start starts looking words up and ends it (L3 does too), and held a moment it brings up the controls, as it brings up LFG's wheel; the left stick steps words and lines, the D-pad characters, A adds the card, B closes, and the shoulder buttons change entry.
 
 | Watching | |
 |---|---|
 | A | Play or pause |
 | D-pad ↑ and ↓ | Previous and next line |
-| L3 (or R3, or the two together) | Pause and look up the first word of the line on screen (or the last one said) |
+| Start (or L3, R3, or the two together) | Pause and look up the first word of the line on screen (or the last one said) |
 | D-pad ← and → | Pause and look up the last or first word of that line |
 | L1 and R1, or the left stick ← and → | Back and on 10 seconds |
 | Y | Replay the line |
 | X | Skip the opening or outro while that's offered, otherwise Explain the line |
-| Start | The controls stay up and the ring moves around them (A presses, B or Start leaves); the transcript, filters, Sync and Explain are reached this way |
+| Start, held a moment | The controls stay up and the ring moves around them (A presses, B or Start leaves); the transcript, filters, Sync and Explain are reached this way |
 | Select | Show this list |
 | B | Close what's open, or leave the episode |
 
@@ -493,7 +493,7 @@ On the phone Telly has the whole screen, with Android's bars hidden (a swipe fro
 | Right stick | Scroll the definitions |
 | A | Add the card of the entry you're on |
 | Y | Hear the line, stopping at its end |
-| B, or L3 again | Close, and carry on |
+| B, or Start or L3 again | Close, and carry on |
 
 On the cards over the player (the end of an episode, Previously on, a video that won't play) the D-pad moves between their buttons and A presses; the ring starts on the one that carries on.
 

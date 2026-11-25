@@ -210,7 +210,7 @@
   }
 
   /** A controller's button in the player. Cards and panels with buttons of their own are left to the ring, but for B. */
-  function padPress({ button, repeat }: Press): boolean {
+  function padPress({ button, repeat, held }: Press): boolean {
     const way = wayOf(button);
     const ring = !(way || button === "a");
     if (controls && idle) controls = false;
@@ -237,8 +237,8 @@
       if (button === "b") leave("/");
       return ring;
     }
-    // L3 or R3 (or the two together) starts looking words up and ends it, as LFG's shortcut does.
-    const shortcut = button === "l3" || button === "r3";
+    // Start (or L3, or R3, or the two together) starts looking words up and ends it, as LFG's shortcut does; Start held opens the controls, as it opens LFG's wheel.
+    const shortcut = (button === "start" && !held) || button === "l3" || button === "r3";
     if (shortcut && Date.now() - shortcutAt < 300) return true;
     if (shortcut) shortcutAt = Date.now();
     if (look) {
@@ -266,7 +266,7 @@
     }
     if (controls) {
       wake();
-      if (button === "b" || button === "start") {
+      if (button === "b" || (button === "start" && !held)) {
         if (subMenu || audioMenu) subMenu = audioMenu = false;
         else controls = false;
       }

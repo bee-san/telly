@@ -1,6 +1,6 @@
 // A controller on Telly for Android. Android's side (Pad.kt) says which button
 // went down or came up; this turns a held direction into repeats, hands each
-// press to whichever page is listening, and otherwise moves a ring around
+// press to whichever page is listening (Start once it's let go or held), and otherwise moves a ring around
 // what's on the page: the D-pad or left stick moves it, A presses what it's
 // on, B goes back, and the right stick scrolls.
 import { invoke } from "@tauri-apps/api/core";
@@ -29,8 +29,11 @@ export function onPad(listener: PadListener): () => void {
 /** A held direction steps again after this long, then this often: LFG's timings. */
 const FIRST_REPEAT = 350;
 const NEXT_REPEAT = 100;
+/** Start held this long is a hold, not a tap: LFG's, where holding its shortcut opens the wheel. */
+const START_HOLD = 350;
 
 let held: PadButton | null = null;
+let startTimer: ReturnType<typeof setTimeout> | null = null;
 let repeatTimer: ReturnType<typeof setTimeout> | null = null;
 let speed = 0;
 let scrollFrame = 0;
@@ -69,6 +72,7 @@ function heard(e: Event) {
     return;
   }
   const button = said.button;
+  if (button === "start") return startHeard(said.down ?? false);
   if (!said.down) {
     if (held === button) letGo();
     return;
@@ -82,6 +86,21 @@ function heard(e: Event) {
     repeatTimer = setTimeout(again, NEXT_REPEAT);
   };
   repeatTimer = setTimeout(again, FIRST_REPEAT);
+}
+
+/** Start is a tap when let go soon, and a hold once kept down a while; nothing is said as it goes down. */
+function startHeard(down: boolean) {
+  if (down) {
+    if (startTimer) clearTimeout(startTimer);
+    startTimer = setTimeout(() => {
+      startTimer = null;
+      send({ button: "start", repeat: false, held: true });
+    }, START_HOLD);
+  } else if (startTimer) {
+    clearTimeout(startTimer);
+    startTimer = null;
+    send({ button: "start", repeat: false });
+  }
 }
 
 // ---- the ring ------------------------------------------------------------------
@@ -235,6 +254,8 @@ export function startPad(): () => void {
   window.addEventListener("pointerdown", touched, true);
   return () => {
     letGo();
+    if (startTimer) clearTimeout(startTimer);
+    startTimer = null;
     speed = 0;
     window.removeEventListener("telly-pad", heard);
     window.removeEventListener("pointerdown", touched, true);

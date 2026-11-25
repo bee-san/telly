@@ -31,12 +31,12 @@
   const BUTTONS: [string, string][] = [
     ["A", "Play or pause"],
     ["D-pad ↑ and ↓", "Previous and next line"],
-    ["L3, or D-pad →", "Look up the line’s first word"],
+    ["Start, L3 or D-pad →", "Look up the line’s first word"],
     ["D-pad ←", "Look up the line’s last word"],
     ["L1 and R1, or the left stick", "Back and on 10 seconds"],
     ["Y", "Replay the line"],
     ["X", "Skip the opening or outro when offered, else explain the line"],
-    ["Start", "Move around the player’s controls"],
+    ["Start, held", "Move around the player’s controls"],
     ["Select", "Show the buttons"],
     ["B", "Close what’s open, or leave the episode"],
   ];
@@ -48,7 +48,7 @@
     ["Right stick", "Scroll the definitions"],
     ["A", "Add the entry’s card"],
     ["Y", "Hear the line"],
-    ["B or L3", "Close, and carry on"],
+    ["B, Start or L3", "Close, and carry on"],
   ];
 </script>
 

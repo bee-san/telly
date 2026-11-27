@@ -76,6 +76,8 @@
   /** After a change of audio track: where to carry on from, and whether it was paused. */
   let reloadAt: { t: number; paused: boolean } | null = null;
   let videoError = $state("");
+  /** Seconds the episode has played since it loaded, until its picture is checked (`pictureCheck`). */
+  let playedSinceLoad = 0;
 
   // ---- looking words up on the phone (lookup.svelte.ts) -------------------------------
 
@@ -499,6 +501,7 @@
   async function load(id: number) {
     error = "";
     videoError = "";
+    playedSinceLoad = 0;
     ended = false;
     stopWaiting();
     endingFired = false;
@@ -649,6 +652,16 @@
     if (!holdPlay && !reload?.paused) video.play().catch(() => {});
   }
 
+  /** Three seconds into playing, a picture that hasn't shown a frame (HEVC, where Windows
+   *  hasn't its HEVC Video Extensions, plays as sound over black) offers to convert the episode. */
+  function pictureCheck(v: HTMLVideoElement, d: number) {
+    if (onPhone || playedSinceLoad > 3) return;
+    playedSinceLoad += d;
+    if (playedSinceLoad <= 3) return;
+    const frames = v.getVideoPlaybackQuality?.().totalVideoFrames;
+    if (!v.videoWidth || frames === 0) videoError = "The picture isn’t playing on this computer. Telly can convert the episode to a video it plays.";
+  }
+
   // ---- the frame loop: subtitles and the lines that played -------------------
 
   function loop() {
@@ -674,6 +687,7 @@
         }
       }
       if (!video.paused) sat.seconds += d / video.playbackRate;
+      if (!video.paused) pictureCheck(video, d);
     }
     lastT = cur;
     // Played into the ending, not taken past its start (a seek, Watch from here).

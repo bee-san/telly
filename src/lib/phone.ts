@@ -87,7 +87,7 @@ export function gettingText(g: { state: Getting["state"]; progress: number; erro
   }
 }
 
-/** Video kinds as the PC names them (phone.rs video_kind), each with a codec string to ask the WebView about. */
+/** Video kinds as the PC names them (media.rs video_kind), each with a codec string to ask the WebView about. */
 const VIDEO: Record<string, string> = {
   h264: "avc1.640028",
   "h264-10": "avc1.6e0028",
@@ -111,24 +111,33 @@ const AUDIO: Record<string, string> = {
   truehd: 'audio/mp4; codecs="mlpa"',
 };
 
+/** Which of these kinds of video ("hevc-10", as the PC names them) this WebView plays.
+ *  A kind counts when either way of asking says yes (see `phonePlays`). */
+export async function videoPlayed(kinds: string[]): Promise<string[]> {
+  const probe = document.createElement("video");
+  const video: string[] = [];
+  for (const kind of kinds) {
+    const type = `video/mp4; codecs="${VIDEO[kind]}"`;
+    const yes = probe.canPlayType(type) !== "" || (await capable({ type: "file", video: { contentType: type, width: 1920, height: 1080, bitrate: 8e6, framerate: 24 } }));
+    if (yes) video.push(kind);
+  }
+  return video;
+}
+
+async function capable(config: MediaDecodingConfiguration) {
+  try {
+    return (await navigator.mediaCapabilities.decodingInfo(config)).supported;
+  } catch {
+    return false;
+  }
+}
+
 /** What this phone's WebView plays, for the PC to send episodes as they are when it can.
  *  A codec counts when either way of asking says yes: Media Capabilities says no to
  *  H.264 10-bit, which plays, and canPlayType says "maybe" to it. */
 export async function phonePlays(): Promise<{ video: string[]; audio: string[] }> {
   const probe = document.createElement("video");
-  const capable = async (config: MediaDecodingConfiguration) => {
-    try {
-      return (await navigator.mediaCapabilities.decodingInfo(config)).supported;
-    } catch {
-      return false;
-    }
-  };
-  const video: string[] = [];
-  for (const [kind, codec] of Object.entries(VIDEO)) {
-    const type = `video/mp4; codecs="${codec}"`;
-    const yes = probe.canPlayType(type) !== "" || (await capable({ type: "file", video: { contentType: type, width: 1920, height: 1080, bitrate: 8e6, framerate: 24 } }));
-    if (yes) video.push(kind);
-  }
+  const video = await videoPlayed(Object.keys(VIDEO));
   const audio: string[] = [];
   for (const [codec, type] of Object.entries(AUDIO)) {
     const yes = probe.canPlayType(type) !== "" || (await capable({ type: "file", audio: { contentType: type, channels: "2", bitrate: 192000, samplerate: 48000 } }));

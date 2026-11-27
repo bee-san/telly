@@ -3,8 +3,10 @@
 //!
 //! WebView2 plays H.264, HEVC, VP9 and AV1, 8-bit or 10-bit, with AAC, MP3,
 //! Opus, FLAC, AC-3 or E-AC-3, in MP4 or MKV (one file of each kind played in
-//! Edge 157's engine, HEVC on the graphics card). Rips straight from MakeMKV
-//! are usually MPEG-2, which it can't. So each episode gets one of four plans:
+//! Edge 157's engine, HEVC on the graphics card). HEVC needs Windows' HEVC
+//! Video Extensions, so the page says which kinds of HEVC it can't play on
+//! this PC, and those are converted. Rips straight from MakeMKV are usually
+//! MPEG-2, which it can't. So each episode gets one of four plans:
 //!
 //!   direct  it plays as it is: the player loads the rip itself
 //!   remux   right codecs, wrong container (AVI): copied into MP4, in seconds
@@ -222,7 +224,18 @@ pub fn japanese_audio(probe: &Probe) -> usize {
         .unwrap_or(0)
 }
 
-fn video_plays(v: &VideoInfo) -> bool {
+/// A video's kind as a player says it plays it: its codec, and "-10" when it's more than 8-bit.
+pub fn video_kind(v: &VideoInfo) -> String {
+    let deep = ["10", "12", "p010", "p016"].iter().any(|d| v.pix_fmt.contains(d));
+    if deep { format!("{}-10", v.codec) } else { v.codec.clone() }
+}
+
+/// Whether WebView2 plays this picture, on a computer where it said it doesn't
+/// play the kinds of video in `misses` ("hevc-10").
+fn video_plays(v: &VideoInfo, misses: &[String]) -> bool {
+    if misses.contains(&video_kind(v)) {
+        return false;
+    }
     let eight_bit = matches!(v.pix_fmt.as_str(), "yuv420p" | "yuvj420p" | "nv12");
     match v.codec.as_str() {
         // 10-bit H.264 has no hardware decoder: the processor decodes it.
@@ -251,14 +264,15 @@ fn container_plays(probe: &Probe, path: &Path) -> bool {
 }
 
 /// How to get an episode playing with its audio track `audio` (a position
-/// among the audio tracks).
-pub fn plan(probe: &Probe, path: &Path, audio: usize) -> Plan {
+/// among the audio tracks), where WebView2 doesn't play the kinds of video in `misses`.
+pub fn plan(probe: &Probe, path: &Path, audio: usize, misses: &[String]) -> Plan {
     let Some(video) = &probe.video else { return Plan::Video };
     let track = probe.audio.get(audio);
-    if video_plays(video) && track.is_some_and(audio_plays) && container_plays(probe, path) {
+    let picture = video_plays(video, misses);
+    if picture && track.is_some_and(audio_plays) && container_plays(probe, path) {
         return Plan::Direct;
     }
-    match (video_plays(video), track.is_some_and(audio_plays_in_mp4)) {
+    match (picture, track.is_some_and(audio_plays_in_mp4)) {
         (true, true) => Plan::Remux,
         (true, false) => Plan::Audio,
         _ => Plan::Video,
@@ -865,7 +879,7 @@ mod tests {
         let p = parse_probe(&dvd());
         assert_eq!(p.duration, 1421.5);
         assert_eq!(japanese_audio(&p), 1);
-        assert_eq!(plan(&p, Path::new("title_t00.mkv"), 1), Plan::Video);
+        assert_eq!(plan(&p, Path::new("title_t00.mkv"), 1, &[]), Plan::Video);
         assert_eq!(ending_at(&p), Some(1300.0));
         assert_eq!(opening(&p), Some((0.0, 90.0)));
         let v = p.video.as_ref().unwrap();
@@ -928,31 +942,34 @@ mod tests {
         j["streams"][2]["codec_name"] = json!("aac");
         // An MKV plays as it is, whichever of its audio tracks is the Japanese one.
         let p = parse_probe(&j);
-        assert_eq!(plan(&p, Path::new("a.mkv"), 1), Plan::Direct);
+        assert_eq!(plan(&p, Path::new("a.mkv"), 1, &[]), Plan::Direct);
         j["streams"][2]["codec_name"] = json!("flac");
-        assert_eq!(plan(&parse_probe(&j), Path::new("a.mkv"), 1), Plan::Direct);
+        assert_eq!(plan(&parse_probe(&j), Path::new("a.mkv"), 1, &[]), Plan::Direct);
         // So does 10-bit HEVC, and 10-bit H.264.
         j["streams"][0]["codec_name"] = json!("hevc");
         j["streams"][0]["pix_fmt"] = json!("yuv420p10le");
-        assert_eq!(plan(&parse_probe(&j), Path::new("a.mkv"), 1), Plan::Direct);
+        assert_eq!(plan(&parse_probe(&j), Path::new("a.mkv"), 1, &[]), Plan::Direct);
+        // Unless WebView2 said it doesn't play 10-bit HEVC here: then it's converted.
+        assert_eq!(plan(&parse_probe(&j), Path::new("a.mkv"), 1, &["hevc-10".into()]), Plan::Video);
+        assert_eq!(plan(&parse_probe(&j), Path::new("a.mkv"), 1, &["hevc".into()]), Plan::Direct);
         j["streams"][0]["codec_name"] = json!("h264");
         j["streams"][0]["profile"] = json!("High 10");
-        assert_eq!(plan(&parse_probe(&j), Path::new("a.mkv"), 1), Plan::Direct);
+        assert_eq!(plan(&parse_probe(&j), Path::new("a.mkv"), 1, &[]), Plan::Direct);
         // Audio the player can't play is converted, and the picture copied.
         j["streams"][2]["codec_name"] = json!("dts");
-        assert_eq!(plan(&parse_probe(&j), Path::new("a.mkv"), 1), Plan::Audio);
+        assert_eq!(plan(&parse_probe(&j), Path::new("a.mkv"), 1, &[]), Plan::Audio);
         // 4:4:4 hasn't been seen to play.
         j["streams"][2]["codec_name"] = json!("aac");
         j["streams"][0]["pix_fmt"] = json!("yuv444p10le");
-        assert_eq!(plan(&parse_probe(&j), Path::new("a.mkv"), 1), Plan::Video);
+        assert_eq!(plan(&parse_probe(&j), Path::new("a.mkv"), 1, &[]), Plan::Video);
         // The right codecs in an AVI are copied into MP4.
         j["streams"][0]["pix_fmt"] = json!("yuv420p");
         j["format"]["format_name"] = json!("avi");
-        assert_eq!(plan(&parse_probe(&j), Path::new("a.avi"), 1), Plan::Remux);
+        assert_eq!(plan(&parse_probe(&j), Path::new("a.avi"), 1, &[]), Plan::Remux);
         let mp4 = json!({"format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2", "duration": "1400"},
           "streams": [{"index": 0, "codec_type": "video", "codec_name": "h264", "pix_fmt": "yuv420p", "profile": "High"},
                       {"index": 1, "codec_type": "audio", "codec_name": "aac", "tags": {"language": "jpn"}}]});
-        assert_eq!(plan(&parse_probe(&mp4), Path::new("a.mp4"), 0), Plan::Direct);
+        assert_eq!(plan(&parse_probe(&mp4), Path::new("a.mp4"), 0, &[]), Plan::Direct);
     }
 
     #[test]

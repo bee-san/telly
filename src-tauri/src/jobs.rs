@@ -880,7 +880,7 @@ pub fn change_audio(backend: &Backend, ffmpeg: &Path, episode: &Episode, probe: 
     let source = PathBuf::from(&episode.path);
     let output = copy_path(backend, episode.show_id, episode.id);
     let forced = backend.db.setting_bool(&format!("convert.force.{}", episode.id), false);
-    if !forced && media::plan(probe, &source, track) == Plan::Direct {
+    if !forced && media::plan(probe, &source, track, &webview_misses(backend)) == Plan::Direct {
         let _ = std::fs::remove_file(&output);
         backend.db.media_ready(episode.id, &episode.path, track as i64, track as i64)?;
         return Ok(());
@@ -1010,7 +1010,35 @@ pub fn move_copies(backend: Arc<Backend>, before: PathBuf) {
 fn plan_for(backend: &Backend, episode: &Episode, probe: &media::Probe) -> (Plan, usize) {
     let forced = backend.db.setting_bool(&format!("convert.force.{}", episode.id), false);
     let audio = audio_track(backend, episode.show_id, probe);
-    (if forced { Plan::Video } else { media::plan(probe, Path::new(&episode.path), audio) }, audio)
+    (if forced { Plan::Video } else { media::plan(probe, Path::new(&episode.path), audio, &webview_misses(backend)) }, audio)
+}
+
+/// The kinds of video ("hevc-10") the player's WebView2 said it can't play on
+/// this computer: HEVC, without Windows' HEVC Video Extensions.
+pub fn webview_misses(backend: &Backend) -> Vec<String> {
+    backend.db.setting("webview.misses").ok().flatten().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
+}
+
+/// The player says which kinds of HEVC it plays here (`played`, as
+/// `media::video_kind` names them). When that's changed, episodes that played
+/// straight from a rip it now can't play are converted.
+pub fn webview_plays(backend: &Backend, played: &[String]) -> Result<()> {
+    let misses: Vec<String> = ["hevc", "hevc-10"].into_iter().filter(|k| !played.iter().any(|p| p == k)).map(String::from).collect();
+    if misses == webview_misses(backend) {
+        return Ok(());
+    }
+    backend.db.set_setting("webview.misses", &serde_json::json!(misses))?;
+    for episode in backend.db.all_episodes()? {
+        if episode.media_state != "ready" || episode.play_path != episode.path {
+            continue;
+        }
+        let Some(video) = stored_probe(backend, episode.id).and_then(|p| p.video) else { continue };
+        if misses.contains(&media::video_kind(&video)) {
+            backend.db.media_reset(episode.id)?;
+        }
+    }
+    backend.jobs.poke();
+    Ok(())
 }
 
 /// Reads what's in an episode's rip and plans how to get it playing. A rip

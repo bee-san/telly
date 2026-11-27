@@ -10,9 +10,9 @@
   import { afterNavigate } from "$app/navigation";
   import TitleBar from "$lib/TitleBar.svelte";
   import Toasts from "$lib/Toasts.svelte";
-  import { hachidoriStart } from "$lib/api";
+  import { call, hachidoriStart } from "$lib/api";
   import { padStart, startPad } from "$lib/pad.svelte";
-  import { onPhone } from "$lib/phone";
+  import { onPhone, videoPlayed } from "$lib/phone";
   import { startSecond } from "$lib/second.svelte";
   import { app, watchActivity } from "$lib/state.svelte";
 
@@ -41,6 +41,10 @@
     const stop = watchActivity();
     // WebView2 has loaded Hachidori by the time the page is up: start its engine.
     hachidoriStart().catch(() => {});
+    // Without Windows' HEVC Video Extensions, WebView2 plays no HEVC: Telly converts those rips.
+    videoPlayed(["hevc", "hevc-10"])
+      .then((video) => call("webviewPlays", { video }))
+      .catch(() => {});
     return stop;
   });
 </script>

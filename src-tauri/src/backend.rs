@@ -1504,6 +1504,10 @@ impl Backend {
             "lateFromHere" => {
                 self.move_lines(arg(&args, "id")?, arg(&args, "from")?, arg(&args, "ms")?)
             }
+            "webviewPlays" => {
+                jobs::webview_plays(self, &arg::<Vec<String>>(&args, "video")?)?;
+                Ok(json!({}))
+            }
             "retryMedia" => {
                 let id: i64 = arg(&args, "id")?;
                 // "Convert this episode": it looked playable but wasn't.

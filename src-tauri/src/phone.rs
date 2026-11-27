@@ -118,15 +118,9 @@ impl PhonePlan {
     }
 }
 
-/// A video's kind as a phone says it plays it: its codec, and "-10" when it's more than 8-bit.
-fn video_kind(v: &media::VideoInfo) -> String {
-    let deep = ["10", "12", "p010", "p016"].iter().any(|d| v.pix_fmt.contains(d));
-    if deep { format!("{}-10", v.codec) } else { v.codec.clone() }
-}
-
 /// How the episode in `probe` (its Japanese track `audio`) gets to a phone that plays `plays`.
 fn phone_plan(probe: &media::Probe, path: &Path, audio: usize, plays: &Plays) -> PhonePlan {
-    let picture = probe.video.as_ref().is_some_and(|v| plays.video.contains(&video_kind(v)));
+    let picture = probe.video.as_ref().is_some_and(|v| plays.video.contains(&media::video_kind(v)));
     if !picture {
         return PhonePlan::Video;
     }

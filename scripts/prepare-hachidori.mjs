@@ -31,9 +31,9 @@ import zlib from "node:zlib";
 // The release to use. To update: change the version and asset, then put the
 // chrome.zip line from the release's SHA256SUMS.txt in sha256.
 const RELEASE = {
-  version: "0.5.0",
-  url: "https://github.com/bee-san/hachidori/releases/download/0.5.0/hachidori-0.5.0-bf1a78f8298b-chrome.zip",
-  sha256: "8a4d683bfcbbec5370023a674275f8f4c66c4b4f35d2cdd2e3b51940296aa75c",
+  version: "0.5.2",
+  url: "https://github.com/bee-san/hachidori/releases/download/0.5.2/hachidori-0.5.2-6cd6124abaa1-chrome.zip",
+  sha256: "e984e263de235529a2b7a94edbb16b5a14cbe073053635729dd5339dfe0a5571",
 };
 
 const root = path.resolve(import.meta.dirname, "..");

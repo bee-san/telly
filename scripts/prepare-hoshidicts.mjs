@@ -12,7 +12,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPOSITORY = "https://github.com/bee-san/hoshidicts.git";
-const COMMIT = "7efb66c63b04fbaa36ee93b8bded4e4394e732e6";
+const COMMIT = "088ac5ded9e4de62a0c3f434f3f72350945459a3";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const to = join(root, "src-tauri", "vendor", "hoshidicts");

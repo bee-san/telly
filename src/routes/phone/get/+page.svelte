@@ -115,7 +115,7 @@
 
   {#if phone && !phone.pc}
     <section class="pair">
-      <p>On your PC, open Telly’s <strong>Settings → Your phone</strong> and turn on lending to your phone. It shows a code to type here.</p>
+      <p>On your PC, open Telly’s <strong>Settings → Playing → Your phone</strong> and turn on lending to your phone. It shows a code to type here.</p>
       {#if looking}
         <p class="muted">Looking for Telly on your Wi-Fi…</p>
       {:else if pcs.length}
@@ -125,7 +125,7 @@
           {/each}
         </div>
       {:else}
-        <p class="muted">Telly on your PC wasn’t found on this Wi-Fi. Type the address Settings → Your phone shows. <button type="button" class="link" onclick={look}>Look again</button></p>
+        <p class="muted">Telly on your PC wasn’t found on this Wi-Fi. Type the address Settings → Playing → Your phone shows. <button type="button" class="link" onclick={look}>Look again</button></p>
       {/if}
       <label class="field">Address <input type="text" inputmode="url" autocapitalize="off" placeholder="192.168.1.20:8775" bind:value={address} /></label>
       <label class="field">Code <input type="text" inputmode="numeric" maxlength="6" placeholder="123456" bind:value={code} /></label>

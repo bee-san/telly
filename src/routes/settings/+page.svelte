@@ -213,6 +213,7 @@
     { label: "End card", page: "playing", group: "play", words: "summary stats countdown" },
     { label: "Convert ahead", page: "playing", group: "play" },
     { label: "Convert the rest while nothing plays", page: "playing", group: "play" },
+    { label: "Lend episodes to Telly on your phone", page: "playing", group: "phone", words: "your phone android pair code sync get from pc" },
     { label: "Wait while a game is running", page: "playing", group: "games" },
     { label: "More games", page: "playing", group: "games" },
     { label: "ffmpeg", page: "playing", group: "ffmpeg", words: "ffprobe" },

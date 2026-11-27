@@ -8,6 +8,8 @@ import { glossaryHtml, type Found } from "$lib/lookup.svelte";
 interface AnkiState {
   installed: boolean;
   allowed: boolean;
+  /** The Anki app cards go to: AnkiDroid, or kuma3 (its fork) when only that is installed. */
+  app: string;
   /** Whether this build can cut clips (FFmpegKit is in it). */
   clips: boolean;
 }
@@ -38,12 +40,12 @@ export async function ankiReady(): Promise<AnkiState> {
   let state = await invoke<AnkiState>("plugin:telly|ankiState");
   if (!state.installed) throw new Error("AnkiDroid isn’t installed. Install it, and sync it with AnkiWeb so it has your note type.");
   if (!state.allowed) state = await invoke<AnkiState>("plugin:telly|ankiAllow");
-  if (!state.allowed) throw new Error("Telly needs AnkiDroid’s permission to add cards. Allow it, and add the card again.");
+  if (!state.allowed) throw new Error(`Telly needs ${state.app}’s permission to add cards. Allow it, and add the card again.`);
   return state;
 }
 
 /** Adds a card for the word `f` from `line` of the episode playing. Its clip is cut first, when this build can. */
-export async function addPhoneCard(view: PlayerView, line: Line, f: Found): Promise<{ withClip: boolean }> {
+export async function addPhoneCard(view: PlayerView, line: Line, f: Found): Promise<{ withClip: boolean; app: string }> {
   const state = await ankiReady();
   const plan = await call<CardPlan>("phoneCardPlan", { episodeId: view.episode.id, start: line.start, end: line.end, text: line.text });
   const media: { field: string; path: string; kind: string }[] = [];
@@ -65,5 +67,5 @@ export async function addPhoneCard(view: PlayerView, line: Line, f: Found): Prom
     [plan.fields.info]: plan.info,
   };
   await invoke("plugin:telly|addCard", { model: plan.model, deck: plan.deck, tags: plan.tags, fields, media });
-  return { withClip: state.clips };
+  return { withClip: state.clips, app: state.app };
 }

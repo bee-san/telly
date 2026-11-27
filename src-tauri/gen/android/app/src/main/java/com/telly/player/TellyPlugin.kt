@@ -21,7 +21,6 @@ import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
-import com.ichi2.anki.api.AddContentApi
 import java.io.File
 
 @InvokeArg
@@ -29,8 +28,9 @@ class ImmersiveArgs {
   var on: Boolean = false
 }
 
-/** AnkiDroid's permission to add notes. */
+/** AnkiDroid's and kuma3's permissions to add notes (AnkiApp.kt). */
 private const val ANKI_PERMISSION = "com.ichi2.anki.permission.READ_WRITE_DATABASE"
+private const val KUMA3_PERMISSION = "io.github.pedrubik2000.kuma3.permission.READ_WRITE_DATABASE"
 
 @InvokeArg
 class SecondArgs {
@@ -50,7 +50,7 @@ class InstallArgs {
  * installed, Android's keyboard for a controller, and what the second screen
  * shows.
  */
-@TauriPlugin(permissions = [Permission(strings = [ANKI_PERMISSION], alias = "anki")])
+@TauriPlugin(permissions = [Permission(strings = [ANKI_PERMISSION], alias = "anki"), Permission(strings = [KUMA3_PERMISSION], alias = "kuma3")])
 class TellyPlugin(private val activity: Activity) : Plugin(activity) {
   private var page: WebView? = null
 
@@ -114,21 +114,24 @@ class TellyPlugin(private val activity: Activity) : Plugin(activity) {
     }
   }
 
-  /** Whether AnkiDroid is installed, Telly may add notes to it, and FFmpegKit is in this build to cut clips. */
+  /** Whether AnkiDroid (or kuma3, AnkiApp.kt) is installed, Telly may add notes to it, and FFmpegKit is in this build to cut clips. */
   @Command
   fun ankiState(invoke: Invoke) {
+    val app = AnkiApp.find(activity)
     val result = JSObject()
-    result.put("installed", AddContentApi.getAnkiDroidPackageName(activity) != null)
-    result.put("allowed", getPermissionState("anki") == PermissionState.GRANTED)
+    result.put("installed", app != null)
+    result.put("app", app?.name ?: "AnkiDroid")
+    result.put("allowed", app != null && getPermissionState(app.alias) == PermissionState.GRANTED)
     result.put("clips", ffmpegKit() != null)
     invoke.resolve(result)
   }
 
-  /** Asks you to let Telly add notes to AnkiDroid. */
+  /** Asks you to let Telly add notes to AnkiDroid (or kuma3). */
   @Command
   fun ankiAllow(invoke: Invoke) {
-    if (getPermissionState("anki") == PermissionState.GRANTED) ankiState(invoke)
-    else requestPermissionForAlias("anki", invoke, "ankiAllowed")
+    val app = AnkiApp.find(activity)
+    if (app == null || getPermissionState(app.alias) == PermissionState.GRANTED) ankiState(invoke)
+    else requestPermissionForAlias(app.alias, invoke, "ankiAllowed")
   }
 
   @PermissionCallback
@@ -179,16 +182,17 @@ class TellyPlugin(private val activity: Activity) : Plugin(activity) {
     val args = invoke.getArgs()
     Thread {
       try {
-        if (AddContentApi.getAnkiDroidPackageName(activity) == null) return@Thread invoke.reject("AnkiDroid isn’t installed")
-        if (getPermissionState("anki") != PermissionState.GRANTED) return@Thread invoke.reject("Telly isn’t allowed to add cards to AnkiDroid yet")
-        val api = AddContentApi(activity)
+        val app = AnkiApp.find(activity) ?: return@Thread invoke.reject("AnkiDroid isn’t installed")
+        val anki = app.name
+        if (getPermissionState(app.alias) != PermissionState.GRANTED) return@Thread invoke.reject("Telly isn’t allowed to add cards to $anki yet")
+        val r = activity.contentResolver
         val modelName = args.getString("model")
-        val modelId = api.modelList?.entries?.firstOrNull { it.value == modelName }?.key
-          ?: return@Thread invoke.reject("AnkiDroid has no note type called $modelName. Sync AnkiDroid with AnkiWeb so it has the one your PC uses.")
+        val modelId = app.models(r)?.entries?.firstOrNull { it.value == modelName }?.key
+          ?: return@Thread invoke.reject("$anki has no note type called $modelName. Sync $anki with AnkiWeb so it has the one your PC uses.")
         val deckName = args.getString("deck")
-        val deckId = api.deckList?.entries?.firstOrNull { it.value == deckName }?.key ?: api.addNewDeck(deckName)
-          ?: return@Thread invoke.reject("AnkiDroid didn’t make the deck $deckName")
-        val names = api.getFieldList(modelId) ?: return@Thread invoke.reject("AnkiDroid didn’t say what fields $modelName has")
+        val deckId = app.decks(r)?.entries?.firstOrNull { it.value == deckName }?.key ?: app.addDeck(r, deckName)
+          ?: return@Thread invoke.reject("$anki didn’t make the deck $deckName")
+        val names = app.fieldNames(r, modelId) ?: return@Thread invoke.reject("$anki didn’t say what fields $modelName has")
         val given = args.getJSONObject("fields")
         val values = HashMap<String, String>()
         for (key in given.keys()) values[key.lowercase()] = given.getString(key)
@@ -202,23 +206,23 @@ class TellyPlugin(private val activity: Activity) : Plugin(activity) {
             val file = File(File(activity.cacheDir, "cards").apply { mkdirs() }, kept.name)
             kept.copyTo(file, overwrite = true)
             val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.fileprovider", file)
-            activity.grantUriPermission("com.ichi2.anki", uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            val added = api.addMediaFromUri(uri, file.nameWithoutExtension, item.getString("kind")) ?: continue
+            activity.grantUriPermission(app.packageName, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            val added = app.addMedia(r, uri, file.nameWithoutExtension, item.getString("kind")) ?: continue
             val field = item.getString("field").lowercase()
             values[field] = (values[field] ?: "") + added
           }
         }
-        val fields = names.map { values[it.lowercase()] ?: "" }.toTypedArray()
+        val fields = names.map { values[it.lowercase()] ?: "" }
         val tagList = args.optJSONArray("tags")
         val tags = HashSet<String>()
         if (tagList != null) for (i in 0 until tagList.length()) tags.add(tagList.getString(i))
-        val noteId = api.addNote(modelId, deckId, fields, tags)
-          ?: return@Thread invoke.reject("AnkiDroid didn’t add the note (is the first field empty, or the same as another note’s?)")
+        val noteId = app.addNote(r, modelId, deckId, fields, tags)
+          ?: return@Thread invoke.reject("$anki didn’t add the note (is the first field empty, or the same as another note’s?)")
         val result = JSObject()
         result.put("note", noteId)
         invoke.resolve(result)
       } catch (e: Exception) {
-        invoke.reject("AnkiDroid: ${e.message}")
+        invoke.reject("${AnkiApp.find(activity)?.name ?: "AnkiDroid"}: ${e.message}")
       }
     }.start()
   }

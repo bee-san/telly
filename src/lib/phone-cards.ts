@@ -8,6 +8,8 @@ import { glossaryHtml, type Found } from "$lib/lookup.svelte";
 interface AnkiState {
   installed: boolean;
   allowed: boolean;
+  /** The Anki app cards go to: AnkiDroid, or kuma3 (its fork) when only that is installed. */
+  app: string;
   /** Whether this build can cut clips (FFmpegKit is in it). */
   clips: boolean;
 }
@@ -38,7 +40,7 @@ export async function ankiReady(): Promise<AnkiState> {
   let state = await invoke<AnkiState>("plugin:telly|ankiState");
   if (!state.installed) throw new Error("AnkiDroid isn’t installed. Install it, and sync it with AnkiWeb so it has your note type.");
   if (!state.allowed) state = await invoke<AnkiState>("plugin:telly|ankiAllow");
-  if (!state.allowed) throw new Error("Telly needs AnkiDroid’s permission to add cards. Allow it, and add the card again.");
+  if (!state.allowed) throw new Error(`Telly needs ${state.app}’s permission to add cards. Allow it, and add the card again.`);
   return state;
 }
 

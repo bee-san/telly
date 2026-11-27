@@ -3,10 +3,12 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Installing a newer Telly from its release on GitHub (TellyPlugin.installApk). -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
-    <!-- Adding cards to AnkiDroid, and seeing whether it's installed. -->
+    <!-- Adding cards to AnkiDroid or kuma3 (its fork), and seeing whether one is installed (AnkiApp.kt). -->
     <uses-permission android:name="com.ichi2.anki.permission.READ_WRITE_DATABASE" />
+    <uses-permission android:name="io.github.pedrubik2000.kuma3.permission.READ_WRITE_DATABASE" />
     <queries>
         <package android:name="com.ichi2.anki" />
+        <package android:name="io.github.pedrubik2000.kuma3" />
     </queries>
 
     <!-- AndroidTV support -->

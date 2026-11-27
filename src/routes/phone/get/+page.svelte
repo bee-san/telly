@@ -1,7 +1,8 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
   import { onMount } from "svelte";
-  import { call, errorText, mediaUrl } from "$lib/api";
+  import Cover from "$lib/Cover.svelte";
+  import { call, errorText, type Show } from "$lib/api";
   import { bytes } from "$lib/format";
   import { phonePlays, type PcEpisode, type PcLibrary, type PhoneState } from "$lib/phone";
   import { app } from "$lib/state.svelte";
@@ -107,6 +108,8 @@
   const epText = (e: PcEpisode) => (e.episode.watchedAt ? "Watched" : e.episode.position > 30 ? "Started" : "");
 </script>
 
+{#snippet cover(show: Show)}<Cover cover={`/cover/${show.id}`} color={show.coverColor} native={show.titleNative} title={show.title} />{/snippet}
+
 <div class="page">
   <header>
     <button type="button" class="link back" onclick={() => goto("/phone")}>‹ Library</button>
@@ -148,7 +151,7 @@
           {@const left = s.episodes.filter(gettable)}
           <li>
             <button type="button" class="show" onclick={() => (open = open === s.show.id ? null : s.show.id)} aria-expanded={open === s.show.id}>
-              <img src={mediaUrl(`/cover/${s.show.id}`)} alt="" onerror={(e) => ((e.currentTarget as HTMLImageElement).style.visibility = "hidden")} />
+              <span class="cover">{@render cover(s.show)}</span>
               <span class="show-text">
                 <strong>{s.show.title}</strong>
                 <span class="muted">{s.episodes.length} {s.episodes.length === 1 ? "episode" : "episodes"} · {s.episodes.filter((e) => e.onPhone === "ready").length} on the phone</span>
@@ -205,7 +208,7 @@
   .status { display: flex; justify-content: space-between; align-items: center; color: var(--ink-2); font-size: 14px; margin-bottom: 10px; }
   .shows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
   .show { width: 100%; display: flex; gap: 12px; align-items: center; text-align: left; background: var(--surface); border: 1px solid var(--rule); border-radius: 12px; padding: 10px; color: var(--ink); }
-  .show img { width: 46px; height: 66px; object-fit: cover; border-radius: 6px; background: var(--sunk); flex: none; }
+  .show .cover { width: 46px; flex: none; }
   .show-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
   .quick { padding: 8px 4px 0; }
   .episodes { list-style: none; margin: 4px 0 0; padding: 0 4px; }

@@ -1,8 +1,9 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
   import { onMount } from "svelte";
+  import Cover from "$lib/Cover.svelte";
   import { invoke } from "@tauri-apps/api/core";
-  import { call, errorText, mediaUrl, type Newer } from "$lib/api";
+  import { call, errorText, mediaUrl, type Show, type Newer } from "$lib/api";
   import { bytes, clock } from "$lib/format";
   import { pad } from "$lib/pad.svelte";
   import { gettingText, nextToGet, phonePlays, type PcLibrary, type PhoneEpisode, type PhoneLibrary, type PhoneShow } from "$lib/phone";
@@ -127,6 +128,8 @@
   const play = (e: PhoneEpisode) => goto(`/watch?ep=${e.id}`);
 </script>
 
+{#snippet cover(show: Show)}<Cover cover={`/cover/${show.id}`} color={show.coverColor} native={show.titleNative} title={show.title} />{/snippet}
+
 <div class="page">
   <header>
     <div class="brand"><span class="logo">T</span><h1>Telly</h1></div>
@@ -172,7 +175,7 @@
           {@const n = nextOf(s)}
           {#if n}
             <article class="next">
-              <img src={mediaUrl(`/cover/${s.show.id}`)} alt="" />
+              <span class="cover">{@render cover(s.show)}</span>
               <div class="next-text">
                 <strong>{s.show.title}</strong>
                 <span>{epLabel(s, n)}{n.position > 30 ? ` · from ${clock(n.position)}` : ""}</span>
@@ -198,7 +201,7 @@
       {#each lib.shows as s (s.show.id)}
         <li>
           <button type="button" class="show" onclick={() => (open = open === s.show.id ? null : s.show.id)} aria-expanded={open === s.show.id}>
-            <img src={mediaUrl(`/cover/${s.show.id}`)} alt="" />
+            <span class="cover">{@render cover(s.show)}</span>
             <span class="show-text">
               <strong>{s.show.title}</strong>
               {#if s.show.titleNative}<span class="jp">{s.show.titleNative}</span>{/if}
@@ -261,12 +264,12 @@
   .empty p { color: var(--ink-2); line-height: 1.5; }
   .row { display: flex; gap: 12px; overflow-x: auto; scroll-snap-type: x mandatory; padding-bottom: 4px; }
   .next { flex: 0 0 86%; scroll-snap-align: start; display: flex; gap: 12px; background: var(--surface); border: 1px solid var(--rule); border-radius: 14px; padding: 12px; }
-  .next img { width: 84px; height: 120px; object-fit: cover; border-radius: 8px; background: var(--sunk); }
+  .next .cover { width: 84px; flex: none; }
   .next-text { display: flex; flex-direction: column; gap: 6px; min-width: 0; justify-content: center; align-items: flex-start; }
   .next-text strong { font-size: 16px; }
   .shows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
   .show { width: 100%; display: flex; gap: 12px; align-items: center; text-align: left; background: var(--surface); border: 1px solid var(--rule); border-radius: 12px; padding: 10px; color: var(--ink); }
-  .show img { width: 52px; height: 74px; object-fit: cover; border-radius: 6px; background: var(--sunk); flex: none; }
+  .show .cover { width: 52px; flex: none; }
   .show-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
   .jp { font-family: var(--font-jp); color: var(--ink-2); font-size: 13px; }
   .episodes { list-style: none; margin: 6px 0 0; padding: 0 4px; }

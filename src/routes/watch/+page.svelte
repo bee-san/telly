@@ -23,6 +23,7 @@
   import { app } from "$lib/state.svelte";
   import { toast, toasts } from "$lib/toast-store.svelte";
   import { boostDialogue, pickAudio } from "$lib/video";
+  import { SUB_LIFTS, SUB_SIZES, step } from "$lib/player/sub-look";
 
   const epId = $derived(Number(page.url.searchParams.get("ep")));
   /** Where to start: the episode was opened at a scene line search found (/watch?ep=4&at=1060). */
@@ -480,6 +481,8 @@
   const subSize = $derived(Number(settings["player.subtitleSize"] ?? 36) || 36);
   /** The subtitles' size: in the small player, scaled to its width, from 14 px up to their usual size. */
   const subFont = $derived(app.compact ? `clamp(14px, ${subSize / 10}vw, ${subSize}px)` : `${subSize}px`);
+  /** How far above their usual place the subtitles sit, in percent of the picture's height. */
+  const subLift = $derived(Math.min(90, Math.max(0, Number(settings["player.subtitleLift"] ?? 0) || 0)));
 
   /** The names to look for in the lines, unless Settings turned colouring them off. */
   const names = $derived(namesIndex(settings["player.names"] === false ? [] : castNames));
@@ -909,6 +912,22 @@
     subsOn = !subsOn;
     flash(subsOn ? "Subtitles on" : "Subtitles off");
     call("setSetting", { key: "player.subtitles", value: subsOn }).catch(() => {});
+  }
+
+  /** Bigger or smaller (by 1 or -1) subtitles, kept for every show. */
+  function resizeSubs(by: 1 | -1) {
+    const size = step(SUB_SIZES, subSize, by);
+    settings["player.subtitleSize"] = size;
+    flash(`Subtitles at ${size} pixels`);
+    call("setSetting", { key: "player.subtitleSize", value: size }).catch(() => {});
+  }
+
+  /** Subtitles higher or lower (by 1 or -1), kept for every show. */
+  function liftSubs(by: 1 | -1) {
+    const lift = step(SUB_LIFTS, subLift, by);
+    settings["player.subtitleLift"] = lift;
+    flash(lift ? `Subtitles ${lift}% higher` : "Subtitles where they usually are");
+    call("setSetting", { key: "player.subtitleLift", value: lift }).catch(() => {});
   }
 
   function toggleBlur() {
@@ -2075,7 +2094,7 @@
     <!-- With a second screen, what the word means is there, off the picture. -->
     {#if !(second.on && look.there)}<LookupPopup bind:this={popup} found={look.found} error={look.error} onadd={addWordCard} under={subsBox} />{/if}
   {/if}
-  <div class="subs" class:off={!subsOn} class:looking={!!look} class:beside={second.on && look?.there} style:--sub-size={subFont} bind:this={subsBox}>
+  <div class="subs" class:off={!subsOn} class:looking={!!look} class:beside={second.on && look?.there} style:--sub-size={subFont} style:--sub-lift="{subLift}%" bind:this={subsBox}>
     {#each translated as line (line.start + line.text)}
       <p class="tr-line">{line.speaker ? `(${line.speaker}) ` : ""}{line.text}</p>
     {/each}
@@ -2178,9 +2197,19 @@
         </span>
       {/if}
       <span class="menuwrap wide">
-        <button type="button" class="pbtn txt" class:on={subMenu} aria-haspopup="menu" aria-expanded={subMenu} title="Fix the subtitle timing" onclick={() => { subMenu = !subMenu; audioMenu = false; }}>Sync ▾</button>
+        <button type="button" class="pbtn txt" class:on={subMenu} aria-haspopup="menu" aria-expanded={subMenu} title="Subtitles' size, place and timing" onclick={() => { subMenu = !subMenu; audioMenu = false; }}>Subtitles ▾</button>
         {#if subMenu && view}
           <div class="submenu" role="menu">
+            <span class="sm-h">Size: {subSize} pixels</span>
+            <div class="sm-row">
+              <button type="button" disabled={subSize <= SUB_SIZES[0]} onclick={() => resizeSubs(-1)}>Smaller</button>
+              <button type="button" disabled={subSize >= SUB_SIZES[SUB_SIZES.length - 1]} onclick={() => resizeSubs(1)}>Bigger</button>
+            </div>
+            <span class="sm-h">Place: {subLift ? `${subLift}% higher than usual` : "where they usually are"}</span>
+            <div class="sm-row">
+              <button type="button" disabled={subLift <= 0} onclick={() => liftSubs(-1)}>Lower</button>
+              <button type="button" disabled={subLift >= SUB_LIFTS[SUB_LIFTS.length - 1]} onclick={() => liftSubs(1)}>Higher</button>
+            </div>
             <span class="sm-h">Nudge every line by 0.1 seconds (Z and X)</span>
             <div class="sm-row">
               <button type="button" onclick={() => setNudge(nudge - 100)}>Earlier</button>
@@ -2395,7 +2424,7 @@
   .subs.looking { z-index: 31; bottom: 0; padding: 14px 0 6px; background: linear-gradient(to top, rgba(0, 0, 0, .92) 62%, transparent); }
   .subs.looking .sub-line { font-size: min(var(--sub-size, 36px), 24px); }
   /* With a second screen the popup is there, and the line stays where and as big as it was. */
-  .subs.looking.beside { bottom: 96px; padding: 0; background: none; }
+  .subs.looking.beside { bottom: calc(96px + var(--sub-lift, 0%)); padding: 0; background: none; }
   .subs.looking.beside .sub-line { font-size: var(--sub-size, 36px); }
   /* --mark and --mark-ink, written out: an Android WebView before 111 reads no var() in a highlight, and marks nothing. */
   :global(::highlight(telly-look)) { background-color: #ffd84a; color: #151516; }
@@ -2409,7 +2438,7 @@
   .pic video.behind { position: absolute; inset: 0; opacity: 0; pointer-events: none; }
   .filtered-pic.waiting { visibility: hidden; }
   .filtered-pic { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
-  .subs { position: absolute; left: 0; right: 0; bottom: 96px; display: flex; flex-direction: column; align-items: center; gap: 2px; pointer-events: none; z-index: 5; }
+  .subs { position: absolute; left: 0; right: 0; bottom: calc(96px + var(--sub-lift, 0%)); display: flex; flex-direction: column; align-items: center; gap: 2px; pointer-events: none; z-index: 5; }
   .sub-line { pointer-events: auto; max-width: 86%; margin: 0; padding: 2px 14px 4px; border-radius: 6px; font: 700 var(--sub-size, 36px)/1.42 var(--font-jp); color: var(--sub-ink); text-align: center; letter-spacing: .03em; user-select: text; -webkit-user-select: text; cursor: text; text-shadow: 1px 1px 0 var(--sub-edge), -1px 1px 0 var(--sub-edge), 1px -1px 0 var(--sub-edge), -1px -1px 0 var(--sub-edge), 0 2px 0 var(--sub-edge), 0 -2px 0 var(--sub-edge), 2px 0 0 var(--sub-edge), -2px 0 0 var(--sub-edge), 0 3px 10px rgba(0, 0, 0, .55); transition: filter .2s; }
   .sub-line :global(rt) { font-size: .42em; font-weight: 500; letter-spacing: 0; }
   .sub-line.blur { filter: blur(9px); }
@@ -2464,15 +2493,16 @@
   .pbtn:hover { background: var(--vid-hover); }
   .pbtn :global(svg) { width: 20px; height: 20px; }
   .pbtn.big :global(svg) { width: 24px; height: 24px; }
-  .pbtn.txt { width: auto; padding: 0 10px; font: 600 13px/1 var(--font-ui); }
+  .pbtn.txt { width: auto; padding: 0 10px; font: 600 13px/1 var(--font-ui); white-space: nowrap; }
   .pbtn.on { background: var(--vid-hover); }
   .ptime { font: 500 12.5px/1 var(--font-mono); color: var(--vid-ink-2); margin-left: 10px; font-variant-numeric: tabular-nums; }
   .menuwrap { position: relative; }
-  .submenu { position: absolute; right: 0; bottom: 46px; width: 300px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 12px; background: var(--vid-panel); border: 1px solid var(--vid-edge); border-radius: 10px; z-index: 9; }
+  .submenu { position: absolute; right: 0; bottom: 46px; width: 300px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 12px; background: var(--vid-panel); border: 1px solid var(--vid-edge); border-radius: 10px; z-index: 9; max-height: calc(100vh - 70px); overflow-y: auto; }
   .sm-h { font-size: 12px; color: var(--vid-ink-2); margin-top: 4px; }
   .sm-row { display: flex; gap: 6px; }
   .sm-row button, .sm-file { flex: 1; font: 600 12.5px/1 var(--font-ui); color: var(--vid-ink); background: var(--vid-hover); border: 0; border-radius: 6px; padding: 9px 8px; cursor: pointer; }
-  .sm-row button:hover, .sm-file:hover { background: rgba(255, 255, 255, .18); }
+  .sm-row button:hover:not(:disabled), .sm-file:hover { background: rgba(255, 255, 255, .18); }
+  .sm-row button:disabled { opacity: .5; cursor: default; }
   .sm-file { display: flex; justify-content: space-between; gap: 10px; text-align: left; }
   .sm-file span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
   .sm-file small { color: var(--vid-ink-2); flex: none; }
@@ -2584,7 +2614,7 @@
   .player.compact .pbtn :global(svg) { width: 18px; height: 18px; }
   .player.compact .pbtn.big :global(svg) { width: 21px; height: 21px; }
   .player.compact .ptime { margin-left: 6px; font-size: 12px; }
-  .player.compact .subs { bottom: 56px; }
+  .player.compact .subs { bottom: calc(56px + var(--sub-lift, 0%)); }
   .player.compact .paused-note { display: none; }
   .player.compact .flash { top: 44px; padding: 7px 11px; font-size: 13px; }
   .player.compact .skip { top: 44px; right: 8px; bottom: auto; height: 32px; padding: 0 12px; font-size: 13px; }

@@ -38,6 +38,7 @@
   import { bytes, plural } from "$lib/format";
   import { app } from "$lib/state.svelte";
   import { toast } from "$lib/toast-store.svelte";
+  import { SUB_LIFTS, SUB_SIZES, liftText } from "$lib/player/sub-look";
 
   let settings = $state<Settings>(kept<Settings>("settings") ?? {});
   let status = $state<Status | null>(kept<Status>("status"));
@@ -893,7 +894,13 @@
             <label class="row">
               <span class="what"><b>Subtitle size</b></span>
               <select class="input ctl" value={str("player.subtitleSize", "36")} onchange={(e) => set("player.subtitleSize", Number(e.currentTarget.value))}>
-                {#each [28, 32, 36, 40, 44, 50] as n}<option value={String(n)}>{n} pixels</option>{/each}
+                {#each SUB_SIZES as n}<option value={String(n)}>{n} pixels</option>{/each}
+              </select>
+            </label>
+            <label class="row">
+              <span class="what"><b>Subtitle place</b><small>Higher keeps them off subtitles burned into the picture. The player’s Subtitles menu changes this and the size as you watch.</small></span>
+              <select class="input ctl" value={str("player.subtitleLift", "0")} onchange={(e) => set("player.subtitleLift", Number(e.currentTarget.value))}>
+                {#each SUB_LIFTS as n}<option value={String(n)}>{liftText(n)}</option>{/each}
               </select>
             </label>
           </div>

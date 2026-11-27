@@ -103,7 +103,7 @@ export function subsHelp(state: string, detail: string, file: string, maker: str
     case "synced":
       return ownFile(detail) ? `Your subtitle file beside the rip, used as it is: Telly doesn’t move it. ${what}` : `Synced: the lines fit this video. ${what}`;
     case "check":
-      return `Telly found subtitles but isn’t sure they’re in time with this video. Watch a little, and use Sync ▾ in the player if they’re off. ${what}`;
+      return `Telly found subtitles but isn’t sure they’re in time with this video. Watch a little, and use Subtitles ▾ in the player if they’re off. ${what}`;
     case "none":
       return `${detail || "No subtitles found for this episode."} Make subtitles with ${maker} can make some.`;
     default:

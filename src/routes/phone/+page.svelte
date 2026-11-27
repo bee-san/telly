@@ -130,7 +130,10 @@
 <div class="page">
   <header>
     <div class="brand"><span class="logo">T</span><h1>Telly</h1></div>
-    <button type="button" class="btn" onclick={() => goto("/phone/get")} title="Choose episodes to copy from your PC">Get from PC</button>
+    <span class="actions">
+      <button type="button" class="btn" onclick={() => goto("/settings")} title="Subtitles, episodes and Previously on">Settings</button>
+      <button type="button" class="btn" onclick={() => goto("/phone/get")} title="Choose episodes to copy from your PC">Get from PC</button>
+    </span>
   </header>
 
   {#if newer}
@@ -235,6 +238,7 @@
 <style>
   .page { height: 100%; overflow-y: auto; padding: 12px 16px 32px; }
   header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 0 12px; }
+  .actions { display: flex; gap: 8px; }
   .brand { display: flex; align-items: center; gap: 10px; }
   .logo { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; background: var(--logo-bg); color: var(--logo-fg); font-weight: 700; }
   h1 { font: 700 22px/1 var(--font-display); margin: 0; }

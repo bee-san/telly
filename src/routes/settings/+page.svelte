@@ -39,6 +39,7 @@
   import { app } from "$lib/state.svelte";
   import { toast } from "$lib/toast-store.svelte";
   import { SUB_LIFTS, SUB_SIZES, liftText } from "$lib/player/sub-look";
+  import { onPhone } from "$lib/phone";
 
   let settings = $state<Settings>(kept<Settings>("settings") ?? {});
   let status = $state<Status | null>(kept<Status>("status"));
@@ -108,6 +109,11 @@
   onMount(() => {
     app.dark = false;
     setWindowTitle("Settings — Telly");
+    // The phone has only the settings of watching: nothing else here is its to ask about.
+    if (onPhone) {
+      callKept<Settings>("settings").then((s) => (settings = s)).catch((e) => (error = errorText(e)));
+      return;
+    }
     load();
     call<typeof phone>("phoneSharing").then((p) => (phone = p)).catch(() => {});
     let unlisten: (() => void) | null = null;
@@ -639,6 +645,42 @@
   </label>
 {/snippet}
 
+<!-- The rows Telly on your phone has too, written once for both. -->
+{#snippet subtitleLook()}
+  <label class="row">
+    <span class="what"><b>Subtitle size</b></span>
+    <select class="input ctl" value={str("player.subtitleSize", "36")} onchange={(e) => set("player.subtitleSize", Number(e.currentTarget.value))}>
+      {#each SUB_SIZES as n}<option value={String(n)}>{n} pixels</option>{/each}
+    </select>
+  </label>
+  <label class="row">
+    <span class="what"><b>Subtitle place</b><small>Higher keeps them off subtitles burned into the picture. The player’s Subtitles menu changes this and the size as you watch.</small></span>
+    <select class="input ctl" value={str("player.subtitleLift", "0")} onchange={(e) => set("player.subtitleLift", Number(e.currentTarget.value))}>
+      {#each SUB_LIFTS as n}<option value={String(n)}>{liftText(n)}</option>{/each}
+    </select>
+  </label>
+{/snippet}
+
+{#snippet episodes()}
+  {@render toggle("player.autoplay", true, "Play the next episode when one ends", "As soon as one ends, or after the end card’s 8-second countdown when it’s on. Esc stops the countdown.")}
+  {@render toggle("player.endCard", false, "End card", "What you watched in the episode (its minutes, lines, characters and cards), and the countdown to the next. Off, the next episode starts as soon as one ends.")}
+  {@render toggle("player.skipEndings", false, "Skip endings", "The countdown starts when the ending does, from the disc’s chapters, else where AniSkip’s users marked it. A scene after the credits plays first.")}
+{/snippet}
+
+{#snippet nameColours()}
+  {@render toggle("player.names", true, "Colour characters’ names in the subtitles", "")}
+{/snippet}
+
+{#snippet recap()}
+  {@render toggle("recap.enabled", true, "Show “Previously on” after time away from a show", "It’s written when the player closes, so it’s ready next time.")}
+  <label class="row">
+    <span class="what"><b>Time away</b></span>
+    <select class="input ctl" value={String(settings["recap.afterHours"] ?? 8)} onchange={(e) => set("recap.afterHours", Number(e.currentTarget.value))} disabled={!bool("recap.enabled", true)}>
+      {#each [[1, "1 hour"], [4, "4 hours"], [8, "8 hours"], [24, "1 day"], [72, "3 days"]] as [h, label]}<option value={String(h)}>{label} or more</option>{/each}
+    </select>
+  </label>
+{/snippet}
+
 {#snippet cardField(key: string, value: string, label: string, help: string)}
   <label class="row">
     <span class="what"><b>{label}</b><small>{help}</small></span>
@@ -666,6 +708,26 @@
   </div>
 {/snippet}
 
+{#if onPhone}
+  <div class="set scroll phone">
+    <button type="button" class="back" onclick={() => goto("/phone")}><Icon name="back" /><span>Back to library</span></button>
+    <h1>Settings</h1>
+    <p class="lede">These are the phone’s own: your PC keeps its settings, and gives the phone its cards’ and Explain’s.</p>
+    {#if error}<p class="err">{error}</p>{/if}
+    <section class="group">
+      <h3>Subtitles</h3>
+      <div class="card">{@render subtitleLook()}{@render nameColours()}</div>
+    </section>
+    <section class="group">
+      <h3>Episodes</h3>
+      <div class="card">{@render episodes()}</div>
+    </section>
+    <section class="group">
+      <h3>Previously on</h3>
+      <div class="card">{@render recap()}</div>
+    </section>
+  </div>
+{:else}
 <div class="set scroll" bind:this={box}>
   <div class="cols">
     <aside class="side">
@@ -891,18 +953,7 @@
               <span class="what"><b>Jimaku</b><small>{jimaku?.text ?? "Telly finds each episode’s Japanese subtitles on Jimaku and syncs them to your rips."}</small></span>
               <a class="btn quiet" href="#api-keys" data-sveltekit-replacestate>{str("jimaku.key") ? "Change the key" : "Add a key"}</a>
             </div>
-            <label class="row">
-              <span class="what"><b>Subtitle size</b></span>
-              <select class="input ctl" value={str("player.subtitleSize", "36")} onchange={(e) => set("player.subtitleSize", Number(e.currentTarget.value))}>
-                {#each SUB_SIZES as n}<option value={String(n)}>{n} pixels</option>{/each}
-              </select>
-            </label>
-            <label class="row">
-              <span class="what"><b>Subtitle place</b><small>Higher keeps them off subtitles burned into the picture. The player’s Subtitles menu changes this and the size as you watch.</small></span>
-              <select class="input ctl" value={str("player.subtitleLift", "0")} onchange={(e) => set("player.subtitleLift", Number(e.currentTarget.value))}>
-                {#each SUB_LIFTS as n}<option value={String(n)}>{liftText(n)}</option>{/each}
-              </select>
-            </label>
+            {@render subtitleLook()}
           </div>
         </section>
 
@@ -952,9 +1003,7 @@
         <section class="group" id="play">
           <h3>Episodes</h3>
           <div class="card">
-            {@render toggle("player.autoplay", true, "Play the next episode when one ends", "As soon as one ends, or after the end card’s 8-second countdown when it’s on. Esc stops the countdown.")}
-            {@render toggle("player.endCard", false, "End card", "What you watched in the episode (its minutes, lines, characters and cards), and the countdown to the next. Off, the next episode starts as soon as one ends.")}
-            {@render toggle("player.skipEndings", false, "Skip endings", "The countdown starts when the ending does, from the disc’s chapters, else where AniSkip’s users marked it. A scene after the credits plays first.")}
+            {@render episodes()}
             <label class="row">
               <span class="what"><b>Convert ahead</b><small>Episodes WebView2 can’t play are converted this far ahead of the one playing.</small></span>
               <select class="input ctl" value={String(settings["convert.ahead"] ?? 10)} onchange={(e) => set("convert.ahead", Number(e.currentTarget.value))}>
@@ -1166,7 +1215,7 @@
           <div class="card">
             {@render toggle("names.enabled", true, "Make the character dictionary", "The casts of the six most recently watched shows.", async () => { names = await call<NamesStatus>("namesStatus").catch(() => names); })}
             {@render toggle("names.spoilers", false, "Include spoilers", "AniList marks some of a character’s description and names as spoilers. They’re left out unless this is on.")}
-            {@render toggle("player.names", true, "Colour characters’ names in the subtitles", "")}
+            {@render nameColours()}
             <div class="row">
               <button type="button" class="btn quiet" onclick={remakeNames} disabled={!names?.enabled}>Rebuild dictionary</button>
             </div>
@@ -1215,13 +1264,7 @@
         <section class="group" id="recap">
           <h3>Previously on</h3>
           <div class="card">
-            {@render toggle("recap.enabled", true, "Show “Previously on” after time away from a show", "It’s written when the player closes, so it’s ready next time.")}
-            <label class="row">
-              <span class="what"><b>Time away</b></span>
-              <select class="input ctl" value={String(settings["recap.afterHours"] ?? 8)} onchange={(e) => set("recap.afterHours", Number(e.currentTarget.value))} disabled={!bool("recap.enabled", true)}>
-                {#each [[1, "1 hour"], [4, "4 hours"], [8, "8 hours"], [24, "1 day"], [72, "3 days"]] as [h, label]}<option value={String(h)}>{label} or more</option>{/each}
-              </select>
-            </label>
+            {@render recap()}
           </div>
         </section>
       {:else if pane === "keys"}
@@ -1352,9 +1395,11 @@
     </main>
   </div>
 </div>
+{/if}
 
 <style>
   .set { position: absolute; inset: 0; overflow: auto; padding: 18px 32px 60px; }
+  .set.phone { display: grid; gap: 18px; align-content: start; padding: 12px 16px 32px; }
   .cols { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 24px 40px; max-width: 1180px; margin: 0 auto; }
   /* The list of pages stays put while a page scrolls beside it. */
   .side { flex: 1 1 220px; max-width: 260px; display: grid; gap: 14px; justify-items: start; position: sticky; top: 0; }

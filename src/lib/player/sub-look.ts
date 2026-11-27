@@ -1,3 +1,8 @@
+import { onPhone } from "$lib/phone";
+
+/** The subtitles' size until you choose one: smaller on a phone's screen. */
+export const SUB_SIZE = onPhone ? 28 : 36;
+
 /** The sizes the subtitles can be, in pixels, smallest first. */
 export const SUB_SIZES = [20, 24, 28, 32, 36, 40, 44, 50, 56, 64];
 

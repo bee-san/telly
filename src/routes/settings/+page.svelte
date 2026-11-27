@@ -38,7 +38,7 @@
   import { bytes, plural } from "$lib/format";
   import { app } from "$lib/state.svelte";
   import { toast } from "$lib/toast-store.svelte";
-  import { SUB_LIFTS, SUB_SIZES, liftText } from "$lib/player/sub-look";
+  import { SUB_LIFTS, SUB_SIZE, SUB_SIZES, liftText } from "$lib/player/sub-look";
   import { onPhone } from "$lib/phone";
 
   let settings = $state<Settings>(kept<Settings>("settings") ?? {});
@@ -649,7 +649,7 @@
 {#snippet subtitleLook()}
   <label class="row">
     <span class="what"><b>Subtitle size</b></span>
-    <select class="input ctl" value={str("player.subtitleSize", "36")} onchange={(e) => set("player.subtitleSize", Number(e.currentTarget.value))}>
+    <select class="input ctl" value={str("player.subtitleSize", String(SUB_SIZE))} onchange={(e) => set("player.subtitleSize", Number(e.currentTarget.value))}>
       {#each SUB_SIZES as n}<option value={String(n)}>{n} pixels</option>{/each}
     </select>
   </label>

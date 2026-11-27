@@ -23,7 +23,7 @@
   import { app } from "$lib/state.svelte";
   import { toast, toasts } from "$lib/toast-store.svelte";
   import { boostDialogue, pickAudio } from "$lib/video";
-  import { SUB_LIFTS, SUB_SIZES, step } from "$lib/player/sub-look";
+  import { SUB_LIFTS, SUB_SIZE, SUB_SIZES, step } from "$lib/player/sub-look";
 
   const epId = $derived(Number(page.url.searchParams.get("ep")));
   /** Where to start: the episode was opened at a scene line search found (/watch?ep=4&at=1060). */
@@ -478,7 +478,7 @@
   const skipEndings = $derived(settings["player.skipEndings"] === true);
   /** The next episode starts as this one ends, without the end card, when it's ready to. */
   const straightOn = $derived(settings["player.endCard"] !== true && autoplay && !!view?.next?.ready);
-  const subSize = $derived(Number(settings["player.subtitleSize"] ?? 36) || 36);
+  const subSize = $derived(Number(settings["player.subtitleSize"] ?? SUB_SIZE) || SUB_SIZE);
   /** The subtitles' size: in the small player, scaled to its width, from 14 px up to their usual size. */
   const subFont = $derived(app.compact ? `clamp(14px, ${subSize / 10}vw, ${subSize}px)` : `${subSize}px`);
   /** How far above their usual place the subtitles sit, in percent of the picture's height. */

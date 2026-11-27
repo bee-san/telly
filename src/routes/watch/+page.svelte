@@ -357,8 +357,8 @@
     closeLook();
     toast({ key: "card", state: "working", title: `Adding ${f.term.expression}`, text: line.text });
     try {
-      const { withClip } = await addPhoneCard(playing, line, f);
-      toast({ key: "card", state: "done", title: `Added ${f.term.expression} to AnkiDroid`, text: withClip ? line.text : `${line.text} (no picture or audio: this Telly was built without FFmpegKit)` });
+      const { withClip, app } = await addPhoneCard(playing, line, f);
+      toast({ key: "card", state: "done", title: `Added ${f.term.expression} to ${app}`, text: withClip ? line.text : `${line.text} (no picture or audio: this Telly was built without FFmpegKit)` });
     } catch (err) {
       toast({ key: "card", state: "failed", title: "The card wasn’t added", text: errorText(err) });
     }

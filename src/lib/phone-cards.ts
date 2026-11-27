@@ -45,7 +45,7 @@ export async function ankiReady(): Promise<AnkiState> {
 }
 
 /** Adds a card for the word `f` from `line` of the episode playing. Its clip is cut first, when this build can. */
-export async function addPhoneCard(view: PlayerView, line: Line, f: Found): Promise<{ withClip: boolean }> {
+export async function addPhoneCard(view: PlayerView, line: Line, f: Found): Promise<{ withClip: boolean; app: string }> {
   const state = await ankiReady();
   const plan = await call<CardPlan>("phoneCardPlan", { episodeId: view.episode.id, start: line.start, end: line.end, text: line.text });
   const media: { field: string; path: string; kind: string }[] = [];
@@ -67,5 +67,5 @@ export async function addPhoneCard(view: PlayerView, line: Line, f: Found): Prom
     [plan.fields.info]: plan.info,
   };
   await invoke("plugin:telly|addCard", { model: plan.model, deck: plan.deck, tags: plan.tags, fields, media });
-  return { withClip: state.clips };
+  return { withClip: state.clips, app: state.app };
 }

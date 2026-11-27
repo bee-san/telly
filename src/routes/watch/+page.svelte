@@ -2169,9 +2169,10 @@
       <button type="button" class="pbtn" aria-label="Next line" title="Next line (→)" onclick={nextLine}><Icon name="nextLine" /></button>
       <span class="ptime">{clock(now)} / {clock(duration)}</span>
       <button type="button" class="pbtn" aria-label={muted ? "Unmute" : "Mute"} title="{muted ? "Unmute" : "Mute"} (0)" onclick={toggleMute}><Icon name={muted || volume === 0 ? "muted" : "volume"} /></button>
-      <input class="vol wide" type="range" min="0" max="1" step="0.05" value={muted ? 0 : volume} aria-label="Volume" title="Volume (- and =)"
+      <!-- The phone's own volume buttons do what this does. -->
+      {#if !onPhone}<input class="vol wide" type="range" min="0" max="1" step="0.05" value={muted ? 0 : volume} aria-label="Volume" title="Volume (- and =)"
         oninput={(e) => setVolume(Number(e.currentTarget.value))} onchange={(e) => { saveSound(); e.currentTarget.blur(); }}
-        onpointerup={(e) => { const slider = e.currentTarget; setTimeout(() => slider.blur()); }} />
+        onpointerup={(e) => { const slider = e.currentTarget; setTimeout(() => slider.blur()); }} />{/if}
       <button type="button" class="pbtn wide" class:on={boost} aria-label="Boost dialogue" title="Boost dialogue (D)" onclick={toggleBoost}><Icon name="speech" /></button>
       <span class="grow"></span>
       {#if rate !== 1}<button type="button" class="pbtn txt" title="Speed ([ and ])" onclick={() => setRate(1)}>{rate.toFixed(1)}×</button>{/if}
@@ -2233,9 +2234,12 @@
         {/if}
       </span>
       <button type="button" class="pbtn txt wide" class:on={help} aria-label="Show shortcuts" title="Show shortcuts (?)" onclick={() => (help = !help)}>?</button>
-      <button type="button" class="pbtn" class:on={app.compact} aria-label={app.compact ? "Back to the full window" : "Small player on top of other windows"}
-        title="{app.compact ? "Back to the full window" : "Small player on top of other windows"} (I)" onclick={toggleCompact}><Icon name="mini" /></button>
-      {#if !onPhone}<button type="button" class="pbtn wide" aria-label="Fullscreen" title="Fullscreen (F)" onclick={toggleFull}><Icon name={app.fullscreen ? "exitFull" : "full"} /></button>{/if}
+      <!-- A phone's player has the whole screen already, and no windows to be on top of. -->
+      {#if !onPhone}
+        <button type="button" class="pbtn" class:on={app.compact} aria-label={app.compact ? "Back to the full window" : "Small player on top of other windows"}
+          title="{app.compact ? "Back to the full window" : "Small player on top of other windows"} (I)" onclick={toggleCompact}><Icon name="mini" /></button>
+        <button type="button" class="pbtn wide" aria-label="Fullscreen" title="Fullscreen (F)" onclick={toggleFull}><Icon name={app.fullscreen ? "exitFull" : "full"} /></button>
+      {/if}
     </div>
   </div>
 
@@ -2494,8 +2498,15 @@
   .pbtn :global(svg) { width: 20px; height: 20px; }
   .pbtn.big :global(svg) { width: 24px; height: 24px; }
   .pbtn.txt { width: auto; padding: 0 10px; font: 600 13px/1 var(--font-ui); white-space: nowrap; }
+  /* A small phone's screen: the controls closer together, so all of them fit across it. */
+  @media (max-width: 700px) {
+    .pctl { padding-left: 8px; padding-right: 8px; }
+    .pbtn:not(.txt) { width: 32px; }
+    .pbtn.txt { padding: 0 7px; }
+    .ptime { margin-left: 4px; }
+  }
   .pbtn.on { background: var(--vid-hover); }
-  .ptime { font: 500 12.5px/1 var(--font-mono); color: var(--vid-ink-2); margin-left: 10px; font-variant-numeric: tabular-nums; }
+  .ptime { font: 500 12.5px/1 var(--font-mono); color: var(--vid-ink-2); margin-left: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .menuwrap { position: relative; }
   .submenu { position: absolute; right: 0; bottom: 46px; width: 300px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 12px; background: var(--vid-panel); border: 1px solid var(--vid-edge); border-radius: 10px; z-index: 9; max-height: calc(100vh - 70px); overflow-y: auto; }
   .sm-h { font-size: 12px; color: var(--vid-ink-2); margin-top: 4px; }

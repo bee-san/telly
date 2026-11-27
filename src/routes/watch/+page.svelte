@@ -2401,7 +2401,8 @@
   :global(::highlight(telly-look)) { background-color: #ffd84a; color: #151516; }
   .player { position: absolute; inset: 0; background: var(--vid); color: var(--vid-ink); overflow: hidden; user-select: none; -webkit-user-select: none; }
   .player.idle .pic { cursor: none; }
-  .pic { position: absolute; inset: 0; display: grid; place-items: center; cursor: pointer; }
+  /* One row and column the size of the player, so the picture fits inside it and never grows past it to its own size. */
+  .pic { position: absolute; inset: 0; display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); place-items: center; cursor: pointer; }
   .pic video { width: 100%; height: 100%; object-fit: contain; display: block; background: var(--vid); }
   .pic video.filtered { opacity: 0; }
   /* The player behind, loading the next episode: there, but not seen. */

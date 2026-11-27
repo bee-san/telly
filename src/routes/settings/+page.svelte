@@ -662,7 +662,7 @@
 {/snippet}
 
 {#snippet episodes()}
-  {@render toggle("player.autoplay", true, "Play the next episode when one ends", "As soon as one ends, or after the end card’s 8-second countdown when it’s on. Esc stops the countdown.")}
+  {@render toggle("player.autoplay", true, "Play the next episode when one ends", `As soon as one ends, or after the end card’s 8-second countdown when it’s on. ${onPhone ? "Stop on the card" : "Esc"} stops the countdown.`)}
   {@render toggle("player.endCard", false, "End card", "What you watched in the episode (its minutes, lines, characters and cards), and the countdown to the next. Off, the next episode starts as soon as one ends.")}
   {@render toggle("player.skipEndings", false, "Skip endings", "The countdown starts when the ending does, from the disc’s chapters, else where AniSkip’s users marked it. A scene after the credits plays first.")}
 {/snippet}

@@ -1372,6 +1372,16 @@ pub fn whisper_model_name(backend: &Backend) -> String {
     }
 }
 
+/// A file made only for a while, removed when it goes out of use: the audio
+/// read out for Whisper (46 MB an episode), however listening to it ends.
+struct Scratch<'a>(&'a Path);
+
+impl Drop for Scratch<'_> {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(self.0);
+    }
+}
+
 /// Makes subtitles from the episode's Japanese audio with whisper.cpp,
 /// marked as machine-made. Whisper times them itself, so they need no sync.
 fn whisper_subtitles(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, whisper: &Path, model: &Path, episode: &Episode) -> Result<()> {
@@ -1389,6 +1399,7 @@ fn whisper_subtitles(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, whisper: 
     let fresh = matches!((modified(&srt), modified(model), modified(source)), (Some(s), Some(m), Some(r)) if s > m && s > r);
     if !fresh {
         let probe = media::probe(ffprobe, source)?;
+        let _wav = Scratch(&wav);
         let status = read_rip(backend, episode, || {
             crate::util::command(ffmpeg)
                 .args(["-nostdin", "-hide_banner", "-v", "error", "-y", "-i"])
@@ -1415,7 +1426,6 @@ fn whisper_subtitles(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, whisper: 
             .current_dir(whisper.parent().unwrap_or(Path::new(".")))
             .output_within(crate::util::LISTENING)
             .context("running whisper.cpp")?;
-        let _ = std::fs::remove_file(&wav);
         if !output.status.success() {
             let text = String::from_utf8_lossy(&output.stderr);
             return Err(anyhow!("whisper.cpp stopped: {}", text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("no message")));
@@ -2796,6 +2806,46 @@ mod tests {
         let _ = std::fs::remove_file(timing_path(&backend, episode.id));
         keep_timing(&backend, &episode, &timing(sync::Calibration::NOISY));
         assert!(kept_timing(&backend, &episode).is_none());
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_audio_read_out_for_whisper_goes_however_listening_ends() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("telly-whisper-wav-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let tool = |name: &str, script: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        };
+        let ffprobe = tool("ffprobe", r#"echo '{"streams":[{"index":0,"codec_type":"audio","codec_name":"aac","tags":{"language":"jpn"}}],"format":{"duration":"1400"}}'"#);
+        // Writes the audio where it's told (the last argument), as ffmpeg does; one stops part-way.
+        let ffmpeg = tool("ffmpeg", r#"for last; do :; done; printf 'RIFF' > "$last""#);
+        let ffmpeg_failing = tool("ffmpeg-failing", r#"for last; do :; done; printf 'RIFF' > "$last"; exit 1"#);
+        let whisper = tool("whisper", "echo 'failed to load the model' >&2; exit 1");
+        let model = dir.join("ggml-small.bin");
+        std::fs::write(&model, b"model").unwrap();
+        let rip = dir.join("1.mkv");
+        std::fs::write(&rip, b"rip").unwrap();
+        let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let episodes = vec![crate::db::NewEpisode { number: 1, path: rip.to_string_lossy().into_owned(), size: 3, duration: 1400.0 }];
+        let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let episode = backend.db.episodes(show).unwrap().remove(0);
+        let wavs = || -> Vec<String> {
+            std::fs::read_dir(backend.dirs.subs()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|f| f.ends_with(".wav")).collect()
+        };
+        // Whisper stops, ffmpeg stops, and a whisper.cpp that isn't there.
+        let gone = dir.join("no-whisper");
+        for (ffmpeg, whisper, said) in [(&ffmpeg, &whisper, "failed to load the model"), (&ffmpeg_failing, &whisper, "couldn’t read the audio"), (&ffmpeg, &gone, "running whisper.cpp")] {
+            let error = whisper_subtitles(&backend, ffmpeg, &ffprobe, whisper, &model, &episode).unwrap_err();
+            assert!(format!("{error:#}").contains(said), "{error:#}");
+            assert_eq!(wavs(), Vec::<String>::new(), "{said}");
+        }
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

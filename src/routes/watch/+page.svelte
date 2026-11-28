@@ -961,9 +961,11 @@
   function prevLine() {
     if (!dialogue.length) return seekTo(now - 5);
     const i = current;
-    if (i >= 0 && t - dialogue[i].start > 1.0) seekTo(lineStart(dialogue[i]));
-    else if (i > 0) seekTo(lineStart(dialogue[i - 1]));
-    else seekTo(0);
+    if (i >= 0 && t - dialogue[i].start > 1.0) return seekTo(lineStart(dialogue[i]));
+    // Lines that start with this one (two people at once) go with it: back at their start, it would be this one again.
+    let before = i - 1;
+    while (before >= 0 && dialogue[i].start - dialogue[before].start < 0.1) before--;
+    seekTo(before >= 0 ? lineStart(dialogue[before]) : 0);
   }
 
   function nextLine() {

@@ -1388,6 +1388,11 @@
       clearResume();
       video.play().catch(() => {});
     }
+    // Back on the end card, the wait for the next episode that the recap held, and its countdown, carry on.
+    if (wasOpen && ended && view?.next && autoplay && !countdownStopped) {
+      stopWaiting();
+      waitForNext(waitRun);
+    }
   }
 
   /** The moments to play: those whose episode can play here, of the episode just left (in a film, all of it so far) unless it’s the whole story. */

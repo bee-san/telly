@@ -1791,7 +1791,8 @@
     if (idleTimer) clearTimeout(idleTimer);
     const playing = !!video && !video.paused;
     idleTimer = setTimeout(() => {
-      if (!video || subMenu || audioMenu || help || document.querySelector(".ptop:hover, .pctl:hover")) return;
+      // The pointer resting on the controls keeps them up. A touch leaves what it last touched hovered, so on the phone it doesn't.
+      if (!video || subMenu || audioMenu || help || (!onPhone && document.querySelector(".ptop:hover, .pctl:hover"))) return;
       if (playing && !video.paused && !controls) idle = true;
       else if (onPhone) {
         idle = true;

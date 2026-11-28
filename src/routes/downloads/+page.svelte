@@ -47,6 +47,8 @@
   let set = $state.raw<EpisodeSet | null>(null);
   /** The search site's pages are being read for a release of each episode. */
   let lookingForSet = $state(false);
+  /** Which look for a release of each episode is the latest: Show more, a search's next page, doesn't start one. */
+  let setRun = 0;
   /** How many of the set's releases Download all has started, while it's starting them. */
   let sending = $state<{ done: number; of: number } | null>(null);
   /** Releases started downloading from this page. */
@@ -133,7 +135,7 @@
     searching = true;
     searchError = "";
     const at = next ? pageNo + 1 : 1;
-    if (!next) findSet(run, query);
+    if (!next) findSet(query);
     try {
       const found = await call<NyaaFound>("searchNyaa", { q: query, category, trusted, sort, page: at });
       if (run !== searchRun) return;
@@ -149,18 +151,19 @@
   }
 
   /** Looks for a release of each episode of the AniList entry, for when the search site has no one release of them all. */
-  async function findSet(run: number, query: string) {
+  async function findSet(query: string) {
+    const run = ++setRun;
     set = null;
     const forEntry = anilistId && query === asked.trim() ? anilistId : null;
+    lookingForSet = !!forEntry;
     if (!forEntry) return;
-    lookingForSet = true;
     try {
       const found = await call<EpisodeSet | null>("everyEpisode", { q: query, category, trusted, anilistId: forEntry });
-      if (run === searchRun) set = found;
+      if (run === setRun) set = found;
     } catch {
       // The releases listed are still there to pick from.
     } finally {
-      if (run === searchRun) lookingForSet = false;
+      if (run === setRun) lookingForSet = false;
     }
   }
 

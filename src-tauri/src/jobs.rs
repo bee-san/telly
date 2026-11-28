@@ -582,6 +582,16 @@ fn after_the_player(backend: &Backend, rip: &Path, wanted: Option<&Episode>) {
     }
 }
 
+/// Reads `episode`'s rip with `read` as the other reads of a rip do: once the
+/// player is done with its drive (see `after_the_player`), in the drive's turn.
+fn read_rip<T>(backend: &Backend, episode: &Episode, read: impl FnOnce() -> T) -> T {
+    let rip = Path::new(&episode.path);
+    after_the_player(backend, rip, Some(episode));
+    let drive = backend.jobs.drive(rip);
+    let _turn = drive.take(place(backend, episode));
+    read()
+}
+
 /// Whether reading `rip` now waits for the player (see `after_the_player`).
 fn player_has_the_drive(backend: &Backend, rip: &Path, wanted: Option<&Episode>) -> bool {
     if backend.jobs.drive(rip).seek_free {
@@ -1287,7 +1297,7 @@ fn openrouter_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &
     const RATE: u32 = 8000;
     let source = Path::new(&episode.path);
     let track = media::japanese_audio(&media::probe(ffprobe, source)?);
-    let cuts = openrouter::cuts(&media::read_audio(ffmpeg, source, track, RATE, None, None)?, RATE as usize);
+    let cuts = openrouter::cuts(&read_rip(backend, episode, || media::read_audio(ffmpeg, source, track, RATE, None, None))?, RATE as usize);
     std::fs::create_dir_all(backend.dirs.subs())?;
     let piece = backend.dirs.subs().join(format!("{}.piece.wav", episode.id));
     let api = openrouter::api_address();
@@ -1302,7 +1312,7 @@ fn openrouter_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &
         let heard: Vec<Line> = match std::fs::read(&kept).ok().and_then(|b| serde_json::from_slice(&b).ok()) {
             Some(heard) => heard,
             None => {
-                media::write_wav(ffmpeg, source, track, cut[0], cut[1] - cut[0], &piece)?;
+                read_rip(backend, episode, || media::write_wav(ffmpeg, source, track, cut[0], cut[1] - cut[0], &piece))?;
                 let wav = std::fs::read(&piece);
                 let _ = std::fs::remove_file(&piece);
                 let wav = wav.context("reading a piece of the audio")?;
@@ -1379,13 +1389,15 @@ fn whisper_subtitles(backend: &Backend, ffmpeg: &Path, ffprobe: &Path, whisper: 
     let fresh = matches!((modified(&srt), modified(model), modified(source)), (Some(s), Some(m), Some(r)) if s > m && s > r);
     if !fresh {
         let probe = media::probe(ffprobe, source)?;
-        let status = crate::util::command(ffmpeg)
-            .args(["-nostdin", "-hide_banner", "-v", "error", "-y", "-i"])
-            .arg(source)
-            .args(["-map", &format!("0:a:{}", media::japanese_audio(&probe)), "-vn", "-sn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le"])
-            .arg(&wav)
-            .status_within(crate::util::WHOLE_RIP)
-            .context("running ffmpeg")?;
+        let status = read_rip(backend, episode, || {
+            crate::util::command(ffmpeg)
+                .args(["-nostdin", "-hide_banner", "-v", "error", "-y", "-i"])
+                .arg(source)
+                .args(["-map", &format!("0:a:{}", media::japanese_audio(&probe)), "-vn", "-sn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le"])
+                .arg(&wav)
+                .status_within(crate::util::WHOLE_RIP)
+                .context("running ffmpeg")
+        })?;
         if !status.success() {
             return Err(anyhow!("ffmpeg couldn’t read the audio"));
         }

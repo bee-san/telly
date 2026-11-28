@@ -708,6 +708,12 @@ pub fn pause(backend: &Backend, id: usize, paused: bool) -> Result<()> {
 pub fn remove(backend: &Backend, id: usize) -> Result<()> {
     let session = session(backend)?;
     let folder = session.get(id.into()).map(|handle| handle.output_folder().to_string_lossy().into_owned());
+    // Whether another download goes in its folder too (Download all puts each episode's there).
+    let shared = folder.as_ref().is_some_and(|folder| {
+        let mine = key(folder);
+        session.with_torrents(|mut all| Iterator::any(&mut all, |(other, handle)| other != id && key(&handle.output_folder().to_string_lossy()) == mine))
+            || backend.downloads.finding.lock().is_ok_and(|finding| finding.iter().any(|f| key(&f.folder) == mine))
+    });
     // What it leaves half there is still a download's: the release downloaded again carries on with it.
     if let Some(handle) = session.get(id.into()) {
         let mut kept = left(backend);
@@ -718,8 +724,8 @@ pub fn remove(backend: &Backend, id: usize) -> Result<()> {
         backend.db.set_setting(LEFT, &json!(kept))?;
     }
     run(async move { session.delete(id.into(), false).await })??;
-    // A new show's download that's gone has no show to become.
-    if let Some(folder) = folder {
+    // A new show's download that's gone has no show to become, unless the others going in its folder still do.
+    if let Some(folder) = folder.filter(|_| !shared) {
         set_entry(backend, &folder, None)?;
     }
     backend.downloads.poke();

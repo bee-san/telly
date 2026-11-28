@@ -226,8 +226,16 @@ pub fn places(graph: &Graph, shows: &[Show], settings: &Map<String, Value>) -> H
         key.insert(s.id, k);
     }
     // A show AniList doesn't know (a folder of specials) joins the anime whose folders its own sits beside.
-    for s in shows.iter().filter(|s| s.anilist_id.is_none() && !settings.contains_key(&override_key(s.id))) {
+    // Not when it's right in one of your libraries' folders, where every other anime's folder is too, nor
+    // one TMDB knows (a drama or a film of its own).
+    let libraries: Vec<&str> =
+        settings.get("libraries").and_then(Value::as_array).into_iter().flatten().flat_map(|l| l["folders"].as_array().into_iter().flatten().filter_map(Value::as_str)).collect();
+    let a_library_s = |folder: &Path| libraries.iter().any(|l| crate::relink::below(l, &folder.to_string_lossy()).is_some_and(|rest| rest.is_empty()));
+    for s in shows.iter().filter(|s| s.anilist_id.is_none() && s.tmdb_id.is_none() && !settings.contains_key(&override_key(s.id))) {
         let beside = Path::new(&s.folder).parent();
+        if beside.is_some_and(a_library_s) {
+            continue;
+        }
         let mut found: HashSet<i64> = HashSet::new();
         for other in shows.iter().filter(|o| o.anilist_id.is_some() && o.id != s.id) {
             if beside.is_some() && Path::new(&other.folder).parent() == beside {
@@ -529,6 +537,26 @@ pub(crate) mod tests {
         // A show AniList doesn't know, and one Telly hasn't asked about yet, are on their own.
         assert_eq!((places[&5].id, places[&5].title.as_str(), places[&5].parts), (-5, "Shin Godzilla", 1));
         assert_eq!((places[&6].id, places[&6].title.as_str(), places[&6].parts), (-6, "Bocchi the Rock!", 1));
+    }
+
+    #[test]
+    fn a_show_anilist_doesn_t_know_joins_the_anime_beside_it_only_in_that_anime_s_folder() {
+        let graph = Graph::new(overlord());
+        let shows = [
+            show(1, "Overlord", Some(20832), "/anime/Overlord/Season 01"),
+            show(2, "Overlord specials", None, "/anime/Overlord/Season 00"),
+            show(3, "Your Name.", Some(21519), "/films/Your Name (2016)"),
+            show(4, "Shoplifters", None, "/films/Shoplifters (2018)"),
+            Show { tmdb_id: Some("movie:315011".into()), ..show(5, "Shin Godzilla", None, "/anime/Overlord/Shin Godzilla") },
+        ];
+        let mut settings = Map::new();
+        settings.insert("libraries".into(), json!([{ "name": "Series", "kind": "series", "folders": ["/anime"] }, { "name": "Movies", "kind": "movies", "folders": ["/films"] }]));
+        let places = places(&graph, &shows, &settings);
+        // Specials in the anime's own folder are its.
+        assert_eq!(places[&2].id, 20832);
+        // A film beside another film in a library's folder is a film of its own; and so is one TMDB knows, wherever it is.
+        assert_eq!((places[&4].id, places[&4].parts), (-4, 1));
+        assert_eq!((places[&5].id, places[&5].parts), (-5, 1));
     }
 
     #[test]

@@ -117,6 +117,8 @@
     // The days in the period, added up, and the same length of time before it.
     let seconds = 0, episodes = 0, cards = 0, lines = 0, chars = 0, uses = 0, known = 0, watched = 0;
     const shows = new Set<number>();
+    // An episode's words count once in the period, however many days it was played on.
+    const counted = new Set<string>();
     const prev = { seconds: 0, episodes: 0, cards: 0 };
     const prevKey = byDay ? dayKey(addDays(start, -buckets.length)) : "";
     for (const d of stats.days) {
@@ -132,8 +134,11 @@
         cards += d.cards;
         lines += d.lines;
         chars += d.chars;
-        uses += d.uses;
-        known += d.known;
+        for (const k of d.played) {
+          const share = counted.has(k) ? undefined : stats.scores[k];
+          counted.add(k);
+          if (share) [uses, known] = [uses + share[0], known + share[1]];
+        }
         if (d.seconds > 0) watched++;
         d.shows.forEach((s) => shows.add(s));
       } else if (byDay && d.day >= prevKey && d.day < startKey) {

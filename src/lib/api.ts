@@ -242,9 +242,8 @@ export interface StatsDay {
   cards: number;
   /** The shows played. */
   shows: number[];
-  /** Uses of words in the episodes played, and how many are of known words (their shares as they are now). */
-  uses: number;
-  known: number;
+  /** The episodes played whose words are counted, as "show:number" (their shares are `Stats.scores`). */
+  played: string[];
 }
 
 export interface Stats {
@@ -253,6 +252,8 @@ export interface Stats {
   words: { day: string; n: number }[];
   /** Uses of words in the whole library, and how many are of known words. */
   library: { uses: number; known: number };
+  /** Each episode played (as `StatsDay.played` names it): its uses of words, and how many are of known words, as they are now. */
+  scores: Record<string, [number, number]>;
   /** The finished shows' cards, by show ID: one you've removed from the library as it was, marked `removed`. */
   shows: Record<string, ShowCard & { removed?: boolean }>;
   /** Each finish and full rewatch, oldest first, in Unix milliseconds. */

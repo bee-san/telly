@@ -27,10 +27,10 @@ struct Day {
     cards: i64,
     /// The shows played.
     shows: Vec<i64>,
-    /// The uses of words in the episodes played, and how many are of known
-    /// words: the episodes' shares as they are now, not as they were then.
-    uses: i64,
-    known: i64,
+    /// The episodes played whose words are counted, as "show:number": their
+    /// shares of known words, as they are now, are in the overview's `scores`,
+    /// so a period counts an episode once however many days it was played on.
+    played: Vec<String>,
 }
 
 /// The Stats page: every day anything was watched or mined, the known words
@@ -53,6 +53,7 @@ pub fn overview(backend: &Backend) -> Result<Value> {
     }
 
     let mut days: BTreeMap<String, Day> = BTreeMap::new();
+    let mut scores_played = serde_json::Map::new();
     for p in backend.log.played(None)? {
         let d = entry(&mut days, &p.day);
         d.seconds += p.seconds;
@@ -62,8 +63,11 @@ pub fn overview(backend: &Backend) -> Result<Value> {
             d.shows.push(p.show_id);
         }
         if let Some((uses, known)) = score.get(&(p.show_id, p.episode)) {
-            d.uses += uses;
-            d.known += known;
+            let key = format!("{}:{}", p.show_id, p.episode);
+            if !d.played.contains(&key) {
+                d.played.push(key.clone());
+            }
+            scores_played.insert(key, json!([uses, known]));
         }
     }
     for (day, cards) in backend.log.cards_by_day()? {
@@ -98,6 +102,8 @@ pub fn overview(backend: &Backend) -> Result<Value> {
 
     Ok(json!({
         "days": days.into_values().collect::<Vec<_>>(),
+        // Each episode played's uses of words, and how many are of known words.
+        "scores": scores_played,
         "words": words,
         "library": { "uses": uses, "known": known },
         "shows": shows,
@@ -148,6 +154,36 @@ fn by_day(times: &[i64]) -> Result<Vec<(String, i64)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_episode_played_on_several_days_has_its_words_counted_once() {
+        let dir = std::env::temp_dir().join(format!("telly-stats-played-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let episodes = (1..=2).map(|n| crate::db::NewEpisode { number: n, path: format!("{n}.mkv"), size: 1, duration: 1400.0 }).collect();
+        let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let ids: Vec<i64> = backend.db.episodes(show).unwrap().iter().map(|e| e.id).collect();
+        backend.db.set_word_score(ids[0], 6000, 5400, "s").unwrap();
+        backend.db.set_word_score(ids[1], 1000, 500, "s").unwrap();
+        // Episode 1 over two evenings, episode 2 on the second.
+        let play = |number: i64, id: i64, at: i64| {
+            let sitting = crate::log::Sitting { show_id: show, title: "Show", native: "", anilist_id: None, episode: number, episode_id: id, subs_file: "", subs_detail: "" };
+            let session = backend.log.start(&sitting, at, true).unwrap();
+            backend.log.extend(session, at + 600_000, 600.0, &[], true).unwrap();
+        };
+        let noon = 1_794_571_200_000; // 13 November 2026, 12:00 UTC
+        play(1, ids[0], noon);
+        play(1, ids[0], noon + 86_400_000);
+        play(2, ids[1], noon + 86_400_000);
+        let stats = overview(&backend).unwrap();
+        let played: Vec<Vec<String>> = stats["days"].as_array().unwrap().iter().map(|d| serde_json::from_value(d["played"].clone()).unwrap()).collect();
+        let (one, two) = (format!("{show}:1"), format!("{show}:2"));
+        assert_eq!(played, [vec![one.clone()], vec![one.clone(), two.clone()]]);
+        // Its share is said once, for the page to count once in any period.
+        assert_eq!((&stats["scores"][&one], &stats["scores"][&two]), (&json!([6000, 5400]), &json!([1000, 500])));
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn counts_times_by_local_day() {

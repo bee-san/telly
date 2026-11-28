@@ -38,6 +38,9 @@ describe("stepWord", () => {
     expect(stepWord(words, 4, -1)).toEqual(words[1]);
     expect(stepWord(words, 0, 0)).toEqual(words[0]);
     expect(stepWord(words, 99, 0)).toEqual(words[2]);
+    // Past the last word (its 。), back is the last word, and on stays there.
+    expect(stepWord(words, 9, -1)).toEqual(words[2]);
+    expect(stepWord(words, 9, 1)).toEqual(words[2]);
     expect(stepWord([], 0, 1)).toBeNull();
   });
 });

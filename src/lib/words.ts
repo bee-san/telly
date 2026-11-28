@@ -39,7 +39,8 @@ export async function wordsOf(text: string, longest: (rest: string) => Promise<n
 export function stepWord(words: Word[], at: number, by: number): Word | null {
   if (!words.length) return null;
   let here = words.findIndex((w) => at < w.at + w.length);
-  if (here < 0) here = words.length - 1;
+  // Past the last word (on the 。 after it), a step back goes to the last word.
+  if (here < 0) here = words.length;
   // Between two words, a step back goes to the one before, a step on to the one after.
   else if (at < words[here].at && by > 0) here -= 1;
   return words[Math.min(words.length - 1, Math.max(0, here + by))];

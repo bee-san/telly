@@ -534,7 +534,7 @@ On the cards over the player (the end of an episode, Previously on, a video that
 | `%LOCALAPPDATA%\Telly\torrents` | the downloads, how far each got, and the torrent network's nodes Telly knows |
 | Your libraries' folders (Settings → Library and downloads) | downloads of the shows you said they were, each [in its place](#%EF%B8%8F-downloading) |
 | `Downloads\Telly` in your home folder | new shows' downloads that no library takes, a folder each (Settings → Library and downloads can choose another) |
-| `%APPDATA%\Telly\telly-log.sqlite` | what you watched, for Tidepool (counts only, never the text) |
+| `%APPDATA%\Telly\telly-log.sqlite` | what you watched, for Tidepool: how long and how many lines and characters, with each line that played kept whole (its text, speaker and furigana, and where it played) |
 
 When a new Telly changes how `telly.sqlite` or `telly-log.sqlite` is laid out, it first keeps a copy of each as it was beside it (`telly-before-update.sqlite`, `telly-log-before-update.sqlite`), in place of the copy from the update before. A library a newer Telly has opened isn't opened by an older one: it says so, and to install the latest, and changes nothing.
 

@@ -35,7 +35,7 @@ Telly's README, manual, comments and UI text are plain English, written to the p
 ## What Telly must keep
 
 - Your rips are never moved or changed. What Telly makes goes in its own folders (the manual's "Where things go").
-- Tidepool's log counts what you watched and never keeps the text.
+- Tidepool's log keeps what you watched: how much of it, in Tidepool's tables, and each line that played, whole, in `lines_seen` (`log.rs`).
 - Previously on tells the story only from the subtitles of what's been watched, never from what Claude knows of the show elsewhere, so nothing ahead is spoiled. Keep that instruction in its prompt (`recap_prompt` in `ask.rs`).
 
 ## Checks

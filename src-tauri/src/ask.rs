@@ -862,7 +862,8 @@ fn seen_lines(backend: &Backend, episode: &Episode) -> Vec<Line> {
     let Some(start) = episode.ending_at.or(aniskip.map(|e| e.0)).filter(|s| duration > 0.0 && *s > duration * 0.5 && *s < duration) else {
         return lines;
     };
-    let end = aniskip.map(|e| e.1).filter(|e| *e > start && *e <= duration).unwrap_or(duration);
+    // AniSkip's end is this ending's only when its start is too: one timed for another cut ends as far off.
+    let end = aniskip.filter(|(s, e)| (s - start).abs() <= 5.0 && *e > start && *e <= duration).map(|e| e.1).unwrap_or(duration);
     if backend.db.reached(episode.id).unwrap_or(0.0) >= end - 3.0 {
         return lines;
     }
@@ -1420,6 +1421,28 @@ mod tests {
         assert_eq!(told(&backend), 46);
         // And that recap doesn't tell the scene after the credits: it isn't carried on from any more.
         assert!(kept(&backend, episodes[1].id).is_none());
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_ending_timed_for_another_cut_doesn_t_tell_what_comes_after_this_one() {
+        // Lines all through a 1400 s episode; the chapters' ending starts at 1260 s.
+        let lines: Vec<Line> = (0..46).map(|i| line(i as f64 * 30.0, i as f64 * 30.0 + 2.0, &format!("台詞{i}"))).collect();
+        let (backend, episodes, dir) = library("other-cut", 2, &lines);
+        watched(&backend, &episodes[..1]);
+        backend.db.set_probe(episodes[0].id, "{}", 1400.0, Some(1260.0), "direct").unwrap();
+        // AniSkip's is a cut 30 s later, ending at 1380 s, where this one's preview is playing.
+        let skips = crate::aniskip::Skips { opening: None, ending: Some((1290.0, 1380.0)) };
+        backend.db.set_show_anilist(episodes[0].show_id, &crate::db::NewShow { title: "Show".into(), anilist_id: Some(5), ..Default::default() }).unwrap();
+        assert!(backend.db.set_opening_if(episodes[0].id, 1, 5, skips).unwrap());
+        backend.db.reach(episodes[0].id, 1378.0).unwrap();
+        let told = |backend: &Backend| source(backend, &episodes[1], None).unwrap().episodes[0].1.len();
+        // Up to this ending only: what comes after it was played only as far as 1378 s.
+        assert_eq!(told(&backend), 42);
+        // To the end of the file, it's all told.
+        backend.db.reach(episodes[0].id, 1399.0).unwrap();
+        assert_eq!(told(&backend), 46);
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

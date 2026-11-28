@@ -179,6 +179,23 @@ fn phone_copy(backend: &Backend, id: i64) -> PathBuf {
     phone_dir(backend).join(format!("{id}.mp4"))
 }
 
+/// How long a copy made for the phone waits on the PC for the phone to take it.
+const UNTAKEN: Duration = Duration::from_secs(7 * 24 * 3600);
+
+/// Deletes, as Telly starts, the copies made for the phone that it won't
+/// take: half made when Telly closed, or made a week ago and more (the phone
+/// was closed while getting it, or getting it failed and wasn't tried
+/// again). Getting the episode again makes its copy again.
+fn clear_untaken(backend: &Backend) {
+    for file in std::fs::read_dir(phone_dir(backend)).into_iter().flatten().flatten() {
+        let half = file.file_name().to_string_lossy().ends_with(".part.mp4");
+        let old = file.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > UNTAKEN);
+        if half || old {
+            let _ = std::fs::remove_file(file.path());
+        }
+    }
+}
+
 /// The file the phone copies for an episode: as made or picked for it, else a copy left from before.
 fn phone_file(backend: &Backend, id: i64) -> Option<PathBuf> {
     let made = lock(&backend.phone.making).get(&id).cloned().unwrap_or_default();
@@ -245,6 +262,10 @@ pub fn set_sharing(backend: &Backend, on: bool) -> Result<Value> {
 /// Forgets every phone paired: they pair again with the code.
 pub fn forget_phones(backend: &Backend) -> Result<Value> {
     backend.db.set_setting(PHONES, &json!([]))?;
+    // No phone comes for the copies made for one.
+    lock(&backend.phone.waiting).clear();
+    lock(&backend.phone.making).clear();
+    let _ = std::fs::remove_dir_all(phone_dir(backend));
     Ok(sharing_state(backend))
 }
 
@@ -516,6 +537,7 @@ fn can_make(backend: &Backend, id: i64) -> bool {
 }
 
 fn copy_worker(backend: &Backend) {
+    clear_untaken(backend);
     loop {
         let (id, plays) = {
             let mut waiting = lock(&backend.phone.waiting);
@@ -1161,6 +1183,27 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("telly-phone-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         (Backend::open(Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap(), dir)
+    }
+
+    #[test]
+    fn copies_made_for_the_phone_go_when_it_won_t_take_them() {
+        let (backend, dir) = library("untaken");
+        std::fs::create_dir_all(phone_dir(&backend)).unwrap();
+        let (old, new, half) = (phone_copy(&backend, 1), phone_copy(&backend, 2), phone_copy(&backend, 3).with_extension("part.mp4"));
+        for f in [&old, &new, &half] {
+            std::fs::write(f, b"copy").unwrap();
+        }
+        let file = std::fs::File::options().write(true).open(&old).unwrap();
+        file.set_modified(std::time::SystemTime::now() - Duration::from_secs(8 * 24 * 3600)).unwrap();
+        drop(file);
+        // When Telly starts: the one made a week and more ago, and the one half made.
+        clear_untaken(&backend);
+        assert!(!old.exists() && !half.exists() && new.is_file());
+        // Forgetting the phones: every one.
+        forget_phones(&backend).unwrap();
+        assert!(!new.exists());
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     fn probe(codec: &str, pix_fmt: &str, audio: &[&str]) -> media::Probe {

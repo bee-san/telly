@@ -492,6 +492,15 @@ fn over_a_file<'a>(folder: &str, files: &'a [String], own: &HashSet<String>) -> 
     })
 }
 
+/// Whether another download goes in `folder`: one in the client (but `id`),
+/// or one still finding its files (but `hash`). Download all puts each
+/// episode's there.
+fn others_in(backend: &Backend, session: &Session, folder: &str, id: Option<usize>, hash: Option<&str>) -> bool {
+    let mine = key(folder);
+    session.with_torrents(|mut all| Iterator::any(&mut all, |(other, handle)| Some(other) != id && key(&handle.output_folder().to_string_lossy()) == mine))
+        || backend.downloads.finding.lock().is_ok_and(|finding| finding.iter().any(|f| Some(f.hash.as_str()) != hash && key(&f.folder) == mine))
+}
+
 /// What Processing says of a magnet link nobody answered for.
 fn found_none(e: anyhow::Error) -> String {
     format!("Its files couldn’t be found ({e:#})")
@@ -643,10 +652,20 @@ pub fn add(backend: &Arc<Backend>, magnet: &str, torrent: &str, title: &str, sho
     match fetched {
         Ok(bytes) => {
             let options = options(false);
-            let added = run(async move { session.add_torrent(AddTorrent::from_bytes(bytes), Some(options)).await.map(|r| matches!(r, AddTorrentResponse::Added(..))) })?
-                .context("Telly couldn’t start the download")?;
-            if !added {
-                return Err(anyhow!("Telly is downloading this one already"));
+            let client = session.clone();
+            let added = run(async move { client.add_torrent(AddTorrent::from_bytes(bytes), Some(options)).await.map(|r| matches!(r, AddTorrentResponse::Added(..))) })
+                .and_then(|added| added.context("Telly couldn’t start the download"));
+            let failed = match added {
+                Ok(true) => None,
+                Ok(false) => Some(anyhow!("Telly is downloading this one already")),
+                Err(e) => Some(e),
+            };
+            if let Some(e) = failed {
+                // It didn't start: the folder isn't going to be the show, unless another download goes in it.
+                if !others_in(backend, &session, &folder, None, None) {
+                    set_entry(backend, &folder, None)?;
+                }
+                return Err(e);
             }
         }
         // The magnet link's list of files comes from the people sharing it, which can take a while.
@@ -673,6 +692,10 @@ pub fn add(backend: &Arc<Backend>, magnet: &str, torrent: &str, title: &str, sho
                     Ok(_) => Ok(()),
                     Err(e) => Err(found_none(e)),
                 };
+                // It didn't start: the folder isn't going to be the show, unless another download goes in it.
+                if added.is_err() && !others_in(&backend, &session, &folder, None, Some(&hash)) {
+                    let _ = set_entry(&backend, &folder, None);
+                }
                 if let Ok(mut finding) = backend.downloads.finding.lock() {
                     match added {
                         Ok(_) => finding.retain(|f| f.hash != hash),
@@ -709,11 +732,7 @@ pub fn remove(backend: &Backend, id: usize) -> Result<()> {
     let session = session(backend)?;
     let folder = session.get(id.into()).map(|handle| handle.output_folder().to_string_lossy().into_owned());
     // Whether another download goes in its folder too (Download all puts each episode's there).
-    let shared = folder.as_ref().is_some_and(|folder| {
-        let mine = key(folder);
-        session.with_torrents(|mut all| Iterator::any(&mut all, |(other, handle)| other != id && key(&handle.output_folder().to_string_lossy()) == mine))
-            || backend.downloads.finding.lock().is_ok_and(|finding| finding.iter().any(|f| key(&f.folder) == mine))
-    });
+    let shared = folder.as_ref().is_some_and(|folder| others_in(backend, &session, folder, Some(id), None));
     // What it leaves half there is still a download's: the release downloaded again carries on with it.
     if let Some(handle) = session.get(id.into()) {
         let mut kept = left(backend);

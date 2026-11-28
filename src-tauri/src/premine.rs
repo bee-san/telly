@@ -1164,6 +1164,8 @@ fn make_cards(backend: &Backend, words: &[Word], deck: Option<String>, step: &dy
         match make_card(backend, &url, &format, &deck, word) {
             Ok(note) => {
                 made.insert((word.headword.clone(), word.reading.clone()));
+                // Kept at once, so Telly closing part-way doesn't list it again (and make its card twice).
+                keep_made(backend, &made);
                 // The moving picture and the audio, by the card finisher, from the line as it plays.
                 let nudge = cards::nudge(backend, word.episode_id);
                 let episode_lines = lines.entry(word.episode_id).or_insert_with(|| cards::played_lines(backend, word.episode_id));
@@ -1265,6 +1267,17 @@ fn start(backend: &Arc<Backend>, shows: Vec<Show>, show_id: i64, anime: i64) -> 
     Ok(status(backend))
 }
 
+/// Keeps `made` among the words premined, in setting premine.made too, so a
+/// restart doesn't list them again (and make their cards twice).
+fn keep_made(backend: &Backend, made: &HashSet<(String, String)>) {
+    if let Ok(mut all) = backend.premining.made.lock() {
+        all.extend(made.iter().cloned());
+        let mut kept = made_before(backend);
+        kept.extend(all.iter().cloned());
+        let _ = backend.db.set_setting("premine.made", &serde_json::to_value(kept.into_iter().collect::<Vec<_>>()).unwrap_or_default());
+    }
+}
+
 /// The words premined before, as Telly kept them (setting premine.made).
 fn made_before(backend: &Backend) -> HashSet<(String, String)> {
     backend.db.setting("premine.made").ok().flatten().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
@@ -1289,15 +1302,8 @@ pub fn start_cards(backend: &Arc<Backend>, words: Vec<Word>) -> Result<Status> {
     let worker = backend.clone();
     std::thread::spawn(move || {
         let step = |text: &str, progress: f64| set(&worker, |s| (s.step, s.progress) = (text.to_string(), progress));
+        // Only the words that got a card are kept as made (`make_cards`): one skipped stays on the list.
         let result = make_cards(&worker, &words, deck, &step);
-        // Only the words that got a card: one skipped stays on the list.
-        if let (Ok(mut all), Ok((made, _))) = (worker.premining.made.lock(), result.as_ref()) {
-            all.extend(made.iter().cloned());
-            // Kept, so a restart doesn't list them again (and make them twice).
-            let mut kept = made_before(&worker);
-            kept.extend(all.iter().cloned());
-            let _ = worker.db.set_setting("premine.made", &serde_json::to_value(kept.into_iter().collect::<Vec<_>>()).unwrap_or_default());
-        }
         set(&worker, |s| {
             s.working = false;
             match result {
@@ -1490,6 +1496,86 @@ mod tests {
         assert_eq!(list.words.iter().map(|w| w.headword.as_str()).collect::<Vec<_>>(), ["魔導士"]);
         assert_eq!(list.known_uses, 2);
         assert!(!backend.premining.made.lock().unwrap().contains(&("魔導士".to_string(), String::new())));
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_card_made_is_kept_as_made_at_once_though_telly_closes_part_way() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let dir = std::env::temp_dir().join(format!("telly-premine-kept-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Arc::new(Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap());
+        std::fs::create_dir_all(dir.join("dictionaries")).unwrap();
+        backend.db.set_setting(own_hachidori::FOLDER, &json!(dir.join("dictionaries").to_string_lossy())).unwrap();
+        // A stand-in for AnkiConnect that holds the second word's note back until it's let go.
+        let anki = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        backend.db.set_setting("anki.url", &json!(format!("http://{}", anki.server_addr().to_ip().unwrap()))).unwrap();
+        let (held, holding) = std::sync::mpsc::channel();
+        let (go, going) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            for mut request in anki.incoming_requests() {
+                let mut body = String::new();
+                let _ = std::io::Read::read_to_string(request.as_reader(), &mut body);
+                if body.contains("addNote") && body.contains("魔法") {
+                    held.send(()).unwrap();
+                    going.recv().unwrap();
+                }
+                let _ = request.respond(tiny_http::Response::from_string(json!({ "result": 1_700_000_000_000i64, "error": null }).to_string()));
+            }
+        });
+        let stop = Arc::new(AtomicBool::new(false));
+        let page = {
+            let (backend, stop) = (backend.clone(), stop.clone());
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let next = backend.own_hachidori.next_request(Duration::from_millis(100));
+                    let Some(id) = next["id"].as_u64() else { continue };
+                    let result = match next["request"]["type"].as_str() {
+                        Some("hd_api_anki_card_formats") => {
+                            json!({ "cardFormats": [{ "deck": "Mining", "model": "Kiku", "fields": { "Word": { "value": "{expression}" }, "Sentence": { "value": "{sentence}" } } }] })
+                        }
+                        _ => json!({ "fields": [{ "expression": next["request"]["text"] }] }),
+                    };
+                    backend.own_hachidori.answer(&format!("id={id}"), json!({ "ok": true, "result": result }).to_string().as_bytes()).unwrap();
+                }
+            })
+        };
+        while !backend.own_hachidori.answering() {
+            std::thread::yield_now();
+        }
+        let episodes = vec![crate::db::NewEpisode { number: 1, path: "1.mkv".into(), size: 1, duration: 1400.0 }];
+        let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let episode = backend.db.episodes(show).unwrap()[0].id;
+        let word = |headword: &str| Word {
+            headword: headword.into(),
+            reading: String::new(),
+            rank: None,
+            count: 2,
+            episode_id: episode,
+            number: 1,
+            start: 0.0,
+            end: 1.0,
+            before: String::new(),
+            word: headword.into(),
+            after: String::new(),
+            part: String::new(),
+            at: 0,
+        };
+        set(&backend, |s| (s.show, s.list) = (show, Some(List { words: vec![word("悪意"), word("魔法")], uses: 10, ..Default::default() })));
+        start_cards(&backend, vec![word("悪意"), word("魔法")]).unwrap();
+        // 悪意's note is in Anki, 魔法's on its way: Telly closing now finds 悪意 made when it opens again.
+        holding.recv_timeout(Duration::from_secs(20)).unwrap();
+        assert!(made_before(&backend).contains(&("悪意".to_string(), String::new())));
+        go.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while status(&backend).working && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        stop.store(true, Ordering::Relaxed);
+        page.join().unwrap();
+        assert_eq!(status(&backend).added, 2);
+        assert_eq!(made_before(&backend).len(), 2);
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

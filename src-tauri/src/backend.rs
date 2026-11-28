@@ -429,7 +429,7 @@ pub(crate) fn shared_setting(show_id: i64) -> String {
 
 /// The setting holding the files of a show's folder you left out when you
 /// added it, by their paths in its folder (so they're the same once it's moved).
-fn left_out_setting(show_id: i64) -> String {
+pub(crate) fn left_out_setting(show_id: i64) -> String {
     format!("folder.left.{show_id}")
 }
 

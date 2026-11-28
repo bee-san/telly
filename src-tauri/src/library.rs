@@ -82,7 +82,7 @@
 //! with its length.
 
 use crate::anilist;
-use crate::backend::{shared_setting, Backend};
+use crate::backend::{left_out_setting, shared_setting, Backend};
 use crate::db::{NewEpisode, NewShow, Show};
 use crate::relink::{self, below, folder_of, join, parts};
 use crate::series::Graph;
@@ -847,6 +847,13 @@ pub fn make_room(backend: &Backend, folder: &str) -> Result<()> {
         let rips: Vec<String> = backend.db.episodes(show.id)?.into_iter().map(|e| e.path).collect();
         let narrowed = rips_folder(&show.folder, &rips);
         if below(&narrowed, folder).is_none() {
+            // What you left out of it is kept by its place in its folder: now in the narrower one, and the rest
+            // isn't in it any more.
+            if let (Some(within), Some(left)) = (below(&show.folder, &narrowed), backend.db.setting(&left_out_setting(show.id))?) {
+                let prefix = format!("{}/", within.join("/"));
+                let left: Vec<String> = serde_json::from_value::<Vec<String>>(left).unwrap_or_default().into_iter().filter_map(|p| p.strip_prefix(&prefix).map(str::to_string)).collect();
+                backend.db.set_setting(&left_out_setting(show.id), &json!(left))?;
+            }
             backend.db.relink(&[(show.id, narrowed)], &[])?;
         } else {
             backend.db.set_setting(&shared_setting(show.id), &json!(true))?;
@@ -1100,12 +1107,15 @@ mod tests {
         let shared = |id: i64| backend.db.setting_bool(&shared_setting(id), false);
         // Its rips are a season folder down: it's pointed there.
         let apart = add(r"D:\Anime\One-Punch Man", &[r"Season 3\02.mkv", r"Season 3\03.mkv"]);
+        // An episode you left out when it was added stays left out, by its place in the narrower folder.
+        backend.db.set_setting(&left_out_setting(apart), &json!(["Season 3/01.mkv", "Extras/NCOP.mkv"])).unwrap();
         // Its rips are in the anime's folder itself: it's no longer looked in for new episodes.
         let within = add(r"D:\Anime\Mushishi", &["01.mkv", "02.mkv"]);
         let other = add(r"D:\Anime\Monster", &[r"Season 1\01.mkv"]);
         make_room(&backend, r"D:\Anime\One-Punch Man\Season 01").unwrap();
         make_room(&backend, r"D:\Anime\Mushishi\Season 02").unwrap();
         assert_eq!((folder_of(apart).as_str(), shared(apart)), (r"D:\Anime\One-Punch Man\Season 3", false));
+        assert_eq!(backend.db.setting(&left_out_setting(apart)).unwrap(), Some(json!(["01.mkv"])));
         assert_eq!((folder_of(within).as_str(), shared(within)), (r"D:\Anime\Mushishi", true));
         assert_eq!((folder_of(other).as_str(), shared(other)), (r"D:\Anime\Monster", false));
         // A show's own folder needs no room made in it.

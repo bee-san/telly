@@ -147,7 +147,8 @@ pub fn place(library: &Library, graph: &Graph, shows: &[Show], id: i64, whole: b
     if whole {
         return Some(anime);
     }
-    let season = graph.seasons_from(root).iter().position(|e| e.anime.id == id).map(|at| join(&anime, &[&format!("Season {:02}", at + 1)]));
+    // Seasons are numbered from the anime's first series: a film (its first entry too) goes by its own name.
+    let season = graph.seasons_from(root).iter().filter(|e| e.is_series()).position(|e| e.anime.id == id).map(|at| join(&anime, &[&format!("Season {:02}", at + 1)]));
     Some(season.filter(|folder| !taken(folder)).unwrap_or_else(|| join(&anime, &[&folder_name(&title)])))
 }
 
@@ -949,6 +950,9 @@ mod tests {
         assert_eq!(place(&series(), &graph, &shows, 21305, false, |_| false).as_deref(), Some(r"D:\Media\Anime\Series\Overlord\Overlord - Ple Ple Pleiades"));
         // A film put in a series library goes in its anime's folder by its own name.
         assert_eq!(place(&series(), &graph, &shows, 133845, false, |_| false).as_deref(), Some(r"D:\Media\Anime\Series\Overlord\Overlord - The Sacred Kingdom"));
+        // A film that's all its anime is (no series to be its first season) goes by its own name too, not in Season 01.
+        let lone = Graph::new([entry(20, "Your Name", "MOVIE", 1, 20160826, &[])]);
+        assert_eq!(place(&series(), &lone, &[], 20, false, |_| false).as_deref(), Some(r"D:\Media\Anime\Series\Your Name\Your Name"));
         // Nor is an entry Telly hasn't asked AniList about placed.
         assert_eq!(place(&series(), &Graph::new([entry(1, "Other", "TV", 12, 20200101, &[])]), &[], 2, false, |_| false), None);
     }

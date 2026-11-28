@@ -510,14 +510,17 @@ fn gone(backend: &Arc<Backend>, folder: &str) -> Result<()> {
 
 /// Adds what's in a library's folder that isn't in Telly yet: each folder as
 /// an anime and, in a movies library, each loose video as a film. Before
-/// that, the shows whose rips are gone from it are seen to (`gone`). False
-/// when the folder can't be read.
+/// that, the shows whose rips are gone from any of your libraries' folders
+/// are seen to (`gone`): one moved here from a folder read after this one is
+/// found where it is now, not added again. False when the folder can't be read.
 fn add_folder(backend: &Arc<Backend>, folder: &str) -> bool {
     if !wanted(backend, folder) {
         return true;
     }
     let Ok(entries) = std::fs::read_dir(folder) else { return false };
-    let _ = gone(backend, folder);
+    for library in libraries(backend).unwrap_or_default().iter().flat_map(|l| &l.folders) {
+        let _ = gone(backend, library);
+    }
     let films = libraries(backend).unwrap_or_default().iter().any(|l| l.kind == "movies" && l.folders.iter().any(|f| same(f, folder)));
     let (mut folders, mut videos): (Vec<PathBuf>, Vec<PathBuf>) = (Vec::new(), Vec::new());
     for entry in entries.flatten() {
@@ -1255,6 +1258,26 @@ mod tests {
         let after = backend.db.episodes(renamed).unwrap();
         assert_eq!((after[1].id, after[1].path.as_str(), after[1].position), (before[1].id, join(&series, &["Renamed", "Season 01", "Renamed - 02.mkv"]).as_str(), 600.0));
         assert_eq!(backend.db.show(boxed).unwrap().unwrap().folder, join(&series, &["Boxed (2002)"]));
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_show_moved_into_a_library_folder_read_before_its_old_one_is_the_same_show() {
+        let (backend, dir, series) = with_library("moved-up");
+        let other = dir.join("Other").to_string_lossy().into_owned();
+        // The library's first folder is read first.
+        backend.db.set_setting("libraries", &json!([library("series", &[series.as_str(), other.as_str()])])).unwrap();
+        let show = add_show(&backend, &join(&other, &["Frieren"]), &["Frieren - 01.mkv", "Frieren - 02.mkv"], false);
+        add_show(&backend, &join(&other, &["Kept"]), &["Kept - 01.mkv"], false);
+        let first = backend.db.episodes(show).unwrap()[0].id;
+        backend.db.save_position(first, 600.0).unwrap();
+        std::fs::rename(join(&other, &["Frieren"]), join(&series, &["Frieren"])).unwrap();
+        assert!(add_folder(&backend, &series));
+        // It's the same show where it is now, with where you were in it, and nothing was added.
+        assert_eq!(backend.db.shows().unwrap().len(), 2);
+        assert_eq!(backend.db.show(show).unwrap().unwrap().folder, join(&series, &["Frieren"]));
+        assert_eq!(backend.db.episode(first).unwrap().unwrap().position, 600.0);
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

@@ -974,7 +974,8 @@ fn make_room(backend: &Backend, size: u64) -> Result<()> {
     Ok(())
 }
 
-/// Copies the episodes asked for over from the PC, one at a time.
+/// Copies the episodes asked for over from the PC, one at a time: those the
+/// PC has made first, while it makes the others.
 pub fn start_getting(backend: Arc<Backend>) {
     std::thread::Builder::new()
         .name("telly-get".into())
@@ -982,7 +983,7 @@ pub fn start_getting(backend: Arc<Backend>) {
             let next = {
                 let mut getting = lock(&backend.phone.getting);
                 loop {
-                    if let Some(g) = getting.iter().find(|g| g.state == "waiting" || g.state == "copying").cloned() {
+                    if let Some(g) = getting.iter().find(|g| g.state != "failed").cloned() {
                         break g;
                     }
                     getting = backend.phone.get_wake.wait(getting).unwrap_or_else(|e| e.into_inner());
@@ -994,7 +995,13 @@ pub fn start_getting(backend: Arc<Backend>) {
                 }
             };
             match get_one(&backend, &next, &|state, progress| set(state, progress, String::new())) {
-                Ok(()) => lock(&backend.phone.getting).retain(|g| g.id != next.id),
+                Ok(true) => lock(&backend.phone.getting).retain(|g| g.id != next.id),
+                // Not made yet: the others are seen to first, and the PC asked again after them.
+                Ok(false) => {
+                    if behind_the_rest(&mut lock(&backend.phone.getting), next.id) {
+                        std::thread::sleep(Duration::from_secs(2));
+                    }
+                }
                 Err(e) => {
                     set("failed", 0.0, format!("{e:#}"));
                 }
@@ -1003,9 +1010,21 @@ pub fn start_getting(backend: Arc<Backend>) {
         .ok();
 }
 
-/// Waits for the PC to make the episode's copy, then copies it over.
-fn get_one(backend: &Backend, g: &Getting, set: &dyn Fn(&'static str, f64)) -> Result<()> {
-    let (size, ext) = loop {
+/// Puts the episode `id`, whose copy the PC hasn't made yet, behind the others
+/// being got, and says whether every one is waiting for the PC (then it's asked
+/// again in a moment, rather than at once).
+fn behind_the_rest(getting: &mut Vec<Getting>, id: i64) -> bool {
+    if let Some(i) = getting.iter().position(|g| g.id == id) {
+        let g = getting.remove(i);
+        getting.push(g);
+    }
+    getting.iter().filter(|g| g.state != "failed").all(|g| g.state == "making")
+}
+
+/// Copies the episode over once the PC has made its copy; false while it
+/// hasn't yet (it's asked to, when it isn't making it).
+fn get_one(backend: &Backend, g: &Getting, set: &dyn Fn(&'static str, f64)) -> Result<bool> {
+    let (size, ext) = {
         let library = ask(backend, "library", None)?;
         let e = library["shows"]
             .as_array()
@@ -1016,17 +1035,23 @@ fn get_one(backend: &Backend, g: &Getting, set: &dyn Fn(&'static str, f64)) -> R
             .cloned()
             .ok_or_else(|| anyhow!("That episode isn’t in Telly on the PC any more"))?;
         match e["phone"]["state"].as_str() {
-            Some("ready") => break (e["phone"]["size"].as_u64().unwrap_or(0), e["phone"]["ext"].as_str().filter(|x| !x.is_empty()).unwrap_or("mkv").to_string()),
+            Some("ready") => (e["phone"]["size"].as_u64().unwrap_or(0), e["phone"]["ext"].as_str().filter(|x| !x.is_empty()).unwrap_or("mkv").to_string()),
             Some("failed") => return Err(anyhow!("The PC couldn’t make the phone’s copy: {}", e["phone"]["error"].as_str().unwrap_or(""))),
-            Some("working") => set("making", e["phone"]["progress"].as_f64().unwrap_or(0.0)),
+            Some("working") => {
+                set("making", e["phone"]["progress"].as_f64().unwrap_or(0.0));
+                return Ok(false);
+            }
             Some("none") => {
                 let plays = lock(&backend.phone.plays).clone();
                 ask(backend, "make", Some(&json!({ "ids": [g.id], "plays": plays })))?;
                 set("making", 0.0);
+                return Ok(false);
             }
-            _ => set("making", 0.0),
+            _ => {
+                set("making", 0.0);
+                return Ok(false);
+            }
         }
-        std::thread::sleep(Duration::from_secs(2));
     };
     let path = copies(backend).join(format!("{}.{ext}", g.id));
     let part = path.with_extension(format!("{ext}.part"));
@@ -1036,7 +1061,7 @@ fn get_one(backend: &Backend, g: &Getting, set: &dyn Fn(&'static str, f64)) -> R
     get_file(backend, &format!("video/{}", g.id), &path, &|done| set("copying", done as f64 / size.max(1) as f64))?;
     backend.db.set_phone_copy(g.id, Some(&path.to_string_lossy()))?;
     let _ = ask(backend, &format!("got/{}", g.id), Some(&json!({})));
-    Ok(())
+    Ok(true)
 }
 
 /// The phone's Library: each show it has something of, the last watched
@@ -1285,6 +1310,37 @@ mod tests {
         let args: Vec<String> = serde_json::from_value(plan["pictureArgs"].clone()).unwrap();
         assert_eq!(args[args.iter().position(|a| a == "-ss").unwrap() + 1], "131.750");
         assert!(plan["info"].as_str().unwrap().ends_with("E05 · 2:12"), "{}", plan["info"]);
+        drop(phone);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_episode_the_pc_is_still_making_lets_the_others_be_got_first() {
+        let getting = |id: i64, state: &'static str| Getting { id, show: 1, state, progress: 0.0, size: 0, error: String::new() };
+        let mut list = vec![getting(1, "making"), getting(2, "waiting"), getting(3, "failed")];
+        // Episode 1 isn't made yet: 2 is seen to next, at once.
+        assert!(!behind_the_rest(&mut list, 1));
+        assert_eq!(list.iter().map(|g| g.id).collect::<Vec<_>>(), [2, 3, 1]);
+        list[0].state = "making";
+        // Neither is made: the PC is asked again in a moment.
+        assert!(behind_the_rest(&mut list, 2));
+
+        // Asked about, the PC says it's making episode 7's copy: that's said, and the phone doesn't wait there for it.
+        let (phone, dir) = library("still-making");
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let address = server.server_addr().to_ip().unwrap().to_string();
+        std::thread::spawn(move || {
+            for request in server.incoming_requests() {
+                let body = json!({ "shows": [{ "episodes": [{ "episode": { "id": 7 }, "phone": { "state": "working", "progress": 0.4 } }] }] });
+                let _ = request.respond(json_response(200, &body));
+            }
+        });
+        phone.db.set_setting(PC, &json!({ "address": address, "token": "t" })).unwrap();
+        let said = Mutex::new(("", 0.0));
+        let started = std::time::Instant::now();
+        assert!(!get_one(&phone, &getting(7, "waiting"), &|state, progress| *lock(&said) = (state, progress)).unwrap());
+        assert_eq!(*lock(&said), ("making", 0.4));
+        assert!(started.elapsed() < Duration::from_secs(1));
         drop(phone);
         let _ = std::fs::remove_dir_all(dir);
     }

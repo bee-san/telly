@@ -186,6 +186,11 @@ fn update(backend: &Backend, token: &str) -> Result<bool> {
 fn send_for(listed: &ListEntry, progress: i64, sent: i64, new: &[(i64, i64)]) -> Option<(&'static str, i64, Option<i64>)> {
     if matches!(listed.status.as_deref(), Some("COMPLETED" | "REPEATING")) && !new.is_empty() {
         let reached = new.iter().map(|w| w.0).max().unwrap_or(0);
+        // A rewatch to the end told all at once (AniList couldn't be reached as you watched): completed again,
+        // as it is when it's told episode by episode. The last episode alone is still no rewatch.
+        if listed.status.as_deref() == Some("COMPLETED") && listed.episodes == Some(reached) && new.iter().any(|w| w.0 < reached) {
+            return Some(("COMPLETED", reached, Some(listed.repeat + 1)));
+        }
         rewatch_change(listed, reached)
     } else if progress > sent {
         change(listed, progress).map(|status| (status, progress, None))
@@ -443,6 +448,12 @@ mod tests {
         // The first watch of a show raises its progress.
         assert_eq!(send_for(&entry("CURRENT", 3, 0), 4, 3, &[(4, 100)]), Some(("CURRENT", 4, None)));
         assert_eq!(send_for(&entry("COMPLETED", 12, 0), 12, 12, &[]), None);
+        // A rewatch to the end while AniList couldn't be reached, told at once: completed again, one more rewatch.
+        let all: Vec<(i64, i64)> = (1..=12).map(|n| (n, n * 100)).collect();
+        assert_eq!(send_for(&entry("COMPLETED", 12, 1), 12, 12, &all), Some(("COMPLETED", 12, Some(2))));
+        assert_eq!(send_for(&entry("COMPLETED", 12, 0), 12, 12, &[(11, 100), (12, 200)]), Some(("COMPLETED", 12, Some(1))));
+        // The last episode alone is still no rewatch.
+        assert_eq!(send_for(&entry("COMPLETED", 12, 0), 12, 12, &[(12, 100)]), None);
     }
 
     #[test]

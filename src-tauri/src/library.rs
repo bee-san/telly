@@ -541,9 +541,14 @@ fn add_folder(backend: &Arc<Backend>, folder: &str) -> bool {
     folders.sort_by(by_name);
     videos.sort_by(by_name);
     let Ok(mut rips) = in_telly(backend) else { return false };
+    // Another library's folder inside this one (Dramas in Series), or a folder holding one, is that library's to read.
+    let others: Vec<String> = libraries(backend).unwrap_or_default().into_iter().flat_map(|l| l.folders).filter(|f| !same(f, folder)).collect();
     for path in &folders {
         if !wanted(backend, folder) {
             return true;
+        }
+        if others.iter().any(|other| below(&path.to_string_lossy(), other).is_some()) {
+            continue;
         }
         if add_anime(backend, folder, &path.to_string_lossy(), &rips) {
             let Ok(now) = in_telly(backend) else { return false };
@@ -1166,6 +1171,29 @@ mod tests {
         assert_eq!(length(&backend, &in_library), Some(1400.0));
         moved(&backend, &series, &elsewhere);
         assert_eq!((length(&backend, &in_library), length(&backend, &not_in_one)), (None, Some(1400.0)));
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_library_s_folder_inside_another_s_is_left_for_its_own_library() {
+        let dir = std::env::temp_dir().join(format!("telly-library-nested-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Arc::new(Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap());
+        let Some(ffmpeg) = backend.tools().ffmpeg else { return }; // making a video to read needs ffmpeg
+        let (series, dramas) = (dir.join("Series"), dir.join("Series").join("Dramas"));
+        let clip = dramas.join("Quartet").join("Quartet - NCOP.mkv");
+        std::fs::create_dir_all(clip.parent().unwrap()).unwrap();
+        let made = std::process::Command::new(&ffmpeg).args(["-v", "quiet", "-f", "lavfi", "-i", "color=c=black:s=64x36:r=1", "-t", "90", "-c:v", "mpeg4", "-y"]).arg(&clip).status().unwrap();
+        assert!(made.success());
+        let (series, dramas) = (series.to_string_lossy().into_owned(), dramas.to_string_lossy().into_owned());
+        backend.db.set_setting("libraries", &json!([library("series", &[series.as_str()]), library("series", &[dramas.as_str()])])).unwrap();
+        // Series' look doesn't read Dramas as one anime: nothing in it is looked at, nor passed over.
+        assert!(add_folder(&backend, &series));
+        assert!(passed(&backend, false, |kept| kept.is_empty()));
+        // Dramas' own look reads it.
+        assert!(add_folder(&backend, &dramas));
+        assert!(passed(&backend, false, |kept| kept.contains_key(&key(&clip.to_string_lossy()))));
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

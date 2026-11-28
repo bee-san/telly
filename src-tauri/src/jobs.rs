@@ -452,6 +452,10 @@ fn bucket(number: i64, next: i64, ahead: i64) -> u8 {
     }
 }
 
+/// The next episode of a show you've watched to its end: past every episode,
+/// so all of them are in `bucket` 3, the watched ones.
+const FINISHED: i64 = i64::MAX;
+
 /// How many episodes after a show's next are got ready ahead of the rest.
 fn ahead(backend: &Backend) -> i64 {
     backend.db.setting_i64("convert.ahead", 10).max(1)
@@ -460,7 +464,7 @@ fn ahead(backend: &Backend) -> i64 {
 /// Where `episode` stands now in the order work goes to episodes (see `pick`).
 fn place(backend: &Backend, episode: &Episode) -> Place {
     let rank = shows_in_order(backend).iter().position(|s| s.id == episode.show_id).unwrap_or(usize::MAX);
-    let next = next_episode(&backend.db.episodes(episode.show_id).unwrap_or_default()).map(|e| e.number).unwrap_or(1);
+    let next = next_episode(&backend.db.episodes(episode.show_id).unwrap_or_default()).map_or(FINISHED, |e| e.number);
     (bucket(episode.number, next, ahead(backend)), rank, episode.number)
 }
 
@@ -499,7 +503,7 @@ pub fn waiting<'a>(backend: &Backend, kind: &str, library: &'a [(Show, Vec<Episo
     let mut found: Vec<((u8, usize, i64), &Show, &Episode, usize)> = Vec::new();
     for (rank, (show, episodes)) in library.iter().enumerate() {
         let count = episodes.len();
-        let next = next_episode(episodes).map(|e| e.number).unwrap_or(1);
+        let next = next_episode(episodes).map_or(FINISHED, |e| e.number);
         // Whether the show's folder is there, looked at once it has work waiting.
         let mut here = None;
         for e in episodes {
@@ -3012,6 +3016,37 @@ mod tests {
             Some((show.title, e.number))
         });
         assert_eq!(caught_up.collect::<Vec<_>>(), catch_up);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_show_you_ve_finished_isn_t_converted_again() {
+        let dir = std::env::temp_dir().join(format!("telly-finished-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = std::sync::Arc::new(Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap());
+        let add = |title: &str, count: i64| {
+            let episodes = (1..=count).map(|number| crate::db::NewEpisode { number, path: format!("{title} {number}.mkv"), size: 1, duration: 1400.0 }).collect();
+            let folder = dir.join(title);
+            std::fs::create_dir_all(&folder).unwrap();
+            backend.db.add_show(&crate::db::NewShow { folder: folder.to_string_lossy().into_owned(), title: title.into(), episodes, ..Default::default() }).unwrap()
+        };
+        let (_, finished) = (add("Started", 12), add("Finished", 12));
+        // Watched to its end, last of all, and its copies let go (Free up space): every episode of it waits for its video.
+        for e in backend.db.episodes(finished).unwrap() {
+            backend.db.set_watched(e.id, true).unwrap();
+        }
+        backend.db.touch_show(finished).unwrap();
+        let listed = |kind: &str| -> Vec<(String, i64)> {
+            let library = library(&backend);
+            waiting(&backend, kind, &library).into_iter().map(|(s, e, _)| (s.title.clone(), e.number)).collect()
+        };
+        let media = listed("media");
+        assert_eq!(media.len(), 11, "the next and the 10 after it of the show not started");
+        assert!(media.iter().all(|(title, _)| title == "Started"), "{media:?}");
+        // Its subtitles come after every other show's, as watched episodes' do.
+        let subs = listed("subs");
+        assert!(subs[..12].iter().all(|(title, _)| title == "Started"), "{subs:?}");
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

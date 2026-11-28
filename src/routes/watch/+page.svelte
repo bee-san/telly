@@ -1203,7 +1203,11 @@
     explaining = { index, text: "", done: false, error: "", ask: 0 };
     try {
       const r = await call<AskProgress>("explain", { id: view.episode.id, index });
-      if (explaining?.index !== index) return;
+      if (explaining?.index !== index) {
+        // Another line was asked about meanwhile: this one's answer isn't wanted, so Claude stops writing it.
+        if (r.ask && !r.done) call("stopAsk", { ask: r.ask }).catch(() => {});
+        return;
+      }
       if (r.done) explaining = { ...explaining, text: r.text ?? "", done: true };
       else if (r.ask) {
         explaining = { ...explaining, ask: r.ask };
@@ -1215,15 +1219,17 @@
   }
 
   function followExplain(index: number, ask: number) {
+    // The answer being followed is this ask's: one asked again (E off and on) is another's.
+    const following = () => explaining?.index === index && explaining.ask === ask;
     explainPoll = setTimeout(async () => {
-      if (explaining?.index !== index) return;
+      if (!following()) return;
       try {
         const r = await call<AskProgress>("ask", { ask });
-        if (explaining?.index !== index) return;
+        if (!following() || !explaining) return;
         explaining = { ...explaining, text: r.text ?? "", done: !!r.done, error: r.error ?? "", openrouter: r.openrouter };
         if (!r.done) followExplain(index, ask);
       } catch (e) {
-        if (explaining?.index === index) explaining = { ...explaining, done: true, error: errorText(e) };
+        if (following() && explaining) explaining = { ...explaining, done: true, error: errorText(e) };
       }
     }, 250);
   }

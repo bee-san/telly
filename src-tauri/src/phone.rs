@@ -33,10 +33,12 @@ pub const PORT: u16 = 8775;
 const SHARE: &str = "phone.share";
 /// Setting (PC): the code a phone pairs with.
 const CODE: &str = "phone.code";
-/// Setting (PC): the phones paired, [{token, name, at}].
+/// Setting (PC): the phones paired, [{token, name, phone, at}].
 const PHONES: &str = "phone.phones";
 /// Setting (phone): the PC it's paired with, {address, token, name}.
 const PC: &str = "phone.pc";
+/// Setting (phone): its own id, which the PC knows it by among the phones paired.
+const ME: &str = "phone.id";
 /// Setting (phone): when progress was last given to the PC (unix ms).
 const SENT: &str = "phone.sentAt";
 /// Setting (phone): each episode's subtitles as the phone has them, by the PC's stamp.
@@ -411,8 +413,10 @@ fn pair(backend: &Backend, body: &Value) -> Result<Value> {
     let token = format!("{:016x}{:016x}", random(), random());
     let mut phones = backend.db.setting(PHONES).ok().flatten().and_then(|p| p.as_array().cloned()).unwrap_or_default();
     let name = body["name"].as_str().unwrap_or("Your phone").to_string();
-    phones.retain(|p| p["name"] != name.as_str());
-    phones.push(json!({ "token": token, "name": name, "at": crate::util::now_ms() }));
+    // A phone pairing again takes its own place, not another phone's: by its id, or by its name where an older Telly says none.
+    let phone = body["phone"].as_str().unwrap_or(&name).to_string();
+    phones.retain(|p| p["phone"].as_str().or(p["name"].as_str()) != Some(phone.as_str()));
+    phones.push(json!({ "token": token, "name": name, "phone": phone, "at": crate::util::now_ms() }));
     backend.db.set_setting(PHONES, &json!(phones))?;
     Ok(json!({ "token": token, "name": computer_name() }))
 }
@@ -646,13 +650,33 @@ pub fn find() -> Result<Value> {
     Ok(json!(found))
 }
 
+/// What the PC calls this phone among those paired: its model, as Android says.
+fn phone_name() -> String {
+    #[cfg(target_os = "android")]
+    if let Ok(out) = std::process::Command::new("getprop").arg("ro.product.model").output() {
+        let model = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !model.is_empty() {
+            return model;
+        }
+    }
+    "Telly on your phone".into()
+}
+
 /// Pairs the phone with the PC at `address` (a port after it or not) by the code it shows.
 pub fn pair_with(backend: &Backend, address: &str, code: &str) -> Result<Value> {
     let address = address.trim().trim_start_matches("http://").trim_end_matches('/').to_string();
     let address = if address.contains(':') { address } else { format!("{address}:{PORT}") };
+    let me = match backend.db.setting_str(ME) {
+        id if !id.is_empty() => id,
+        _ => {
+            let id = format!("{:016x}", random());
+            backend.db.set_setting(ME, &json!(id))?;
+            id
+        }
+    };
     let mut response = agent(15)
         .post(&format!("http://{address}/pair"))
-        .send_json(json!({ "code": code.trim(), "name": "Telly on your phone" }))
+        .send_json(json!({ "code": code.trim(), "name": phone_name(), "phone": me }))
         .map_err(|e| unreachable(&address, e))?;
     let status = response.status().as_u16();
     let value: Value = response.body_mut().read_json().unwrap_or(Value::Null);
@@ -1221,6 +1245,26 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(1), "it waited for the install");
         install.join().unwrap();
         drop(phone);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_second_phone_paired_leaves_the_first_paired() {
+        let (pc, dir) = library("pairing");
+        pc.db.set_setting(CODE, &json!("123456")).unwrap();
+        let token = |reply: Value| reply["token"].as_str().unwrap().to_string();
+        let thor = token(pair(&pc, &json!({ "code": "123456", "name": "Thor", "phone": "a" })).unwrap());
+        let pixel = token(pair(&pc, &json!({ "code": "123456", "name": "Pixel 8", "phone": "b" })).unwrap());
+        assert!(paired(&pc, Some(&thor)) && paired(&pc, Some(&pixel)));
+        // The Thor pairing again takes its own place.
+        let again = token(pair(&pc, &json!({ "code": "123456", "name": "Thor", "phone": "a" })).unwrap());
+        assert!(!paired(&pc, Some(&thor)) && paired(&pc, Some(&again)) && paired(&pc, Some(&pixel)));
+        assert_eq!(sharing_state(&pc)["phones"].as_array().unwrap().len(), 2);
+        // An older Telly says no id, and takes the place of the one of its name.
+        let old = token(pair(&pc, &json!({ "code": "123456", "name": "Telly on your phone" })).unwrap());
+        let older = token(pair(&pc, &json!({ "code": "123456", "name": "Telly on your phone" })).unwrap());
+        assert!(!paired(&pc, Some(&old)) && paired(&pc, Some(&older)) && paired(&pc, Some(&pixel)));
+        drop(pc);
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -30,7 +30,9 @@
   let all = $state(false);
   /** One of AniList's rows listed in full, where the rows were, a page at a time. */
   let full = $state.raw<{ key: string; title: string; note: string; picks: Pick[]; page: number; more: boolean } | null>(null);
-  let fullAsking = $state(false);
+  /** The row whose next page AniList is being asked for: another row opened meanwhile asks for its own. */
+  let askingFor = $state<string | null>(null);
+  const fullAsking = $derived(!!full && askingFor === full.key);
   /** The page's scrolling box. */
   let box = $state<HTMLElement | null>(null);
   /** How far down the rows were when a list was opened in full, to go back to. */
@@ -207,8 +209,8 @@
   /** Asks AniList for the next page of the list shown in full. The first replaces the row's picks. */
   async function moreOfFull() {
     const asked = full;
-    if (!asked || fullAsking) return;
-    fullAsking = true;
+    if (!asked || askingFor === asked.key) return;
+    askingFor = asked.key;
     try {
       const got = await call<{ picks: Pick[]; more: boolean }>("chartPage", { key: asked.key, page: asked.page + 1 });
       if (full?.key !== asked.key) return;
@@ -219,7 +221,7 @@
     } catch (e) {
       error = errorText(e);
     } finally {
-      fullAsking = false;
+      if (askingFor === asked.key) askingFor = null;
     }
   }
 

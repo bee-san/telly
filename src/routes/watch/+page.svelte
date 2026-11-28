@@ -764,6 +764,8 @@
   }
 
   function hoverText() {
+    // A touch says it's over a line just before it taps it: on the phone a tapped word's lookup pauses, and carries on after, by itself.
+    if (onPhone) return;
     clearResume();
     if (video && !video.paused) {
       video.pause();

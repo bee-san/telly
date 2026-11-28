@@ -2124,6 +2124,11 @@ mod tests {
         let after = backend.db.episodes(show).unwrap();
         assert_eq!(after.len(), 1);
         assert_eq!((after[0].id, after[0].number, after[0].path.as_str(), after[0].position), (one.id, 1, path("Paprika (2006) [Bluray-1080p].mkv").as_str(), 600.0));
+        // Another film put beside it (the next of its anime) is no episode of this one.
+        rip("Paprika 2.mkv");
+        assert_eq!(backend.rescan(show).unwrap(), 0);
+        assert_eq!(backend.db.episodes(show).unwrap().len(), 1);
+        std::fs::remove_file(path("Paprika 2.mkv")).unwrap();
         // Two new videos don't say which is the film: it's left as it is.
         std::fs::remove_file(path("Paprika (2006) [Bluray-1080p].mkv")).unwrap();
         rip("Paprika CD1.mkv");

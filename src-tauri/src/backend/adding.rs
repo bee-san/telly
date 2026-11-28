@@ -242,6 +242,11 @@ impl Backend {
                 return Ok(1);
             }
         }
+        // A film is its one rip: another video in its folder (the anime's next film, put beside it) is no
+        // episode of it, and its library's look adds that as a part of the anime.
+        if film {
+            return Ok(0);
+        }
         let news: Vec<&scan::ScannedFile> = scan
             .files
             .iter()

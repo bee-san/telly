@@ -296,6 +296,9 @@ static WARMING: AtomicBool = AtomicBool::new(false);
 /// The warm session is out answering, or finishing an answer that was
 /// stopped: a question asked meanwhile waits a moment for it to come back.
 static OUT: AtomicBool = AtomicBool::new(false);
+/// The player has been closed a while: a warm session out answering, or
+/// still starting, is ended when it's back, not kept for a player that's gone.
+static UNWANTED: AtomicBool = AtomicBool::new(false);
 /// How long a question waits for the warm session to come back before
 /// starting a Claude Code of its own (which takes 3 to 15 seconds).
 const WAIT_FOR_SESSION: Duration = Duration::from_secs(5);
@@ -425,6 +428,7 @@ fn session_back(kind: &(Option<String>, Option<String>)) -> Option<Session> {
 
 /// Ends the warm session, if there is one ready: the player has been closed a while.
 pub fn end_warm() {
+    UNWANTED.store(true, Ordering::SeqCst);
     let session = SESSION.lock().ok().and_then(|mut slot| slot.take());
     if let Some(session) = session {
         session.end();
@@ -445,6 +449,9 @@ fn take_session(kind: &(Option<String>, Option<String>)) -> Option<Session> {
 
 fn put_back(session: Session) {
     OUT.store(false, Ordering::SeqCst);
+    if UNWANTED.load(Ordering::SeqCst) {
+        return session.end();
+    }
     if session.asked >= SESSION_QUESTIONS {
         let kind = session.kind.clone();
         session.end();
@@ -461,6 +468,7 @@ fn put_back(session: Session) {
 /// Starts a session in the background for the next question, unless one is
 /// ready (or starting) for this model and effort. The player calls this when it opens.
 pub fn warm_up(model: Option<&str>, effort: Option<&str>) {
+    UNWANTED.store(false, Ordering::SeqCst);
     let kind = (model_arg(model), effort.map(str::to_string));
     if find().is_none() {
         return;
@@ -603,6 +611,20 @@ mod tests {
         let said = session.ask("この文は？", &mut |_| {}, &Arc::new(AtomicBool::new(false)));
         // Not kept as the line's explanation: said as no answer, as a Claude Code of its own's is.
         assert_eq!(said.err().map(|e| e.to_string()).as_deref(), Some("Claude gave no answer."));
+    }
+
+    /// A warm session out answering when the player has been closed a while.
+    #[cfg(unix)]
+    #[test]
+    fn a_warm_session_back_after_the_player_has_gone_is_ended() {
+        let mut child = std::process::Command::new("sh").args(["-c", "cat >/dev/null"]).stdin(Stdio::piped()).spawn().unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let (_tx, lines) = mpsc::channel();
+        let session = Session { child, stdin, lines, kind: (None, None), asked: 0, last_used: Instant::now() };
+        end_warm();
+        put_back(session);
+        // Not kept waiting for a player that's gone.
+        assert!(SESSION.lock().unwrap().is_none());
     }
 
     fn feed(lines: &[&str]) -> (String, Vec<String>, Option<std::result::Result<String, String>>) {

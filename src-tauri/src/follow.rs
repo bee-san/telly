@@ -16,7 +16,9 @@
 //! Settings: follow.<show> (the show is followed), follow.got.<show> (the
 //! last episode Telly started a download of, so none is started twice),
 //! follow.started.<show> (each episode it started and its download's info
-//! hash, so one whose download is gone is started again) and
+//! hash, so one whose download is gone is started again),
+//! follow.missing.<show> (episodes a look went past, none of them on offer
+//! yet, which later looks want too) and
 //! follow.like.<show> (the title of the last release downloaded for the show,
 //! which is how the search site names its episodes when the files inside are named
 //! another way).
@@ -32,6 +34,7 @@ use anyhow::Result;
 use regex::Regex;
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -53,6 +56,11 @@ pub(crate) fn got_setting(show: i64) -> String {
 /// The setting with the downloads Telly started for a show: each episode's number and its info hash.
 pub(crate) fn started_setting(show: i64) -> String {
     format!("follow.started.{show}")
+}
+
+/// The setting with the episodes of a show a look went past without starting, which later looks want too.
+pub(crate) fn missing_setting(show: i64) -> String {
+    format!("follow.missing.{show}")
 }
 
 /// The setting with the title of the last release downloaded for a show, as nyaa lists it.
@@ -189,11 +197,32 @@ fn started(backend: &Backend, show: i64) -> Vec<(i64, String)> {
 
 /// The episodes among `started` to download again: those whose download isn't
 /// among the downloads `there` any more (removed in Processing, or nobody
-/// ever answered for its magnet link). One that finished and was then
-/// removed is found on disk when it's tried, and left at that.
-fn to_retry(started: &[(i64, String)], there: Option<&std::collections::HashSet<String>>) -> Vec<i64> {
+/// ever answered for its magnet link) and that the show doesn't `have`. One
+/// that finished, and joined the show, isn't, though its download is removed
+/// (to stop sharing it) or a later version of it is uploaded.
+fn to_retry(started: &[(i64, String)], there: Option<&HashSet<String>>, have: &HashSet<i64>) -> Vec<i64> {
     let Some(there) = there else { return Vec::new() };
-    started.iter().filter(|(_, hash)| !there.contains(hash)).map(|(number, _)| *number).collect()
+    started.iter().filter(|(number, hash)| !there.contains(hash) && !have.contains(number)).map(|(number, _)| *number).collect()
+}
+
+/// The episodes a look that started `begun` went past: after `after`, before
+/// the last it started, neither started nor in the show (`have`). None was
+/// on offer, or none like the episodes before; later looks want them too.
+fn passed_by(after: i64, begun: &[i64], have: &HashSet<i64>) -> Vec<i64> {
+    let last = begun.iter().copied().max().unwrap_or(after);
+    (after + 1..last).filter(|n| !begun.contains(n) && !have.contains(n)).collect()
+}
+
+/// How many of the search site's pages a look reads, newest first, to find
+/// every episode that came out while Telly was closed.
+const PAGES: u32 = 4;
+
+/// Whether a look reads the search site's next page, after one that had
+/// `found` and says there's `more`: while the earliest episode of the release
+/// on it (`numbered`) is one that's `wanted`, so earlier ones may be further on.
+fn read_on(found: &[nyaa::Release], more: bool, like: &Shape, wanted: impl Fn(i64) -> bool) -> bool {
+    let earliest = found.iter().filter_map(|r| shape(&r.title)).filter(|named| named.same_release(like)).map(|named| named.number).min();
+    more && earliest.is_some_and(wanted)
 }
 
 /// Looks on nyaa for episodes of `show` after its latest, from the same
@@ -202,21 +231,48 @@ fn to_retry(started: &[(i64, String)], there: Option<&std::collections::HashSet<
 pub fn look(backend: &Arc<Backend>, show: &Show) -> Result<Looked> {
     let Some((file, like)) = latest(backend, show.id)? else { return Ok(Looked::default()) };
     let after = like.number.max(backend.db.setting_i64(&got_setting(show.id), 0));
+    let episodes = backend.db.episodes(show.id)?;
+    // The episodes the show has, numbered as the release numbers them.
+    let have: HashSet<i64> = episodes.iter().filter_map(|e| Some(shape(&Path::new(&e.path).file_name()?.to_string_lossy())?.number)).collect();
     let mut going = started(backend, show.id);
-    let retry = to_retry(&going, backend.downloads.there().as_ref());
-    let rip = backend.db.episodes(show.id)?.iter().map(|e| e.size.max(0) as u64).max();
-    let found = nyaa::search(&backend.db.setting_str("nyaa.site"), &query(&file, &like), "all", false, "newest", 1)?;
+    // One that finished and joined the show is never started again.
+    going.retain(|(n, _)| !have.contains(n));
+    let retry = to_retry(&going, backend.downloads.there().as_ref(), &have);
+    let mut missing: Vec<i64> = backend.db.setting(&missing_setting(show.id))?.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+    missing.retain(|n| !have.contains(n));
+    let rip = episodes.iter().map(|e| e.size.max(0) as u64).max();
+    let wanted = |n: i64| n > after || retry.contains(&n) || missing.contains(&n);
+    let mut releases = Vec::new();
+    for page in 1..=PAGES {
+        let found = match nyaa::search(&backend.db.setting_str("nyaa.site"), &query(&file, &like), "all", false, "newest", page) {
+            Ok(found) => found,
+            Err(e) if page == 1 => return Err(e),
+            // What the pages before it have is looked through all the same.
+            Err(_) => break,
+        };
+        let on = read_on(&found.releases, found.more, &like, wanted);
+        releases.extend(found.releases);
+        if !on {
+            break;
+        }
+    }
     let mut begun = Vec::new();
+    // The episodes this look saw to: started, or downloading or here already.
+    let mut seen_to = Vec::new();
     let mut failed = None;
-    for (number, release) in later(&like, |n| n > after || retry.contains(&n), rip, &found.releases) {
+    for (number, release) in later(&like, wanted, rip, &releases) {
         match torrents::add(backend, &release.magnet, &release.torrent, &release.title, Some(show.id), None, None) {
             Ok(_) => {
                 begun.push(number);
+                seen_to.push(number);
                 going.retain(|(n, _)| *n != number);
                 going.extend(torrents::magnet_hash(&release.magnet).map(|hash| (number, hash)));
             }
             // It's downloading already, or its file is here: there's nothing more to start.
-            Err(e) if e.to_string().contains("already") => going.retain(|(n, _)| *n != number),
+            Err(e) if e.to_string().contains("already") => {
+                seen_to.push(number);
+                going.retain(|(n, _)| *n != number);
+            }
             // One to start again stays on the list, to be tried at the next look.
             Err(e) => {
                 failed = Some(e);
@@ -225,6 +281,13 @@ pub fn look(backend: &Arc<Backend>, show: &Show) -> Result<Looked> {
         }
         backend.db.set_setting(&got_setting(show.id), &json!(number.max(after)))?;
     }
+    missing.retain(|n| !seen_to.contains(n));
+    for n in passed_by(after, &seen_to, &have) {
+        if !missing.contains(&n) {
+            missing.push(n);
+        }
+    }
+    backend.db.set_setting(&missing_setting(show.id), &json!(missing))?;
     backend.db.set_setting(&started_setting(show.id), &json!(going))?;
     match failed {
         Some(e) => Err(e),
@@ -245,6 +308,7 @@ pub fn set(backend: &Arc<Backend>, show: i64, on: bool) -> Result<Value> {
         backend.db.set_setting(&setting(show), &Value::Null)?;
         backend.db.set_setting(&got_setting(show), &Value::Null)?;
         backend.db.set_setting(&started_setting(show), &Value::Null)?;
+        backend.db.set_setting(&missing_setting(show), &Value::Null)?;
         return Ok(json!({ "following": false }));
     }
     backend.db.set_setting(&setting(show), &Value::Bool(true))?;
@@ -410,14 +474,42 @@ mod tests {
         let started = [(6, "aaaa".to_string()), (7, "bbbb".to_string())];
         let there: std::collections::HashSet<String> = ["bbbb".to_string()].into();
         // Episode 6's download was removed, or nobody answered for it; 7's is still there.
-        assert_eq!(to_retry(&started, Some(&there)), [6]);
+        assert_eq!(to_retry(&started, Some(&there), &HashSet::new()), [6]);
         // Before Telly has looked at its downloads, none counts as gone.
-        assert_eq!(to_retry(&started, None), [] as [i64; 0]);
+        assert_eq!(to_retry(&started, None, &HashSet::new()), [] as [i64; 0]);
+        // One that finished and joined the show, its download removed since (to stop sharing it), isn't started again.
+        assert_eq!(to_retry(&started, Some(&HashSet::new()), &[6].into()), [7]);
         let like = "[SubsPlease] Sousou no Frieren - 07 (1080p) [1A2B3C4D].mkv";
         let found = ["[SubsPlease] Sousou no Frieren - 08 (1080p)", "[SubsPlease] Sousou no Frieren - 07 (1080p)", "[SubsPlease] Sousou no Frieren - 06 (1080p)"];
         let found: Vec<nyaa::Release> = found.iter().enumerate().map(|(i, t)| release(100 - i as i64, t)).collect();
         let numbers: Vec<i64> = later(&shape(like).unwrap(), |n| n > 7 || n == 6, None, &found).into_iter().map(|(n, _)| n).collect();
         assert_eq!(numbers, [6, 8]);
+    }
+
+    #[test]
+    fn an_episode_not_on_offer_when_a_later_one_is_is_wanted_at_the_next_look() {
+        // Episode 6 is the show's latest; at a look, 8 was there to start, 7 wasn't (no one sharing it yet).
+        assert_eq!(passed_by(6, &[8], &HashSet::new()), [7]);
+        assert_eq!(passed_by(6, &[7, 10], &[9].into()), [8]);
+        assert_eq!(passed_by(6, &[], &HashSet::new()), [] as [i64; 0]);
+        // At the next look, 7 is wanted, though 8 is the latest now.
+        let like = shape("[SubsPlease] Sousou no Frieren - 08 (1080p) [1A2B3C4D].mkv").unwrap();
+        let found = ["[SubsPlease] Sousou no Frieren - 09 (1080p)", "[SubsPlease] Sousou no Frieren - 08 (1080p)", "[SubsPlease] Sousou no Frieren - 07 (1080p)"];
+        let found: Vec<nyaa::Release> = found.iter().enumerate().map(|(i, t)| release(100 - i as i64, t)).collect();
+        let missing = [7];
+        let numbers: Vec<i64> = later(&like, |n| n > 8 || missing.contains(&n), None, &found).into_iter().map(|(n, _)| n).collect();
+        assert_eq!(numbers, [7, 9]);
+    }
+
+    #[test]
+    fn a_look_reads_on_while_the_earliest_episode_on_a_page_is_wanted() {
+        let like = shape("[Erai-raws] Show - 05 [1080p].mkv").unwrap();
+        let page = |numbers: &[i64]| numbers.iter().map(|n| release(*n, &format!("[Erai-raws] Show - {n:02} [1080p]"))).collect::<Vec<_>>();
+        // Closed a while: page 1 is all episodes after the latest, so the ones before them may be on page 2.
+        assert!(read_on(&page(&[12, 11, 10]), true, &like, |n| n > 5));
+        // It reaches one that's had: far enough back. Or there's no next page.
+        assert!(!read_on(&page(&[7, 6, 5]), true, &like, |n| n > 5));
+        assert!(!read_on(&page(&[12, 11, 10]), false, &like, |n| n > 5));
     }
 
     #[test]

@@ -774,11 +774,12 @@ fn tells(lines: &[Line]) -> bool {
 /// episode before is the one to see.
 const RESUME_FROM_S: f64 = 300.0;
 
-/// What the recap before `episode` is made from: the episodes before it with
-/// subtitles, back to the nearest one with a recap kept (which tells the story
-/// before), six at most. With `at`, `episode` itself is the last of them, as
-/// far as `at` seconds in. Nothing when the last of them has too few lines, or
-/// `at` is in the first 5 minutes.
+/// What the recap before `episode` is made from: the episodes before it you've
+/// watched, with subtitles, back to the nearest one with a recap kept (which
+/// tells the story before), six at most. One you haven't watched is never
+/// told, though it comes before. With `at`, `episode` itself is the last of
+/// them, as far as `at` seconds in. Nothing when the last of them has too few
+/// lines, or `at` is in the first 5 minutes.
 ///
 /// A show's first episode has none before it: its recap is of the season
 /// before (`season_before`), and no recap of this show carries that one on.
@@ -804,7 +805,7 @@ fn source(backend: &Backend, episode: &Episode, at: Option<f64>) -> Result<Sourc
         source.episodes.push((episode.clone(), lines));
         source.earlier = kept(episode.id);
     }
-    for e in all[..i].iter().rev() {
+    for e in all[..i].iter().rev().filter(|e| e.watched_at.is_some()) {
         if source.earlier.is_some() || source.episodes.len() >= RECAP_EPISODES {
             break;
         }
@@ -831,7 +832,7 @@ fn season_before(backend: &Backend, episode: &Episode) -> Result<Source> {
     let Some(before) = crate::series::previous_show(backend, &show) else { return Ok(source) };
     let all = backend.db.episodes(before.id)?;
     let first = all.first().map(|e| e.id);
-    for e in all.iter().rev().skip_while(|e| e.watched_at.is_none()) {
+    for e in all.iter().rev().filter(|e| e.watched_at.is_some()) {
         if source.earlier.is_some() || source.episodes.len() >= RECAP_EPISODES {
             break;
         }
@@ -886,8 +887,9 @@ fn recap_about(source: &Source) -> String {
 }
 
 /// The recap kept for before the episode `id`, while the subtitles it was
-/// made from are as they were, and you've seen no more of those episodes
-/// than it tells (a scene after the credits, played since).
+/// made from are as they were, you've watched each of those episodes, and
+/// you've seen no more of them than it tells (a scene after the credits,
+/// played since).
 fn kept(backend: &Backend, id: i64) -> Option<Recap> {
     let answer = backend.db.answer(id, "recap", -1).ok().flatten()?;
     if answer.extra != kept_with("", answer_in(backend)) {
@@ -897,8 +899,9 @@ fn kept(backend: &Backend, id: i64) -> Option<Recap> {
         let of: Option<i64> = part.split(':').next().and_then(|id| id.parse().ok());
         // As far as you've seen each, which is what the recap was made from: an
         // episode left at its ending is its lines up to there, not the whole file.
+        // One told though you hadn't watched it isn't carried on, so it's told no further.
         let episode = of.and_then(|of| backend.db.episode(of).ok().flatten());
-        episode.is_some_and(|e| about_part(e.id, &seen_lines(backend, &e)) == part)
+        episode.is_some_and(|e| e.watched_at.is_some() && about_part(e.id, &seen_lines(backend, &e)) == part)
     });
     if !same {
         return None;
@@ -1399,6 +1402,7 @@ mod tests {
         // Lines all through a 1400 s episode, the last ones after the credits (1260–1350 s).
         let lines: Vec<Line> = (0..46).map(|i| line(i as f64 * 30.0, i as f64 * 30.0 + 2.0, &format!("台詞{i}"))).collect();
         let (backend, episodes, dir) = library("after-credits", 2, &lines);
+        watched(&backend, &episodes[..1]);
         let told = |backend: &Backend| source(backend, &episodes[1], None).unwrap().episodes[0].1.len();
         // No ending known: every line.
         assert_eq!(told(&backend), 46);
@@ -1457,14 +1461,48 @@ mod tests {
         keep(&backend, &second[0], &summary);
         let view = super::recap(&backend, second[0].id, false, None).unwrap();
         assert_eq!((view["season"].as_str(), view["moments"][0]["episodeId"].as_i64()), (Some("Show"), Some(first[1].id)));
-        // The second episode's recap is of the second season alone: it doesn't carry the first season's on.
+        // The second episode's recap, once the first is watched, is of the second season alone: it doesn't carry the first season's on.
+        backend.db.set_watched(second[0].id, true).unwrap();
         let own = source(&backend, &second[1], None).unwrap();
         assert_eq!((own.episodes.iter().map(|(e, _)| e.id).collect::<Vec<_>>(), own.earlier.is_none(), own.of.is_none()), (vec![second[0].id], true, true));
         // Nor does picking the first episode up part-way.
         let part_way = source(&backend, &second[0], Some(600.0)).unwrap();
         assert!(part_way.earlier.is_none() && part_way.of.is_none());
+        // An episode of the season before skipped, between two watched, isn't told.
+        backend.db.set_watched(first[1].id, false).unwrap();
+        backend.db.set_watched(first[2].id, true).unwrap();
+        let skipped = source(&backend, &second[0], None).unwrap();
+        assert_eq!(skipped.episodes.iter().map(|(e, _)| e.id).collect::<Vec<_>>(), [first[0].id, first[2].id]);
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_recap_tells_only_the_episodes_you_ve_watched() {
+        let lines: Vec<Line> = (0..30).map(|i| line(i as f64 * 3.0, i as f64 * 3.0 + 2.0, &format!("台詞{i}"))).collect();
+        let (backend, episodes, dir) = library("skipped", 10, &lines);
+        let told = |episode: &Episode| source(&backend, episode, None).unwrap().episodes.iter().map(|(e, _)| e.number).collect::<Vec<_>>();
+        // Episodes 1 to 3 watched, then episode 10 opened (from line search, say): 4 to 9, ahead of you, aren't told.
+        watched(&backend, &episodes[..3]);
+        assert_eq!(told(&episodes[9]), [1, 2, 3]);
+        // Nor is one skipped between two watched.
+        watched(&backend, &episodes[4..5]);
+        assert_eq!(told(&episodes[9]), [1, 2, 3, 5]);
+        // A recap kept from before, that told episode 4 though you hadn't watched it, isn't carried on.
+        let about = format!("{ABOUT}{}", episodes[..4].iter().map(|e| about_part(e.id, &lines)).collect::<Vec<_>>().join(","));
+        backend.db.save_answer(episodes[4].id, "recap", -1, &about, &serde_json::to_string(&Recap::default()).unwrap(), "").unwrap();
+        assert!(kept(&backend, episodes[4].id).is_none());
+        watched(&backend, &episodes[3..4]);
+        assert!(kept(&backend, episodes[4].id).is_some());
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Marks `episodes` watched, as those before the one a recap is for are.
+    fn watched(backend: &Backend, episodes: &[Episode]) {
+        for e in episodes {
+            backend.db.set_watched(e.id, true).unwrap();
+        }
     }
 
     /// Keeps `recap` as the one before `episode`, as if Claude had just written it.
@@ -1501,6 +1539,7 @@ mod tests {
     fn an_explanation_or_recap_kept_in_english_isn_t_shown_once_answers_are_in_japanese() {
         let lines: Vec<Line> = (0..30).map(|i| line(100.0 + i as f64 * 3.0, 102.0 + i as f64 * 3.0, &format!("台詞{i}"))).collect();
         let (backend, episodes, dir) = library("language", 2, &lines);
+        watched(&backend, &episodes[..1]);
         backend.db.save_answer(episodes[0].id, "line", 1, "台詞1", "A line.", LINE_ANSWER_VERSION).unwrap();
         keep(&backend, &episodes[1], &Recap { last: "Roman runs.".into(), ..Recap::default() });
         assert_eq!(explain(&backend, episodes[0].id, 1).unwrap()["text"], "A line.");
@@ -1521,6 +1560,7 @@ mod tests {
     fn a_moment_plays_where_its_lines_are_heard_in_an_episode_with_its_subtitles_nudged() {
         let lines: Vec<Line> = (0..30).map(|i| line(100.0 + i as f64 * 3.0, 102.0 + i as f64 * 3.0, &format!("台詞{i}"))).collect();
         let (backend, episodes, dir) = library("nudge", 2, &lines);
+        watched(&backend, &episodes[..1]);
         // Episode 1's subtitles were nudged 2 s later (Z and X): line 10, at 130 s in the file, is heard at 132 s.
         backend.db.set_nudge(episodes[0].id, 2000).unwrap();
         let recap = Recap { arcs: Vec::new(), last: "Roman runs.".into(), moments: vec![Pick { episode: 1, line: 10, caption: "Roman runs.".into() }] };
@@ -1542,6 +1582,7 @@ mod tests {
         // The episode runs to 22 minutes, so it plays up to 4 scenes.
         lines.push(line(1300.0, 1302.0, "またね"));
         let (backend, episodes, dir) = library("overlap", 2, &lines);
+        watched(&backend, &episodes[..1]);
         // Lines 10 and 11 are a question and its answer, 3 s apart: line 10's moment already plays line 11.
         let pick = |line, caption: &str| Pick { episode: 1, line, caption: caption.into() };
         let recap = Recap { arcs: Vec::new(), last: "Roman runs.".into(), moments: vec![pick(10, "Asked."), pick(11, "Answered."), pick(11, "Again."), pick(25, "Later.")] };
@@ -1580,6 +1621,7 @@ mod tests {
     fn saved_recaps_play_a_scene_for_every_six_minutes_of_the_last_episode_in_order() {
         let lines: Vec<Line> = (0..30).map(|i| line(100.0 + i as f64 * 12.0, 101.0 + i as f64 * 12.0, &format!("台詞{i}"))).collect();
         let (backend, episodes, dir) = library("pacing", 3, &lines);
+        watched(&backend, &episodes[..1]);
         let pick = |episode, line| Pick { episode, line, caption: String::new() };
         let recap = Recap {
             last: "Last time.".into(),
@@ -1598,6 +1640,7 @@ mod tests {
         // A 23-minute episode before: four of the six scenes picked from it, the first and last among them.
         let lines: Vec<Line> = (0..30).map(|i| line(60.0 + i as f64 * 45.0, 61.0 + i as f64 * 45.0, &format!("台詞{i}"))).collect();
         let (backend, episodes, dir) = library("pacing-long", 2, &lines);
+        watched(&backend, &episodes[..1]);
         let recap = Recap { last: "Last time.".into(), moments: [2, 8, 14, 20, 26, 29].map(|l| pick(1, l)).to_vec(), ..Recap::default() };
         keep(&backend, &episodes[1], &recap);
         let view = super::recap(&backend, episodes[1].id, false, None).unwrap();
@@ -1611,6 +1654,7 @@ mod tests {
         // Long lines, so each scene plays for 12.7 seconds, in a 23-minute episode.
         let lines: Vec<Line> = (0..30).map(|i| line(60.0 + i as f64 * 45.0, 71.0 + i as f64 * 45.0, &format!("台詞{i}"))).collect();
         let (backend, episodes, dir) = library("within", 4, &lines);
+        watched(&backend, &episodes[..3]);
         let pick = |episode, line| Pick { episode, line, caption: String::new() };
         let at = |l: usize| 60.0 + l as f64 * 45.0;
         // Three scenes from Episode 3, the one left (38 s), and three from before it (38 s more).
@@ -1639,6 +1683,7 @@ mod tests {
     fn picking_up_in_the_first_5_minutes_recaps_the_episode_before() {
         let lines: Vec<Line> = (0..30).map(|i| line(100.0 + i as f64 * 3.0, 102.0 + i as f64 * 3.0, &format!("台詞{i}"))).collect();
         let (backend, episodes, dir) = library("early", 2, &lines);
+        watched(&backend, &episodes[..1]);
         // Four minutes into Episode 2, its 30 lines would be a recap of the cold open: there's none up to there.
         assert_eq!(recap_state(&backend, &episodes[1], Some(240.0)), json!({ "possible": false }));
         assert_eq!(recap_state(&backend, &episodes[1], Some(400.0)), json!({ "possible": true, "ready": false }));

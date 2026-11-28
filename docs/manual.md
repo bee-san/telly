@@ -159,7 +159,7 @@ When you come back to a show after 8 hours (Settings → Explain and Previously 
 
 Before a season's first episode, Previously on tells the season before: the show AniList calls its prequel, when it's in your library, told from the episodes of it you watched in Telly (the last six, carrying on from that season's own recaps), with scenes from them. A season you don't have, or didn't watch here, gets none. Every other episode's recap is of its own season alone: the second episode's is made from the first's subtitles and doesn't carry the season before on.
 
-It's written when you leave the player, so it's ready next time (Haiku takes about 15 seconds for one episode); if it isn't, the episode starts and Telly says when the recap is ready. Each recap carries on from the one kept for the episode before, so only the episode you just left is read (up to six when there's no recap to carry on from).
+It's written when you leave the player, so it's ready next time (Haiku takes about 15 seconds for one episode); if it isn't, the episode starts and Telly says when the recap is ready. Each recap carries on from the one kept for the episode before, so only the episode you just left is read (up to six when there's no recap to carry on from). It tells only the episodes you've watched: one you skipped, or haven't got to (an episode opened from line search, say), isn't told, though it comes before.
 
 ## 🎨 Filters
 

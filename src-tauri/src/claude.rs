@@ -353,6 +353,11 @@ impl Session {
                         self.asked += 1;
                         self.last_used = Instant::now();
                         let answer = if result.trim().is_empty() { text.trim().to_string() } else { result.trim().to_string() };
+                        // Nothing said is no answer, as a Claude Code of its own takes it: kept, it would be the line's for good.
+                        if answer.is_empty() {
+                            self.end();
+                            return Err(anyhow!("Claude gave no answer."));
+                        }
                         return Ok((answer, self));
                     }
                     Some(Err(message)) => {
@@ -542,6 +547,29 @@ mod tests {
         assert!(format!("{first:#}").to_lowercase().contains("unknown option"), "{first:#}");
         assert_eq!(run(&exe, &question, false, &mut |_| {}, &stop).unwrap(), "答え");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The warm session, with a Claude Code that ends each turn having said nothing.
+    #[cfg(unix)]
+    #[test]
+    fn an_empty_answer_from_the_warm_session_is_no_answer() {
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", r#"while read -r line; do echo '{"type":"result","subtype":"success","result":""}'; done"#])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let (stdin, stdout) = (child.stdin.take().unwrap(), child.stdout.take().unwrap());
+        let (tx, lines) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(std::result::Result::ok) {
+                let _ = tx.send(line);
+            }
+        });
+        let session = Session { child, stdin, lines, kind: (None, None), asked: 0, last_used: Instant::now() };
+        let said = session.ask("この文は？", &mut |_| {}, &Arc::new(AtomicBool::new(false)));
+        // Not kept as the line's explanation: said as no answer, as a Claude Code of its own's is.
+        assert_eq!(said.err().map(|e| e.to_string()).as_deref(), Some("Claude gave no answer."));
     }
 
     fn feed(lines: &[&str]) -> (String, Vec<String>, Option<std::result::Result<String, String>>) {

@@ -211,7 +211,13 @@ fn run(exe: &Path, question: &Ask, modern: bool, on_text: &mut impl FnMut(&str),
     // An older Claude Code stops at an option it doesn't know without reading
     // the question, so writing it can fail: what it says about the option is
     // still read below, so the older flags are tried, and it's waited for.
-    let unsent = child.stdin.take().and_then(|mut stdin| stdin.write_all(question.prompt.as_bytes()).err());
+    // It's written alongside, so a Claude Code that doesn't read it (a recap's
+    // question is more than a pipe holds) is still stopped, or timed out.
+    let (sent_tx, sent) = std::sync::mpsc::channel();
+    let (stdin, prompt) = (child.stdin.take(), question.prompt.to_owned());
+    std::thread::spawn(move || {
+        let _ = sent_tx.send(stdin.and_then(|mut stdin| stdin.write_all(prompt.as_bytes()).err()));
+    });
     let stderr = child.stderr.take();
     let errors = std::thread::spawn(move || {
         let mut text = String::new();
@@ -251,6 +257,7 @@ fn run(exe: &Path, question: &Ask, modern: bool, on_text: &mut impl FnMut(&str),
     let _ = child.wait();
     finished.store(true, Ordering::SeqCst);
     let stderr = errors.join().unwrap_or_default();
+    let unsent = sent.recv_timeout(Duration::from_secs(1)).ok().flatten();
     if stop.load(Ordering::SeqCst) {
         return Err(anyhow!("Stopped."));
     }
@@ -546,6 +553,32 @@ mod tests {
         let first = run(&exe, &question, true, &mut |_| {}, &stop).unwrap_err();
         assert!(format!("{first:#}").to_lowercase().contains("unknown option"), "{first:#}");
         assert_eq!(run(&exe, &question, false, &mut |_| {}, &stop).unwrap(), "答え");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_claude_code_that_never_reads_a_long_question_is_still_stopped() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("telly-claude-stuck-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("claude");
+        // Started, but never reading what it's asked, as a Claude Code stuck before it does.
+        std::fs::write(&exe, "#!/bin/sh\nexec sleep 20\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Far more than a pipe holds: what a recap of a long show asks.
+        let prompt = "長い質問。".repeat(200_000);
+        let question = Ask { prompt: &prompt, model: None, effort: None, warm: false };
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopping = stop.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            stopping.store(true, Ordering::SeqCst);
+        });
+        let started = Instant::now();
+        let error = run(&exe, &question, true, &mut |_| {}, &stop).unwrap_err();
+        assert_eq!(format!("{error:#}"), "Stopped.");
+        assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
         let _ = std::fs::remove_dir_all(dir);
     }
 

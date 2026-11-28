@@ -118,14 +118,16 @@ impl Backend {
     /// `new` says is new, and no episode of a show in Telly. So a folder some
     /// of whose seasons are in Telly gets the ones that turned up since; with
     /// `base`, they're matched as parts of that anime, the one the seasons in
-    /// Telly are. Returns the shows added, or why AniList couldn't be asked.
-    pub(crate) fn add_as_read(self: &Arc<Self>, scan: &scan::Scan, base: Option<i64>, new: impl Fn(&str) -> bool) -> Result<Vec<i64>> {
+    /// Telly are. A part with an episode `passed` over (a show you removed, or
+    /// left out when it was added) stays out, its new episodes with it.
+    /// Returns the shows added, or why AniList couldn't be asked.
+    pub(crate) fn add_as_read(self: &Arc<Self>, scan: &scan::Scan, base: Option<i64>, new: impl Fn(&str) -> bool, passed: impl Fn(&str) -> bool) -> Result<Vec<i64>> {
         let found = self.matched(scan.clone(), base, true)?;
         if let Some(error) = &found.error {
             return Err(anyhow!("{error}"));
         }
         let mut shows = found.shows();
-        shows.retain(|(show, _)| show.episodes.iter().any(|e| new(&e.path)));
+        shows.retain(|(show, _)| to_add(&show.episodes, &new, &passed));
         if shows.is_empty() {
             return Ok(Vec::new());
         }
@@ -543,5 +545,31 @@ impl Backend {
         self.jobs.forget_jimaku();
         self.jobs.poke();
         self.show_view(id)
+    }
+}
+
+/// Whether a show (or part) read in a library's folder is added: it has an
+/// episode that's new, and none that's passed over, as a show you removed has,
+/// or one you left out when its folder was added: that stays out, new
+/// episodes and all.
+fn to_add(episodes: &[crate::db::NewEpisode], new: impl Fn(&str) -> bool, passed: impl Fn(&str) -> bool) -> bool {
+    episodes.iter().any(|e| new(&e.path)) && !episodes.iter().any(|e| passed(&e.path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_show_you_removed_stays_out_when_a_new_episode_turns_up_in_its_folder() {
+        let episodes: Vec<crate::db::NewEpisode> =
+            (1..=13).map(|n| crate::db::NewEpisode { number: n, path: format!("Series/Show/Show - {n:02}.mkv"), size: 1, duration: 1400.0 }).collect();
+        let new = |path: &str| path.ends_with("13.mkv");
+        // Episodes 1 to 12 were the show you removed: passed over, and 13 with them.
+        assert!(!to_add(&episodes, new, |path: &str| !path.ends_with("13.mkv")));
+        // A season that's new from start to end is added.
+        assert!(to_add(&episodes, |_: &str| true, |_: &str| false));
+        // Nothing new: nothing to add.
+        assert!(!to_add(&episodes, |_: &str| false, |_: &str| false));
     }
 }

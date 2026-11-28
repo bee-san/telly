@@ -737,6 +737,8 @@ fn add_anime(backend: &Arc<Backend>, library: &str, folder: &str, rips: &HashMap
     if new.is_empty() || torrents::going_in(backend, folder) || backend.sheet_open(folder) {
         return false;
     }
+    // What's passed over (a show you removed, what you left out), apart from what's in Telly.
+    let passed_over: HashSet<String> = known.keys().cloned().collect();
     known.extend(videos.iter().filter_map(|v| rips.get(v).map(|(length, _)| (v.clone(), *length))));
     let Ok(scan) = read(backend, folder, &known) else { return false };
     let is_new = |path: &str| new.contains(&key(path));
@@ -749,7 +751,7 @@ fn add_anime(backend: &Arc<Backend>, library: &str, folder: &str, rips: &HashMap
         let mut shows: Vec<Show> = backend.db.shows().unwrap_or_default().into_iter().filter(|s| here.contains(&s.id) && s.anilist_id.is_some()).collect();
         shows.sort_by(|a, b| natural_cmp(&a.folder, &b.folder));
         let base = shows.first().and_then(|s| s.anilist_id);
-        let Some(ids) = patiently(backend, library, || backend.add_as_read(&scan, base, &is_new)) else { return false };
+        let Some(ids) = patiently(backend, library, || backend.add_as_read(&scan, base, &is_new, |path: &str| passed_over.contains(&key(path)))) else { return false };
         added = ids.iter().flat_map(|id| backend.db.episodes(*id).unwrap_or_default()).map(|e| key(&e.path)).collect();
     }
     // What's new and wasn't added is looked at now, and not again. A video Telly can't read yet (still being

@@ -691,9 +691,7 @@ fn media_worker(backend: &Backend) {
                     let _ = backend.db.media_reset(episode.id);
                     wait_for_room(backend, &episode);
                 }
-                Err(e) => {
-                    let _ = backend.db.media_failed(episode.id, &format!("{e:#}"));
-                }
+                Err(e) => media_failed(backend, &show, &episode, &e),
             }
         }
     }
@@ -740,6 +738,18 @@ fn wait_for_room(backend: &Backend, episode: &Episode) {
     *backend.jobs.copies_wait.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
+/// Gives up on getting an episode's video ready, for `e`; unless its show's
+/// folder went while it was read (its drive unplugged): nothing's wrong with
+/// the episode then, and it waits, as the rest of the show does, until the
+/// folder is back.
+fn media_failed(backend: &Backend, show: &Show, episode: &Episode, e: &anyhow::Error) {
+    if Path::new(&show.folder).is_dir() {
+        let _ = backend.db.media_failed(episode.id, &format!("{e:#}"));
+    } else {
+        let _ = backend.db.media_reset(episode.id);
+    }
+}
+
 /// Reads what's in rips nobody has looked at yet, while `media_worker`
 /// converts. A rip that plays as it is is ready there and then; one that
 /// needs converting goes back, its plan known, for `media_worker`.
@@ -760,9 +770,7 @@ fn probe_worker(backend: &Backend) {
                     let _ = backend.db.media_reset(episode.id);
                     backend.jobs.poke();
                 }
-                Err(e) => {
-                    let _ = backend.db.media_failed(episode.id, &format!("{e:#}"));
-                }
+                Err(e) => media_failed(backend, &show, &episode, &e),
             }
         }
     }
@@ -2877,6 +2885,28 @@ mod tests {
         find_subtitles(&backend, &slot, nothing, nothing, &show, &eps[0], 2).unwrap();
         assert_eq!(backend.db.episode(eps[0].id).unwrap().unwrap().subs_state, "nokey");
         assert!(find_subtitles(&backend, &slot, nothing, nothing, &show, &eps[1], 2).is_err());
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_episode_whose_drive_goes_while_it_s_read_waits_for_the_drive() {
+        let dir = std::env::temp_dir().join(format!("telly-drive-gone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let add = |folder: std::path::PathBuf| {
+            let episodes = vec![crate::db::NewEpisode { number: 1, path: folder.join("Show - 01.mkv").to_string_lossy().into_owned(), size: 1, duration: 1400.0 }];
+            let id = backend.db.add_show(&crate::db::NewShow { folder: folder.to_string_lossy().into_owned(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+            (backend.db.show(id).unwrap().unwrap(), backend.db.episodes(id).unwrap().remove(0))
+        };
+        std::fs::create_dir_all(dir.join("Here")).unwrap();
+        let (here, away) = (add(dir.join("Here")), add(dir.join("Unplugged")));
+        let error = anyhow!("ffmpeg stopped: Input/output error");
+        media_failed(&backend, &here.0, &here.1, &error);
+        media_failed(&backend, &away.0, &away.1, &error);
+        let state = |id: i64| backend.db.episode(id).unwrap().unwrap().media_state;
+        // Its folder there, the rip itself is at fault; gone with its drive, the episode waits for it.
+        assert_eq!((state(here.1.id).as_str(), state(away.1.id).as_str()), ("failed", "pending"));
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

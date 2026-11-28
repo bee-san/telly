@@ -453,16 +453,25 @@ fn files_in(torrent: &[u8]) -> Result<Vec<String>> {
     Ok(info.iter_file_details().filter(|f| !f.attrs().padding).map(|f| f.filename.to_vec().join("/")).collect())
 }
 
-/// The files Telly's downloads write, and those of a download removed before it finished, as `key` writes their paths.
-fn own_files(backend: &Backend, session: &Session) -> HashSet<String> {
-    let mut own: HashSet<String> = session.with_torrents(|all| {
-        all.flat_map(|(_, handle)| {
+/// Each download in the client: its info hash, and its files as `key` writes their paths.
+fn downloads_files(session: &Session) -> Vec<(String, Vec<String>)> {
+    session.with_torrents(|all| {
+        all.map(|(_, handle)| {
             let folder = handle.output_folder().to_path_buf();
-            handle.with_metadata(|m| m.file_infos.iter().map(|f| key(&folder.join(&f.relative_filename).to_string_lossy())).collect::<Vec<_>>()).unwrap_or_default()
+            let files = handle.with_metadata(|m| m.file_infos.iter().map(|f| key(&folder.join(&f.relative_filename).to_string_lossy())).collect::<Vec<_>>()).unwrap_or_default();
+            (handle.info_hash().as_string(), files)
         })
         .collect()
-    });
-    own.extend(left(backend));
+    })
+}
+
+/// The files a release (its info hash `hash`) may be written over: its own,
+/// when it's being downloaded already (`downloads`, as `downloads_files` lists
+/// them), and those of a download removed before it finished (`left`). Another
+/// release's files are yours, finished or not, though Telly downloaded them.
+fn own_files(downloads: &[(String, Vec<String>)], hash: Option<&str>, left: Vec<String>) -> HashSet<String> {
+    let mut own: HashSet<String> = downloads.iter().filter(|(of, _)| Some(of.as_str()) == hash).flat_map(|(_, files)| files.iter().cloned()).collect();
+    own.extend(left);
     own
 }
 
@@ -609,7 +618,7 @@ pub fn add(backend: &Arc<Backend>, magnet: &str, torrent: &str, title: &str, sho
     let folder = to.folder.clone();
     let session = session(backend)?;
     // The client writes a release's files over any of the same name there: never over what's yours.
-    let own = own_files(backend, &session);
+    let own = own_files(&downloads_files(&session), magnet_hash(magnet).as_deref(), left(backend));
     if let Some(file) = files.as_deref().and_then(|files| over_a_file(&folder, files, &own)) {
         return Err(would_write_over(file, &folder));
     }
@@ -1037,6 +1046,12 @@ mod tests {
         // What a download of Telly's left half there is carried on with.
         let own: HashSet<String> = [key(&dir.join("[Judas] Show - S01E04.mkv").to_string_lossy())].into();
         assert_eq!(over_a_file(&folder, &files(&["[Judas] Show - S01E04.mkv"]), &own), None);
+        // The WEB release, finished and still in Processing, isn't written over by the BD one named alike: only by itself.
+        let web = vec![("aa".repeat(20), vec![key(&dir.join("[Judas] Show - S01E01.mkv").to_string_lossy())])];
+        let bd = own_files(&web, Some(&"bb".repeat(20)), Vec::new());
+        assert_eq!(over_a_file(&folder, &files(&["[Judas] Show - S01E01.mkv"]), &bd).map(String::as_str), Some("[Judas] Show - S01E01.mkv"));
+        let again = own_files(&web, Some(&"aa".repeat(20)), Vec::new());
+        assert_eq!(over_a_file(&folder, &files(&["[Judas] Show - S01E01.mkv"]), &again), None);
         let _ = std::fs::remove_dir_all(dir);
     }
 

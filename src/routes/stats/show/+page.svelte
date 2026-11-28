@@ -81,10 +81,11 @@
       card.movie ? "Movie" : count(card.episodes, "episode"),
       done.length > 1
         ? `Finished ${dayName(new Date(done[0]), true)} · Rewatched ${dayName(new Date(done[done.length - 1]), true)}`
-        : firstDay
+        : firstDay && !(done.length && new Date(done[0]) < firstDay)
           ? span(firstDay, done.length ? new Date(done[0]) : lastDay!)
           : done.length
-            ? `Finished ${dayName(new Date(done[0]), true)}`
+            ? // Finished before anything of it was logged (marked watched, or watched before the log): when it was.
+              `Finished ${dayName(new Date(done[0]), true)}`
             : "",
     ].filter(Boolean).join(" · ");
 

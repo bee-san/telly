@@ -268,7 +268,7 @@
       </div>
 
       <div class="parts scroll" role="list">
-        {#each parts as p, i (p.part.name)}
+        {#each parts as p, i (i)}
           {@const count = episodesIn(p)}
           <div class="part" class:off={!p.include} role="listitem">
             <input type="checkbox" bind:checked={p.include} aria-label="Add {p.part.name}" />

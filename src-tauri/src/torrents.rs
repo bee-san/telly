@@ -477,7 +477,17 @@ fn own_files(downloads: &[(String, Vec<String>)], hash: Option<&str>, left: Vec<
 
 /// The files of downloads removed before they finished, as `key` writes their paths: a release downloaded again carries on with them.
 fn left(backend: &Backend) -> Vec<String> {
-    backend.db.setting(LEFT).ok().flatten().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
+    let left: Vec<String> = backend.db.setting(LEFT).ok().flatten().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+    let yours = library_rips(backend);
+    left.into_iter().filter(|f| !yours.contains(f)).collect()
+}
+
+/// Every episode's rip in the library, as `key` writes their paths. None is a
+/// file a download left half there: a half-written episode isn't added, though
+/// a download removed while the client checked its files (as after a restart)
+/// counted them all as unfinished.
+fn library_rips(backend: &Backend) -> HashSet<String> {
+    backend.db.all_episodes().map(|all| all.iter().map(|e| key(&e.path)).collect()).unwrap_or_default()
 }
 
 const LEFT: &str = "downloads.left";
@@ -737,7 +747,8 @@ pub fn remove(backend: &Backend, id: usize) -> Result<()> {
     if let Some(handle) = session.get(id.into()) {
         let mut kept = left(backend);
         kept.extend(torrent_now(id, &handle).1);
-        kept.retain(|f| Path::new(f).symlink_metadata().is_ok());
+        let yours = library_rips(backend);
+        kept.retain(|f| Path::new(f).symlink_metadata().is_ok() && !yours.contains(f));
         kept.sort();
         kept.dedup();
         backend.db.set_setting(LEFT, &json!(kept))?;
@@ -1077,6 +1088,30 @@ mod tests {
         assert_eq!(over_a_file(&folder, &files(&["[Judas] Show - S01E01.mkv"]), &bd).map(String::as_str), Some("[Judas] Show - S01E01.mkv"));
         let again = own_files(&web, Some(&"aa".repeat(20)), Vec::new());
         assert_eq!(over_a_file(&folder, &files(&["[Judas] Show - S01E01.mkv"]), &again), None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_rip_in_your_library_is_never_a_file_a_removed_download_left() {
+        let dir = std::env::temp_dir().join(format!("telly-left-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Show")).unwrap();
+        let (finished, half) = (dir.join("Show").join("Show - 01.mkv"), dir.join("Show").join("Show - 02.mkv"));
+        std::fs::write(&finished, b"yours").unwrap();
+        std::fs::write(&half, b"half").unwrap();
+        let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let episodes = vec![crate::db::NewEpisode { number: 1, path: finished.to_string_lossy().into_owned(), size: 5, duration: 1400.0 }];
+        backend.db.add_show(&crate::db::NewShow { folder: dir.join("Show").to_string_lossy().into_owned(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        // A download removed while the client checked its files (as after a restart) counted them all as unfinished.
+        let (finished, half) = (key(&finished.to_string_lossy()), key(&half.to_string_lossy()));
+        backend.db.set_setting(LEFT, &json!([finished, half])).unwrap();
+        assert_eq!(left(&backend), vec![half.clone()]);
+        // So a release named alike isn't written over the episode you have.
+        let folder = dir.join("Show").to_string_lossy().into_owned();
+        let own = own_files(&[], Some(&"cc".repeat(20)), left(&backend));
+        assert_eq!(over_a_file(&folder, &["Show - 01.mkv".to_string()], &own).map(String::as_str), Some("Show - 01.mkv"));
+        assert_eq!(over_a_file(&folder, &["Show - 02.mkv".to_string()], &own), None);
+        drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }
 

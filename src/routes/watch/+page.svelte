@@ -714,6 +714,8 @@
   /** `last` is the tick sent on closing, for what was watched since the one before. */
   async function sendTick(last = false) {
     if (!view || !video || firstFrameFor !== view.episode.id || (closed && !last)) return;
+    // The next episode is loading (Next, an episode button): the one still shown was closed, and plays no more.
+    if (!last && view.episode.id !== epId) return;
     if (!last) suggestFilter();
     const batch = pendingLines.splice(0);
     try {

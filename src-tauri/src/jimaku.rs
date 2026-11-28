@@ -182,7 +182,11 @@ pub fn find_entries(key: &str, anilist_id: Option<i64>, tmdb_id: Option<&str>, t
 }
 
 pub fn files(key: &str, entry_id: i64) -> Result<Vec<RemoteFile>> {
-    let v = get_json(key, &format!("{}/entries/{entry_id}/files", api()))?;
+    files_at(&api(), key, entry_id)
+}
+
+fn files_at(api: &str, key: &str, entry_id: i64) -> Result<Vec<RemoteFile>> {
+    let v = get_json(key, &format!("{api}/entries/{entry_id}/files"))?;
     Ok(v.as_array()
         .into_iter()
         .flatten()
@@ -208,7 +212,16 @@ fn download(key: &str, url: &str, limit: u64) -> Result<Vec<u8>> {
         status @ (429 | 500..=599) => return Err(refused(status, retry_after(&response))),
         status => return Err(anyhow!("Jimaku answered {status} for {url}")),
     }
-    Ok(response.body_mut().with_config().limit(limit).read_to_vec()?)
+    response.body_mut().with_config().limit(limit).read_to_vec().map_err(|e| match e {
+        // The connection dropped part-way: as if Jimaku couldn't be reached.
+        ureq::Error::Io(_) | ureq::Error::Timeout(_) => unreachable(e),
+        e => e.into(),
+    })
+}
+
+/// Whether `e` says Jimaku can't answer now (`Later`), wherever it is in what's said.
+fn is_later(e: &anyhow::Error) -> bool {
+    e.chain().any(|cause| cause.downcast_ref::<Later>().is_some())
 }
 
 fn extension(name: &str) -> String {
@@ -235,14 +248,20 @@ fn episode_of(name: &str) -> Option<i64> {
 }
 
 /// Downloads (once) every subtitle file of an entry into `dir`, unpacking zips.
-/// Returns them all, with the episode each name gives.
+/// Returns them all, with the episode each name gives. When Jimaku can't
+/// answer part-way (`Later`), that's said, rather than the files had so far:
+/// they're kept, and the next try gets the rest.
 pub fn fetch_all(key: &str, entry_id: i64, dir: &Path) -> Result<Vec<Local>> {
+    fetch_all_at(&api(), key, entry_id, dir)
+}
+
+fn fetch_all_at(api: &str, key: &str, entry_id: i64, dir: &Path) -> Result<Vec<Local>> {
     std::fs::create_dir_all(dir)?;
     let mut out = Vec::new();
     // A file that can't be had (a broken zip, one that's really a RAR) is left
     // out, so the entry's other files are still used.
     let mut failed = None;
-    for file in files(key, entry_id)? {
+    for file in files_at(api, key, entry_id)? {
         let ext = extension(&file.name);
         if is_subtitle(&file.name) {
             let path = dir.join(safe_file_name(&file.name));
@@ -250,6 +269,7 @@ pub fn fetch_all(key: &str, entry_id: i64, dir: &Path) -> Result<Vec<Local>> {
                 match download(key, &file.url, 16 * 1024 * 1024) {
                     // Written whole or not at all: a half file would count as had for good.
                     Ok(bytes) => crate::util::write_whole(&path, bytes)?,
+                    Err(e) if is_later(&e) => return Err(e),
                     Err(e) => {
                         eprintln!("Jimaku: leaving out {}: {e:#}", file.name);
                         failed = Some(e);
@@ -264,6 +284,9 @@ pub fn fetch_all(key: &str, entry_id: i64, dir: &Path) -> Result<Vec<Local>> {
                 let unzipped = download(key, &file.url, MAX_ZIP)
                     .and_then(|bytes| unzip_subtitles(&bytes, &unpacked).with_context(|| format!("unpacking {}", file.name)));
                 if let Err(e) = unzipped {
+                    if is_later(&e) {
+                        return Err(e);
+                    }
                     eprintln!("Jimaku: leaving out {}: {e:#}", file.name);
                     failed = Some(e);
                     continue;
@@ -409,6 +432,38 @@ mod tests {
         // Still found under what another part of Telly says of it.
         let wrapped = refused(429, None).context("Finding subtitles for episode 3");
         assert!(wrapped.chain().any(|cause| cause.downcast_ref::<Later>().is_some()));
+    }
+
+    #[test]
+    fn an_entry_s_files_wait_for_a_jimaku_that_slows_down_part_way() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", server.server_addr().to_ip().unwrap());
+        let files = format!(r#"[{{"name":"Show - 01.srt","url":"{base}/f/1","size":10}},{{"name":"Show - 02.srt","url":"{base}/f/2","size":10}},{{"name":"Show - 03.srt","url":"{base}/f/3","size":10}}]"#);
+        std::thread::spawn(move || {
+            let mut slowed = false;
+            for request in server.incoming_requests() {
+                let response = match request.url() {
+                    "/api/entries/7/files" => tiny_http::Response::from_string(files.clone()),
+                    // The second file asks Telly to slow down, the first time it's asked for.
+                    "/f/2" if !slowed => {
+                        slowed = true;
+                        tiny_http::Response::from_string("").with_status_code(429)
+                    }
+                    url => tiny_http::Response::from_string(format!("1\n00:00:01,000 --> 00:00:02,000\n{url}\n")),
+                };
+                let _ = request.respond(response);
+            }
+        });
+        let dir = std::env::temp_dir().join(format!("telly-jimaku-later-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let api = format!("{base}/api");
+        // Not the first file alone, as if the entry had nothing more: Jimaku is asked again later.
+        assert!(is_later(&fetch_all_at(&api, "key", 7, &dir).unwrap_err()));
+        assert!(dir.join("Show - 01.srt").is_file());
+        // Asked again, it has them all.
+        let had: Vec<Option<i64>> = fetch_all_at(&api, "key", 7, &dir).unwrap().iter().map(|f| f.episode).collect();
+        assert_eq!(had, [Some(1), Some(2), Some(3)]);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

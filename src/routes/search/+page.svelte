@@ -30,6 +30,8 @@
   let asked = page.url.searchParams.get("line");
 
   const q = $derived(app.search.trim());
+  /** Whether the library is in: the search is made again once it is, and not each time it changes. */
+  const haveLib = $derived(lib !== null);
 
   onMount(() => {
     app.dark = false;
@@ -40,8 +42,9 @@
 
   $effect(() => {
     const text = q;
-    // Asked again once the library is in, on a first visit with nothing kept.
-    void lib;
+    // Asked again once the library is in, on a first visit with nothing kept (and not as it changes after,
+    // which would close the scene playing).
+    void haveLib;
     setWindowTitle(text ? `${text} — Telly` : "Search — Telly");
     if (!text) return;
     const timer = setTimeout(async () => {
@@ -74,7 +77,7 @@
 
   // The line the drop-down opened plays as soon as it's listed.
   $effect(() => {
-    if (!asked || !groups) return;
+    if (!asked || !groups || !lib) return;
     const at = allLines.findIndex((l) => `${l.episodeId}-${l.line}` === asked);
     asked = null;
     if (at >= 0) scene = { lines: allLines, at };

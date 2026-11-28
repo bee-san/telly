@@ -350,7 +350,7 @@ fn episode_set(found: &[(Release, bool)], query: &str, wanted: &Wanted) -> Optio
             *picked = release;
         }
     }
-    let best = sets
+    let sets = sets
         .into_iter()
         .filter_map(|((group, _, words), (singles, mut ranges))| {
             // The releases of a few episodes people share go first, the most episodes first, none
@@ -368,8 +368,12 @@ fn episode_set(found: &[(Release, bool)], query: &str, wanted: &Wanted) -> Optio
             }
             (by_number.len() >= 2).then_some((group, words, by_number))
         })
+        .collect::<Vec<_>>();
+    // Every episode out is as many as AniList says, else as far as any group has.
+    let last = wanted.out.or_else(|| sets.iter().filter_map(|(_, _, by_number)| by_number.keys().next_back().copied()).max()).unwrap_or(0);
+    let best = sets
+        .into_iter()
         .map(|(group, words, by_number)| {
-            let last = wanted.out.or_else(|| by_number.keys().next_back().copied()).unwrap_or(0);
             let missing: Vec<i64> = (1..=last).filter(|n| !by_number.contains_key(n)).collect();
             let extra = words.iter().take_while(|w| !w.ends_with('#')).filter(|w| !asked.contains(*w) && !season_word(w)).count();
             let episodes = by_number.len();
@@ -716,7 +720,7 @@ mod tests {
         // Asked for, the second season is.
         let second = Wanted { out: Some(3), offsets: vec![3], absolute: Some(3), season: 2, first: Some("Show".into()) };
         assert_eq!(picked(&found, "Show 2nd Season", &second), Some((vec![41, 42, 43], vec![], false)));
-        // Without AniList's count, the set that goes furthest without a gap.
+        // Without AniList's count, every episode is as far as any group goes: SubsPlease's 1080p has all three.
         assert_eq!(picked(&found, "Show", &Wanted::alone(None)), Some((vec![11, 12, 14], vec![], false)));
     }
 
@@ -797,6 +801,17 @@ mod tests {
         assert_eq!(wanted(&graph, 3, Some(13)), Wanted { out: Some(13), offsets: vec![12], absolute: Some(12), season: 2, first: Some("Show".into()) });
         // Part 2 counts on from Part 1 (13) or from the first episode (25); the film isn't counted.
         assert_eq!(wanted(&graph, 4, Some(5)), Wanted { out: Some(5), offsets: vec![13, 25], absolute: Some(25), season: 3, first: Some("Show".into()) });
+    }
+
+    #[test]
+    fn without_a_count_the_set_furthest_along_wins_over_a_shorter_one_with_no_gap() {
+        // One group has episodes 1 to 3; another 1 to 6 but 4. Nobody knows how many there are.
+        let found = [
+            (1, "[A] Show - 01 [1080p]", 50), (2, "[A] Show - 02 [1080p]", 50), (3, "[A] Show - 03 [1080p]", 50),
+            (11, "[B] Show - 01 [1080p]", 9), (12, "[B] Show - 02 [1080p]", 9), (13, "[B] Show - 03 [1080p]", 9),
+            (15, "[B] Show - 05 [1080p]", 9), (16, "[B] Show - 06 [1080p]", 9),
+        ];
+        assert_eq!(picked(&found, "Show", &Wanted::alone(None)), Some((vec![11, 12, 13, 15, 16], vec![4], false)));
     }
 
     #[test]

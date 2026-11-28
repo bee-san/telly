@@ -259,6 +259,14 @@ fn move_folders(backend: &Backend, from: &str, to: &str) -> Result<()> {
                     changed = true;
                 }
             }
+            // Two of its folders moved into one (D:\Anime into the E:\Anime it had too) are that one folder.
+            let mut folders: Vec<String> = Vec::new();
+            for f in l.folders.drain(..) {
+                if !folders.iter().any(|kept| below(kept, &f).is_some_and(|rest| rest.is_empty())) {
+                    folders.push(f);
+                }
+            }
+            l.folders = folders;
         }
         if changed {
             backend.db.set_setting("libraries", &serde_json::to_value(&libraries)?)?;
@@ -489,7 +497,8 @@ mod tests {
         assert_eq!(backend.db.show(a).unwrap().unwrap().folder, text(&dir.join("D").join("Anime").join("A")));
         // A library and the downloads folder in there go with them.
         let series = text(&dir.join("D").join("Anime").join("Series"));
-        let lib = crate::library::Library { name: "Series".into(), kind: "series".into(), folders: vec![series.clone()], downloads: series };
+        // It has the folder they're moving into too: after, it has that one once.
+        let lib = crate::library::Library { name: "Series".into(), kind: "series".into(), folders: vec![series.clone(), text(&dir.join("E").join("Anime").join("Series"))], downloads: series };
         backend.db.set_setting("libraries", &serde_json::json!([lib])).unwrap();
         backend.db.set_setting("downloads.folder", &serde_json::json!(text(&dir.join("D").join("Anime").join("New")))).unwrap();
         // So does a library's folder that was still to be read for shows; one elsewhere stays.
@@ -499,6 +508,7 @@ mod tests {
         assert_eq!(backend.db.setting("libraries.adding").unwrap(), Some(serde_json::json!([text(&dir.join("E").join("Anime").join("More")), elsewhere])));
         let moved = crate::library::libraries(&backend).unwrap();
         assert_eq!((moved[0].folders[0].as_str(), moved[0].downloads.as_str()), (text(&dir.join("E").join("Anime").join("Series")).as_str(), text(&dir.join("E").join("Anime").join("Series")).as_str()));
+        assert_eq!(moved[0].folders.len(), 1);
         assert_eq!(backend.db.setting_str("downloads.folder"), text(&dir.join("E").join("Anime").join("New")));
         assert_eq!(backend.db.show(a).unwrap().unwrap().folder, looked[0].to);
         assert_eq!(backend.db.episodes(b).unwrap()[0].path, text(&dir.join("E").join("Anime").join("B").join("Show - 01.mkv")));

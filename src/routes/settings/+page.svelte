@@ -819,7 +819,7 @@
                 <div class="row top">
                   <span class="what">
                     <span><b>{l.name}</b> <span class="muted">{l.kind === "movies" ? "Movies" : "Series"} · {plural(l.shows, "show")}{#if l.adding} · Looking for new shows…{/if}</span></span>
-                    {#each l.folders as folder (folder)}
+                    {#each l.folders as folder, f (f)}
                       <span class="path"><span class="mono">{folder}</span>{#if l.folders.length > 1 && folder === l.downloads} <span class="muted">Downloads go here</span>{/if}</span>
                     {/each}
                   </span>

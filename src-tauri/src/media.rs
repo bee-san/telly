@@ -421,8 +421,14 @@ pub fn swap_audio_args(probe: &Probe, video: &Path, rip: &Path, audio: usize, ou
     args
 }
 
+/// How long ffmpeg may go without getting any further through the video
+/// before it's taken for hung (a graphics card's encoder that stopped, a share
+/// that stopped answering) and stopped: far longer than any frame takes.
+const STALLED: Duration = Duration::from_secs(600);
+
 /// Runs ffmpeg with `args`, reporting progress through the file (0 to 1)
-/// from its -progress output. Stops it when `cancel` is set.
+/// from its -progress output. Stops it when `cancel` is set, or when it gets
+/// no further for 10 minutes.
 pub fn run_ffmpeg(
     ffmpeg: &Path,
     args: &[String],
@@ -430,6 +436,10 @@ pub fn run_ffmpeg(
     cancel: &AtomicBool,
     progress: &dyn Fn(f64),
 ) -> Result<()> {
+    run_ffmpeg_within(ffmpeg, args, duration, cancel, progress, STALLED)
+}
+
+fn run_ffmpeg_within(ffmpeg: &Path, args: &[String], duration: f64, cancel: &AtomicBool, progress: &dyn Fn(f64), stalled: Duration) -> Result<()> {
     let mut child = command(ffmpeg)
         .args(args)
         .stdin(Stdio::null())
@@ -456,6 +466,8 @@ pub fn run_ffmpeg(
             }
         }
     });
+    // How far through the video it is, and when it last got further.
+    let (mut furthest, mut moved) = (f64::MIN, std::time::Instant::now());
     let status = loop {
         if cancel.load(Ordering::SeqCst) {
             let _ = child.kill();
@@ -464,12 +476,21 @@ pub fn run_ffmpeg(
             return Err(anyhow!("cancelled"));
         }
         while let Ok(t) = rx.try_recv() {
+            if t > furthest {
+                (furthest, moved) = (t, std::time::Instant::now());
+            }
             if duration > 0.0 {
                 progress((t / duration).clamp(0.0, 1.0));
             }
         }
         if let Some(status) = child.try_wait()? {
             break status;
+        }
+        if moved.elapsed() > stalled {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = reader.join();
+            return Err(anyhow!("ffmpeg got no further for {} minutes, and was stopped", stalled.as_secs() / 60));
         }
         std::thread::sleep(Duration::from_millis(250));
     };
@@ -852,6 +873,23 @@ pub fn read_subtitle_track(ffmpeg: &Path, path: &Path, stream_index: i64, format
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An ffmpeg that gets a second in and then hangs, as a graphics card's encoder that stopped does.
+    #[cfg(unix)]
+    #[test]
+    fn an_ffmpeg_that_gets_no_further_is_stopped() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("telly-stalled-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let hung = dir.join("ffmpeg");
+        std::fs::write(&hung, "#!/bin/sh\necho out_time_us=1000000\nexec sleep 60\n").unwrap();
+        std::fs::set_permissions(&hung, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let started = std::time::Instant::now();
+        let stopped = run_ffmpeg_within(&hung, &[], 1400.0, &AtomicBool::new(false), &|_| {}, Duration::from_secs(2));
+        assert!(format!("{:#}", stopped.unwrap_err()).contains("got no further"));
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let _ = std::fs::remove_dir_all(dir);
+    }
     use serde_json::json;
 
     fn dvd() -> Value {

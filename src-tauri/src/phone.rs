@@ -500,13 +500,24 @@ fn make(backend: &Backend, body: &Value) -> Result<Value> {
     Ok(json!({}))
 }
 
+/// Whether the phone's copy of an episode can be made now: the PC has got it
+/// ready, or couldn't (its rip may still play on the phone, and if not the
+/// phone is told why), or it's no longer in Telly (which the phone is told).
+fn can_make(backend: &Backend, id: i64) -> bool {
+    match backend.db.episode(id) {
+        Ok(Some(e)) => e.media_state == "ready" || e.media_state == "failed",
+        Ok(None) => true,
+        Err(_) => false,
+    }
+}
+
 fn copy_worker(backend: &Backend) {
     loop {
         let (id, plays) = {
             let mut waiting = lock(&backend.phone.waiting);
             loop {
                 // An episode not ready yet waits its turn behind those that are.
-                let ready = waiting.iter().position(|(id, _)| backend.db.episode(*id).ok().flatten().is_some_and(|e| e.media_state == "ready"));
+                let ready = waiting.iter().position(|(id, _)| can_make(backend, *id));
                 if let Some(i) = ready {
                     break waiting.remove(i).expect("there");
                 }
@@ -535,7 +546,9 @@ fn make_copy(backend: &Backend, id: i64, plays: &Plays, progress: &dyn Fn(f64)) 
     let ffprobe = tools.ffprobe.clone().ok_or_else(|| anyhow!("Telly on the PC needs ffprobe for this"))?;
     let input = PathBuf::from(if episode.play_path.is_empty() { &episode.path } else { &episode.play_path });
     let probe = media::probe(&ffprobe, &input)?;
-    let audio = (episode.audio_index.max(0) as usize).min(probe.audio.len().saturating_sub(1));
+    // A ready episode's track is the one it plays; one the PC couldn't get ready has its rip's Japanese track, as converting it would.
+    let audio = if episode.media_state == "ready" { episode.audio_index.max(0) as usize } else { jobs::playing_track(&episode, &probe) };
+    let audio = audio.min(probe.audio.len().saturating_sub(1));
     let plan = phone_plan(&probe, &input, audio, plays);
     if plan == PhonePlan::AsIs {
         return Ok((input, plan));
@@ -1118,6 +1131,25 @@ mod tests {
         // A phone that said nothing plays H.264 alone.
         assert_eq!(phone_plan(&probe("hevc", "yuv420p10le", &["aac"]), mkv, 0, &Plays::default()), PhonePlan::Video);
         assert_eq!(phone_plan(&probe("h264", "yuv420p", &["aac"]), mp4, 0, &Plays::default()), PhonePlan::AsIs);
+    }
+
+    #[test]
+    fn the_phone_isnt_kept_waiting_for_an_episode_the_pc_couldnt_get_ready() {
+        let (pc, dir) = library("can-make");
+        let episodes = (1..=3).map(|n| NewEpisode { number: n, path: format!("/rips/{n}.mkv"), size: 10, duration: 1400.0 }).collect();
+        let show = pc.db.add_show(&NewShow { folder: "/rips".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let ids: Vec<i64> = pc.db.episodes(show).unwrap().iter().map(|e| e.id).collect();
+        // Still being got ready: its copy waits.
+        assert!(!can_make(&pc, ids[0]));
+        pc.db.media_ready(ids[0], "/rips/1.mkv", 0, 0).unwrap();
+        assert!(can_make(&pc, ids[0]));
+        // One the PC couldn't convert is made from its rip, which the phone may play.
+        pc.db.media_failed(ids[1], "ffmpeg stopped").unwrap();
+        assert!(can_make(&pc, ids[1]));
+        // One no longer in Telly isn't waited for either.
+        assert!(can_make(&pc, ids[2] + 100));
+        drop(pc);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -4,7 +4,7 @@
   // could download; Enter opens the page of every result (routes/search).
   import { afterNavigate, goto } from "$app/navigation";
   import { page } from "$app/state";
-  import { callKept, errorText, kept, mediaUrl, type FoundLine, type Library, type LineSearch, type Pick, type ShowCard } from "./api";
+  import { callKept, downloadsOn, errorText, kept, mediaUrl, type FoundLine, type Library, type LineSearch, type Pick, type Settings, type ShowCard } from "./api";
   import Cover from "./Cover.svelte";
   import Icon from "./Icon.svelte";
   import { clock, plural, statusOf } from "./format";
@@ -29,6 +29,14 @@
   let shows = $state.raw<{ for: string; list: ShowCard[] } | null>(null);
   let lines = $state.raw<{ for: string; found: LineSearch; all: ShowCard[] } | null>(null);
   let anilist = $state.raw<{ for: string; picks: Pick[]; error: string } | null>(null);
+  /** Your settings, for whether downloading is on. */
+  let settings = $state.raw<Settings | null>(kept<Settings>("settings"));
+
+  $effect(() => {
+    if (open) callKept<Settings>("settings").then((s) => (settings = s)).catch(() => {});
+  });
+  /** Whether an anime found on AniList can be downloaded from here: it's out, and downloading is on (a search site is set). */
+  const gettable = (p: Pick) => !p.unreleased && downloadsOn(settings);
 
   $effect(() => {
     const text = q;
@@ -74,7 +82,7 @@
     const list: Option[] = [];
     for (const s of (named ?? []).slice(0, 4)) list.push({ id: `s${s.id}`, go: () => goto(`/show?id=${s.id}`) });
     for (const { line } of someLines) list.push({ id: `l${line.episodeId}-${line.line}`, go: () => openLine(line) });
-    for (const p of (picks?.picks ?? []).slice(0, 3)) list.push({ id: `p${p.id}`, go: () => goto(downloadLink(p)) });
+    for (const p of (picks?.picks ?? []).slice(0, 3)) if (gettable(p)) list.push({ id: `p${p.id}`, go: () => goto(downloadLink(p)) });
     list.push({ id: "all", go: showAll });
     return list;
   });
@@ -221,13 +229,13 @@
         {:else}
           {#each picks.picks.slice(0, 3) as p (p.id)}
             {@const id = `p${p.id}`}
-            <div class="sb-row show" id="sb-{id}" role="option" tabindex="-1" aria-selected={options[active]?.id === id} onpointerdown={(e) => e.preventDefault()} onclick={() => options[indexOf(id)].go()} onkeydown={() => {}}>
+            <div class="sb-row show" id="sb-{id}" role="option" tabindex="-1" aria-selected={options[active]?.id === id} onpointerdown={(e) => e.preventDefault()} onclick={() => options[indexOf(id)]?.go()} onkeydown={() => {}}>
               <span class="sb-cv"><Cover cover={p.cover} color={p.color} native={p.native} title={p.title} /></span>
               <span class="sb-text">
                 <span class="sb-jp" lang={p.native ? "ja" : undefined}>{p.native || p.title}</span>
                 <span class="sb-meta">{p.native ? `${p.title} · ` : ""}{pickMeta(p)}</span>
               </span>
-              <span class="sb-tag">{p.unreleased ? "Not out yet" : "Download…"}</span>
+              {#if p.unreleased}<span class="sb-tag">Not out yet</span>{:else if gettable(p)}<span class="sb-tag">Download…</span>{/if}
             </div>
           {/each}
         {/if}

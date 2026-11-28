@@ -677,7 +677,11 @@ pub fn prepare(backend: &Backend, episode_id: i64) {
             let share = share_of(&lines, uses, &cast, &known::words(backend).known);
             let _ = backend.db.set_word_score(episode_id, share.uses as i64, share.known as i64, &known::stamp(backend));
         }
-        Err(e) => eprintln!("premining words for episode {episode_id} not saved: {e}"),
+        Err(e) => {
+            // The share kept is the old subtitles': let go, it's worked out again once Hachidori can be asked.
+            let _ = backend.db.forget_word_score(episode_id);
+            eprintln!("premining words for episode {episode_id} not saved: {e}");
+        }
     }
 }
 
@@ -1416,6 +1420,28 @@ mod tests {
         assert_eq!(scored(), ids.len());
         // 腹 and 減る: が and た aren't words.
         assert!(shares(&backend).0.values().all(|s| s.uses == 2), "{:?}", shares(&backend).0);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn new_subtitles_while_hachidori_can_t_be_asked_don_t_keep_the_old_share() {
+        let dir = std::env::temp_dir().join(format!("telly-share-stale-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Arc::new(Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap());
+        std::fs::create_dir_all(dir.join("dictionaries")).unwrap();
+        backend.db.set_setting(own_hachidori::FOLDER, &json!(dir.join("dictionaries").to_string_lossy())).unwrap();
+        let episodes = vec![crate::db::NewEpisode { number: 1, path: "1.mkv".into(), size: 1, duration: 1400.0 }];
+        let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let id = backend.db.episodes(show).unwrap()[0].id;
+        // The old file's share, as of the known words now.
+        backend.db.set_word_score(id, 10, 5, &known::stamp(&backend)).unwrap();
+        // Another file is chosen while Telly's Hachidori isn't running yet: its words can't be worked out.
+        let line = Line { start: 0.0, end: 1.0, text: "腹が減った".into(), ruby: vec![], speaker: String::new(), sign: false };
+        jobs::write_lines(&backend, id, &[line]).unwrap();
+        prepare(&backend, id);
+        // The old share doesn't stand for the new file's, so the shares' pass works it out.
+        assert!(!backend.db.word_scores().unwrap().contains_key(&id));
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

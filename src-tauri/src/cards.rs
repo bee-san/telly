@@ -248,11 +248,21 @@ fn take_notes(backend: &Backend, ids: &[i64]) -> Result<()> {
             continue;
         }
         let sentence = anki::plain_text(&note.field(&f.sentence).unwrap_or_default());
-        let line = match_line(&lines, &sentence, now.position)
-            .or_else(|| lines.iter().filter(|l| !l.sign && l.start <= now.position + 0.5).next_back())
-            .cloned();
-        let Some(line) = line else {
-            backend.push_event("failed", "Card not finished", "This episode has no subtitle lines to cut a clip from.", note.id, 0);
+        // A note with no sentence takes the line playing. One whose sentence is
+        // none of the episode's lines was made somewhere else (a browser's
+        // Yomitan), and isn't given this episode's picture and audio.
+        let line = if squash(&sentence).is_empty() {
+            lines.iter().filter(|l| !l.sign && l.start <= now.position + 0.5).next_back()
+        } else {
+            match_line(&lines, &sentence, now.position)
+        };
+        let Some(line) = line.cloned() else {
+            let why = if lines.is_empty() {
+                "This episode has no subtitle lines to cut a clip from.".to_string()
+            } else {
+                format!("Its sentence isn’t one of this episode’s lines, so Telly left it as it is: {}", sentence.trim())
+            };
+            backend.push_event("failed", "Card not finished", &why, note.id, 0);
             continue;
         };
         let (start, end) = clip_bounds(&lines, &line, &padding);
@@ -417,6 +427,37 @@ mod tests {
 
     fn line(start: f64, text: &str) -> Line {
         Line { start, end: start + 2.0, text: text.into(), ruby: vec![], speaker: String::new(), sign: false }
+    }
+
+    #[test]
+    fn a_note_whose_sentence_isn_t_in_the_episode_is_left_as_it_is() {
+        use serde_json::json;
+        let dir = std::env::temp_dir().join(format!("telly-notes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = std::sync::Arc::new(Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap());
+        let episodes = vec![crate::db::NewEpisode { number: 1, path: "1.mkv".into(), size: 1, duration: 1400.0 }];
+        let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let episode = backend.db.episodes(show).unwrap().remove(0);
+        jobs::write_lines(&backend, episode.id, &[line(10.0, "おはよう。"), line(20.0, "元気？")]).unwrap();
+        backend.call("tick", json!({ "id": episode.id, "position": 21.0, "playing": true })).unwrap();
+        // Anki has three notes without pictures: one mined from the line, one made in a browser, one with no sentence.
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        backend.db.set_setting("anki.url", &json!(format!("http://{}", server.server_addr().to_ip().unwrap()))).unwrap();
+        std::thread::spawn(move || {
+            for mut request in server.incoming_requests() {
+                let mut body = String::new();
+                let _ = std::io::Read::read_to_string(request.as_reader(), &mut body);
+                let note = |id: i64, sentence: &str| json!({ "noteId": id, "modelName": "Kiku", "fields": { "Sentence": { "value": sentence }, "Picture": { "value": "" }, "SentenceAudio": { "value": "" } } });
+                let notes = json!([note(1, "元気？"), note(2, "この記事は猫の飼い方について書かれています。"), note(3, "")]);
+                let _ = request.respond(tiny_http::Response::from_string(json!({ "result": notes, "error": null }).to_string()));
+            }
+        });
+        take_notes(&backend, &[1, 2, 3]).unwrap();
+        let finished = |id: i64| backend.db.has_mine_job_for(id).unwrap();
+        // The one with no sentence takes the line playing.
+        assert_eq!((finished(1), finished(2), finished(3)), (true, false, true));
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

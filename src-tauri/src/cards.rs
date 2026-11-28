@@ -118,7 +118,9 @@ fn dice(a: &str, b: &str) -> f64 {
 }
 
 /// The line a card's sentence came from: among lines near `position`, the
-/// exact one nearest the playhead, else the most alike.
+/// exact one nearest the playhead; else the exact one anywhere, nearest first
+/// (one looked up in the transcript or Explain, far from where the episode
+/// is); else the most alike near the playhead.
 pub fn match_line<'a>(lines: &'a [Line], sentence: &str, position: f64) -> Option<&'a Line> {
     let target = squash(sentence);
     if target.is_empty() {
@@ -128,6 +130,10 @@ pub fn match_line<'a>(lines: &'a [Line], sentence: &str, position: f64) -> Optio
     let distance = |l: &&Line| ((l.start + l.end) / 2.0 - position).abs();
     let equal = near.iter().filter(|l| squash(&l.text) == target).min_by(|a, b| distance(a).total_cmp(&distance(b)));
     if let Some(l) = equal {
+        return Some(l);
+    }
+    let anywhere = lines.iter().filter(|l| !l.sign && squash(&l.text) == target).min_by(|a, b| distance(a).total_cmp(&distance(b)));
+    if let Some(l) = anywhere {
         return Some(l);
     }
     // Loosely: a line that holds the whole sentence (Hachidori trimmed it)
@@ -414,6 +420,8 @@ mod tests {
         let loose = match_line(&lines, "明日の試験絶対合格してみせる", 745.0).unwrap();
         assert_eq!(loose.start, 731.0);
         assert!(match_line(&lines, "全然違う文", 745.0).is_none());
+        // Said far from the playhead (a transcript line minutes back): that line, not the one playing.
+        assert_eq!(match_line(&lines, "明日の試験、絶対に合格してみせる。", 1400.0).unwrap().start, 1000.0);
     }
 
     #[test]

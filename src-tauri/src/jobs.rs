@@ -982,6 +982,18 @@ fn tidy(moved: &Path) {
     }
 }
 
+/// Whether an episode plays from a copy of Telly's: a file named as Telly names
+/// its copy of the episode (`copy_path`), in this copies folder or one before.
+/// A play path left on a rip (a relink while the episode was got ready) is a
+/// rip of yours, and never moved.
+fn plays_a_copy(episode: &Episode) -> bool {
+    let path = Path::new(&episode.play_path);
+    let (id, show) = (episode.id.to_string(), episode.show_id.to_string());
+    episode.play_path != episode.path
+        && path.file_stem() == Some(std::ffi::OsStr::new(&id))
+        && path.parent().and_then(Path::file_name) == Some(std::ffi::OsStr::new(&show))
+}
+
 /// Moves Telly's copies of episodes, and every episode's seek-bar pictures,
 /// from the copies folder `before` into the one Settings just chose, in the
 /// background. A file on another drive is copied across, then deleted where
@@ -999,7 +1011,7 @@ pub fn move_copies(backend: Arc<Backend>, before: PathBuf) {
                 tidy(&from);
             }
         }
-        let copies: Vec<Episode> = backend.db.all_episodes().unwrap_or_default().into_iter().filter(|e| !e.play_path.is_empty() && e.play_path != e.path).collect();
+        let copies: Vec<Episode> = backend.db.all_episodes().unwrap_or_default().into_iter().filter(plays_a_copy).collect();
         let task = |progress: f64| {
             let label = "Moving Telly’s copies of episodes".to_string();
             set_task(&backend.jobs.download, Some(Task { show_id: 0, episode_id: 0, number: 0, title: "Telly".into(), label, progress }))
@@ -2806,6 +2818,44 @@ mod tests {
         let _ = std::fs::remove_file(timing_path(&backend, episode.id));
         keep_timing(&backend, &episode, &timing(sync::Calibration::NOISY));
         assert!(kept_timing(&backend, &episode).is_none());
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn choosing_another_copies_folder_moves_only_telly_s_copies() {
+        let dir = std::env::temp_dir().join(format!("telly-move-copies-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (old, new) = (dir.join("Old").join("Show"), dir.join("New").join("Show"));
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        for rip in [old.join("2.mkv"), new.join("1.mkv"), new.join("2.mkv")] {
+            std::fs::write(rip, b"rip").unwrap();
+        }
+        let backend = Arc::new(Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap());
+        let text = |p: &Path| p.to_string_lossy().into_owned();
+        let episodes = (1..=2).map(|n| crate::db::NewEpisode { number: n, path: text(&new.join(format!("{n}.mkv"))), size: 3, duration: 1400.0 }).collect();
+        let show = backend.db.add_show(&crate::db::NewShow { folder: text(&new), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let eps = backend.db.episodes(show).unwrap();
+        // Episode 1 has a copy of Telly's.
+        let copy = copy_path(&backend, show, eps[0].id);
+        std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
+        std::fs::write(&copy, b"copy").unwrap();
+        backend.db.media_ready(eps[0].id, &text(&copy), 0, 0).unwrap();
+        // Episode 2 plays straight from its rip, but was got ready from where the rip was before a
+        // relink (the library copied to a new drive, so the old rip is still there).
+        backend.db.media_ready(eps[1].id, &text(&old.join("2.mkv")), 0, 0).unwrap();
+        backend.call("setMediaFolder", serde_json::json!({ "folder": text(&dir.join("Copies")) })).unwrap();
+        let waited = std::time::Instant::now();
+        while !backend.call("events", serde_json::json!({})).unwrap().as_array().unwrap().iter().any(|e| e["title"].as_str().is_some_and(|t| t.contains("opies"))) {
+            assert!(waited.elapsed() < Duration::from_secs(10), "the copies never finished moving");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // The copy moved; the rip didn't.
+        let moved = copy_path(&backend, show, eps[0].id);
+        assert!(moved.is_file() && !copy.exists());
+        assert_eq!(backend.db.episode(eps[0].id).unwrap().unwrap().play_path, text(&moved));
+        assert!(old.join("2.mkv").is_file());
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

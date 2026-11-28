@@ -733,7 +733,9 @@
   }
 
   function handleEvent(ev: CardEvent) {
-    lastEvent = Math.max(lastEvent, ev.id);
+    // A tick sent before the last one came back hears the same events: each is taken once.
+    if (ev.id <= lastEvent) return;
+    lastEvent = ev.id;
     if (ev.state === "done") sat.cards += 1;
     cardToast(ev);
   }

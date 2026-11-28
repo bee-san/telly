@@ -47,7 +47,9 @@
 //! set), downloads.adapter (the connection's name; empty for any),
 //! downloads.keepFree (GB; 1 unless set), downloads.used (Telly has downloaded something, so it starts the client
 //! when it opens), downloads.unfinished (the info hashes of the downloads
-//! that weren't finished at the last look) and downloads.entries (the AniList
+//! that weren't finished at the last look), downloads.finished (those that
+//! were: the client says one it stopped on an error since isn't, though it
+//! is) and downloads.entries (the AniList
 //! entry of each new show's download, by its folder, until it's added) and
 //! downloads.left (the files of downloads removed before they finished).
 //!
@@ -138,6 +140,9 @@ pub struct Torrent {
     /// How many of its files are finished, and how many it has.
     pub files_done: usize,
     pub files: usize,
+    /// Finished, though it may have stopped on an error since (seeding, its drive unplugged).
+    #[serde(skip)]
+    pub finished: bool,
 }
 
 /// A folder of finished downloads that isn't a show in the library yet.
@@ -492,6 +497,14 @@ fn library_rips(backend: &Backend) -> HashSet<String> {
 
 const LEFT: &str = "downloads.left";
 
+/// The info hashes of the downloads finished at the last look.
+const FINISHED: &str = "downloads.finished";
+
+/// The downloads finished at the last look, by their info hashes.
+fn seen_finished(backend: &Backend) -> HashSet<String> {
+    serde_json::from_value(backend.db.setting(FINISHED).ok().flatten().unwrap_or_default()).unwrap_or_default()
+}
+
 /// The first of a release's `files` that's in `folder` already and isn't a
 /// download's `own`: a rip, an extra or a subtitle file of yours, which the
 /// client would write the release's file over.
@@ -746,7 +759,7 @@ pub fn remove(backend: &Backend, id: usize) -> Result<()> {
     // What it leaves half there is still a download's: the release downloaded again carries on with it.
     if let Some(handle) = session.get(id.into()) {
         let mut kept = left(backend);
-        kept.extend(torrent_now(id, &handle).1);
+        kept.extend(torrent_now(id, &handle, seen_finished(backend).contains(&handle.info_hash().as_string())).1);
         let yours = library_rips(backend);
         kept.retain(|f| Path::new(f).symlink_metadata().is_ok() && !yours.contains(f));
         kept.sort();
@@ -763,7 +776,8 @@ pub fn remove(backend: &Backend, id: usize) -> Result<()> {
 }
 
 /// One download as it is now, and its files that aren't finished.
-fn torrent_now(id: usize, handle: &ManagedTorrent) -> (Torrent, Vec<String>) {
+/// `had_finished`: the download was finished at a look before this one.
+fn torrent_now(id: usize, handle: &ManagedTorrent, had_finished: bool) -> (Torrent, Vec<String>) {
     let stats = handle.stats();
     let folder = handle.output_folder().to_string_lossy().into_owned();
     let files: Vec<(PathBuf, u64, bool)> = handle
@@ -772,11 +786,14 @@ fn torrent_now(id: usize, handle: &ManagedTorrent) -> (Torrent, Vec<String>) {
     let real: Vec<(usize, &(PathBuf, u64, bool))> = files.iter().enumerate().filter(|(_, f)| !f.2).collect();
     let checking = matches!(stats.state, TorrentStatsState::Initializing { .. });
     let have = |i: usize| stats.file_progress.get(i).copied();
-    let finished_file = |i: usize, len: u64| stats.finished || have(i).is_some_and(|h| h >= len);
+    // The client says a download it stopped on an error isn't finished, finished or not.
+    let error = matches!(stats.state, TorrentStatsState::Error);
+    let finished = stats.finished || (error && had_finished);
+    let finished_file = |i: usize, len: u64| finished || have(i).is_some_and(|h| h >= len);
     // While it checks what's on disk, none of its files counts as finished; nor
     // while it's stopped on an error (the client then says nothing of each file),
     // unless it had finished: a half-written episode isn't added.
-    let stopped = matches!(stats.state, TorrentStatsState::Error) && !stats.finished;
+    let stopped = error && !finished;
     let unfinished: Vec<String> = real
         .iter()
         .filter(|(i, f)| checking || stopped || !finished_file(*i, f.1))
@@ -809,6 +826,7 @@ fn torrent_now(id: usize, handle: &ManagedTorrent) -> (Torrent, Vec<String>) {
         show: None,
         files_done,
         files: real.len(),
+        finished,
     };
     (torrent, unfinished)
 }
@@ -859,9 +877,10 @@ pub fn look(backend: &Arc<Backend>) -> Result<()> {
     }
     let shows = backend.db.shows()?;
     let mut unfinished = HashSet::new();
+    let had_finished = seen_finished(backend);
     let mut torrents: Vec<Torrent> = session.with_torrents(|all| {
         all.map(|(id, handle)| {
-            let (torrent, files) = torrent_now(id, handle);
+            let (torrent, files) = torrent_now(id, handle, had_finished.contains(&handle.info_hash().as_string()));
             (torrent, files)
         })
         .collect::<Vec<_>>()
@@ -893,6 +912,7 @@ pub fn look(backend: &Arc<Backend>) -> Result<()> {
             show: None,
             files_done: 0,
             files: 0,
+            finished: false,
         })
         .collect();
     torrents.splice(0..0, found);
@@ -910,7 +930,7 @@ pub fn look(backend: &Arc<Backend>) -> Result<()> {
             // A new show that wasn't added when Telly closed is tried again as it opens.
             if t.files_done > before || (!seen.looked && t.files_done > 0) {
                 if let Some((folder, entry)) = waiting.iter().find(|(f, _)| key(f) == key(&t.folder)) {
-                    new_shows.push((folder.clone(), *entry, t.state == "done"));
+                    new_shows.push((folder.clone(), *entry, t.finished));
                 }
             }
             if seen.looked && t.files_done > before {
@@ -920,10 +940,16 @@ pub fn look(backend: &Arc<Backend>) -> Result<()> {
             }
         }
         seen.done = torrents.iter().map(|t| (t.hash.clone(), t.files_done)).collect();
-        let going: Vec<&str> = torrents.iter().filter(|t| t.id.is_some() && t.state != "done").map(|t| t.hash.as_str()).collect();
-        let before: Vec<&str> = seen.torrents.iter().filter(|t| t.id.is_some() && t.state != "done").map(|t| t.hash.as_str()).collect();
+        let going: Vec<&str> = torrents.iter().filter(|t| t.id.is_some() && !t.finished).map(|t| t.hash.as_str()).collect();
+        let before: Vec<&str> = seen.torrents.iter().filter(|t| t.id.is_some() && !t.finished).map(|t| t.hash.as_str()).collect();
         if going != before || !seen.looked {
             backend.db.set_setting("downloads.unfinished", &json!(going))?;
+        }
+        // One checking its files as Telly opens was finished as it closed, and still is, though the client can't say yet.
+        let finished: HashSet<String> =
+            torrents.iter().filter(|t| t.id.is_some() && (t.finished || (t.state == "checking" && had_finished.contains(&t.hash)))).map(|t| t.hash.clone()).collect();
+        if finished != had_finished {
+            backend.db.set_setting(FINISHED, &json!(finished))?;
         }
         seen.torrents = torrents;
         seen.unfinished = unfinished;
@@ -984,7 +1010,7 @@ pub fn start(backend: Arc<Backend>) {
 /// folder is the downloader's to add from (`look`), not a library's.
 pub fn going_in(backend: &Backend, folder: &str) -> bool {
     let overlaps = |other: &str| inside(other, folder) || inside(folder, other);
-    let downloading = backend.downloads.seen.lock().is_ok_and(|seen| seen.torrents.iter().any(|t| t.state != "done" && overlaps(&t.folder)));
+    let downloading = backend.downloads.seen.lock().is_ok_and(|seen| seen.torrents.iter().any(|t| !t.finished && overlaps(&t.folder)));
     downloading || entries(backend).iter().any(|(waiting, _)| overlaps(waiting))
 }
 
@@ -1000,7 +1026,7 @@ pub fn offers(backend: &Backend) -> Vec<Offer> {
     let adds_itself = |t: &Torrent| waiting.iter().any(|(f, _)| key(f) == key(&t.folder));
     let mut offers: Vec<Offer> = Vec::new();
     for t in seen.torrents.iter().filter(|t| t.files_done > 0 && !adds_itself(t) && !shows.iter().any(|s| inside(&t.folder, &s.folder))) {
-        let downloading = t.state != "done";
+        let downloading = !t.finished;
         match offers.iter_mut().find(|o| key(&o.folder) == key(&t.folder)) {
             Some(o) => o.downloading |= downloading,
             None => offers.push(Offer {

@@ -28,9 +28,24 @@ function esc(s: string): string {
   return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c] as string);
 }
 
-/** The word with its reading as Anki's furigana writes it: 学校[がっこう]. */
-function furigana(expression: string, reading: string): string {
-  return reading && reading !== expression && /[㐀-鿿々]/.test(expression) ? `${expression}[${reading}]` : expression;
+/** Katakana as hiragana, for telling whether a word's kana and its reading's are the same. */
+const hiragana = (text: string) => text.replace(/[ァ-ヶ]/g, (k) => String.fromCharCode(k.charCodeAt(0) - 0x60));
+
+/** The word with its reading as Anki's furigana writes it, over its kanji and not the kana it starts and
+ *  ends with, as Hachidori's cards have it: 学校[がっこう], 食[た]べる, お 茶[ちゃ]. */
+export function furigana(expression: string, reading: string): string {
+  if (!reading || reading === expression || !/[㐀-鿿々]/.test(expression)) return expression;
+  const [word, said] = [[...expression], [...reading]];
+  const kana = (c: string) => /[ぁ-ゖァ-ヺー]/.test(c);
+  const same = (a: string, b: string) => kana(a) && hiragana(a) === hiragana(b);
+  let tail = 0;
+  while (tail < word.length - 1 && tail < said.length - 1 && same(word[word.length - 1 - tail], said[said.length - 1 - tail])) tail++;
+  let head = 0;
+  while (head < word.length - tail - 1 && head < said.length - tail - 1 && same(word[head], said[head])) head++;
+  const before = word.slice(0, head).join("");
+  const after = word.slice(word.length - tail).join("");
+  // A space ends what's before: Anki's furigana sits over what's between it and the bracket.
+  return `${before}${before ? " " : ""}${word.slice(head, word.length - tail).join("")}[${said.slice(head, said.length - tail).join("")}]${after}`;
 }
 
 /** Whether AnkiDroid is there and Telly may add to it, asking you once if not. */

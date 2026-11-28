@@ -115,16 +115,22 @@
     });
   });
 
+  /** Telly is working out where the entry's downloads go (another library was chosen): a download pressed meanwhile waits for it. */
+  let placing = $state(false);
+  /** Which ask of where it goes is the latest: an older one's answer, coming after, is let go. */
+  let placeRun = 0;
+
   /** Asks where the AniList entry's download goes: in its usual library, or `library`. */
   function placeEntry(library?: number) {
-    const [title, forEntry] = [asked, anilistId];
+    const [title, forEntry, run] = [asked, anilistId, ++placeRun];
     placeFailed = false;
+    placing = true;
     call<DownloadPlan>("placeDownload", { title, anilistId: forEntry, library: library ?? null })
       .then((p) => {
-        if (anilistId === forEntry) plan = p;
+        if (anilistId === forEntry && run === placeRun) [plan, placing] = [p, false];
       })
       .catch(() => {
-        if (anilistId === forEntry) placeFailed = true;
+        if (anilistId === forEntry && run === placeRun) [placeFailed, placing] = [true, false];
       });
   }
 
@@ -173,13 +179,13 @@
   /** Starts `go` into the library chosen above the results. Pressed before Telly knows where the entry
    *  goes, it waits for that. */
   function intoLibrary(what: string, go: (library: number | null) => void) {
-    if (entry && !show && !plan && !placeFailed) choosing = { what, go };
+    if (entry && !show && (!plan || placing) && !placeFailed) choosing = { what, go };
     else go(entry ? (plan?.to.library ?? null) : null);
   }
 
   // Once Telly knows where the entry goes, a download that waited on it starts.
   $effect(() => {
-    if (!choosing || (!plan && !placeFailed)) return;
+    if (!choosing || ((!plan || placing) && !placeFailed)) return;
     const go = choosing.go;
     choosing = null;
     go(plan?.to.library ?? null);
@@ -379,7 +385,7 @@
   {/if}
 </div>
 
-{#if choosing && !plan}
+{#if choosing && (!plan || placing)}
   <div class="modal-bg" role="presentation" onclick={(e) => e.target === e.currentTarget && (choosing = null)} onkeydown={(e) => e.key === "Escape" && (choosing = null)}>
     <div class="sheet" role="dialog" aria-modal="true" aria-label="Finding where it goes">
       <p class="sheet-note"><span class="spin"></span> Finding where it goes in your library…</p>

@@ -21,20 +21,29 @@
   let searching = $state(false);
   /** The name last searched for, once AniList has answered. */
   let searched = $state("");
+  /** Telly is working out where it goes after a change (another library): Download waits for that. */
+  let placing = $state(false);
+  /** Which ask of where it goes is the latest: an older one's answer, coming after, is let go. */
+  let placeRun = 0;
 
   /** Asks where the release goes: as the show its name finds, or as `anime`, in its usual library or `library`. */
   async function place(anime?: Anime, library?: number) {
+    const run = ++placeRun;
     if (library === undefined) phase = "finding";
+    placing = true;
     error = "";
     try {
       const answer = await call<DownloadPlan>("placeDownload", { title: release.title, torrent: release.torrent, anilistId: anime?.id ?? null, library: library ?? null });
+      if (run !== placeRun) return;
       if (!anime) matches = answer.matches;
       plan = answer;
       chosen = answer.anime;
       if (answer.error) error = answer.error;
     } catch (e) {
+      if (run !== placeRun) return;
       error = errorText(e);
     }
+    placing = false;
     phase = "match";
   }
 
@@ -172,7 +181,7 @@
       {#if error}<p class="err">{error}</p>{/if}
       <div class="sheet-foot">
         <button type="button" class="btn quiet" onclick={onclose}>Cancel</button>
-        <button type="button" class="btn" onclick={start}><Icon name="download" /><span>Download</span></button>
+        <button type="button" class="btn" disabled={placing} onclick={start}><Icon name="download" /><span>Download</span></button>
       </div>
     {/if}
   </div>

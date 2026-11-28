@@ -1848,13 +1848,14 @@
       return;
     }
     // The end card is up: the episode doesn't play again behind it.
-    if (ended && [" ", "k", "ArrowLeft", "ArrowRight", "ArrowDown"].includes(e.key)) {
+    if (ended && [" ", "k", "K", "ArrowLeft", "ArrowRight", "ArrowDown"].includes(e.key)) {
       e.preventDefault();
       return;
     }
     switch (e.key) {
       case " ":
       case "k":
+      case "K":
         e.preventDefault();
         togglePlay();
         break;

@@ -1944,6 +1944,7 @@
         else if (subMenu) subMenu = false;
         else if (filterPanel) filterPanel = false;
         else if (audioMenu) audioMenu = false;
+        else if (transcript) transcript = false;
         else if (app.fullscreen) toggleFull();
         else if (app.compact) toggleCompact();
         break;

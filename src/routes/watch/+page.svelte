@@ -1032,7 +1032,8 @@
 
   async function mineLine() {
     const l = active[0] ?? dialogue[current];
-    if (!l || !view) return;
+    if (!view) return;
+    if (!l) return flash("No line here to add to your last card");
     try {
       await call("mineLine", { id: view.episode.id, start: l.start, end: l.end, text: l.text });
     } catch (e) {

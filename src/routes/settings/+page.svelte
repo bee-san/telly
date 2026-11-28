@@ -172,11 +172,14 @@
   /** The note types that count: none chosen means every one with the word's field. */
   const knownTypes = $derived(Array.isArray(settings["known.noteTypes"]) ? (settings["known.noteTypes"] as string[]) : []);
 
+  /** The note types ticked: every one when none was chosen. The last one can't be unticked, as none chosen is every one. */
+  const tickedTypes = $derived(knownTypes.length ? knownTypes : (sources?.noteTypes ?? []));
+
   function toggleKnownType(type: string) {
     const all = sources?.noteTypes ?? [];
-    const now = knownTypes.length ? knownTypes : all;
-    const next = now.includes(type) ? now.filter((t) => t !== type) : [...now, type];
-    setKnown("known.noteTypes", next.length === all.length ? [] : next);
+    const next = tickedTypes.includes(type) ? tickedTypes.filter((t) => t !== type) : [...tickedTypes, type];
+    if (!next.length) return;
+    setKnown("known.noteTypes", all.every((t) => next.includes(t)) ? [] : next);
   }
 
   const str = (k: string, d = "") => String(settings[k] ?? d);
@@ -1169,7 +1172,7 @@
                 <span class="what"><b id="known-types">Note types</b></span>
                 <div class="ctl types" role="group" aria-labelledby="known-types">
                   {#each sources.noteTypes as type (type)}
-                    <label class="check"><input type="checkbox" checked={knownTypes.length === 0 || knownTypes.includes(type)} onchange={() => toggleKnownType(type)} /><span>{type}</span></label>
+                    <label class="check" title={tickedTypes.length === 1 && tickedTypes[0] === type ? "One note type at least has to count" : undefined}><input type="checkbox" checked={tickedTypes.includes(type)} disabled={tickedTypes.length === 1 && tickedTypes[0] === type} onchange={() => toggleKnownType(type)} /><span>{type}</span></label>
                   {/each}
                 </div>
               </div>

@@ -54,6 +54,7 @@ pub fn sign_in(backend: &Backend, token: &str) -> Result<String> {
     backend.db.set_setting("anilist.user", &json!(user))?;
     backend.db.set_setting("anilist.since", &json!(now_ms()))?;
     backend.db.set_setting("anilist.error", &Value::Null)?;
+    forget_sent(backend)?;
     backend.jobs.poke();
     Ok(user)
 }
@@ -62,7 +63,20 @@ pub fn sign_out(backend: &Backend) -> Result<()> {
     for key in ["anilist.token", "anilist.user", "anilist.since", "anilist.error"] {
         backend.db.set_setting(key, &Value::Null)?;
     }
+    forget_sent(backend)?;
     let _ = std::fs::remove_file(list_path(backend));
+    Ok(())
+}
+
+/// Forgets what was sent to the account signed in to, and the watches looked
+/// at for it (anilist.sent.*, anilist.looked.*). Only what's watched since
+/// signing in counts, so an account signed in to, another or the same one
+/// again, starts with nothing sent: else it got no progress short of the
+/// last account's.
+fn forget_sent(backend: &Backend) -> Result<()> {
+    for key in backend.db.settings()?.keys().filter(|k| k.starts_with("anilist.sent.") || k.starts_with("anilist.looked.")) {
+        backend.db.set_setting(key, &Value::Null)?;
+    }
     Ok(())
 }
 
@@ -329,6 +343,24 @@ fn change(entry: &ListEntry, progress: i64) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signing_out_forgets_what_was_sent_to_the_account() {
+        let dir = std::env::temp_dir().join(format!("telly-anilist-out-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        for (key, value) in [("anilist.token", json!("t")), ("anilist.sent.6702", json!(12)), ("anilist.looked.6702", json!(1_700_000_000_000i64)), ("anilist.group.1.Season 2", json!(20001))] {
+            backend.db.set_setting(key, &value).unwrap();
+        }
+        sign_out(&backend).unwrap();
+        // Another account signed in to gets episodes 4 to 10 though the last one had 12.
+        let settings = backend.db.settings().unwrap();
+        assert!(!settings.keys().any(|k| k.starts_with("anilist.sent.") || k.starts_with("anilist.looked.") || k == "anilist.token"), "{settings:?}");
+        // Which entry a season folder is stays: it's the anime's, not the account's.
+        assert!(settings.contains_key("anilist.group.1.Season 2"));
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     fn show() -> Show {
         Show {

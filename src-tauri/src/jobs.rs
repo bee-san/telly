@@ -462,9 +462,15 @@ fn ahead(backend: &Backend) -> i64 {
 }
 
 /// Where `episode` stands now in the order work goes to episodes (see `pick`).
+/// The episode playing and the one after it come first: the player is about
+/// to need their subtitles.
 fn place(backend: &Backend, episode: &Episode) -> Place {
     let rank = shows_in_order(backend).iter().position(|s| s.id == episode.show_id).unwrap_or(usize::MAX);
-    let next = next_episode(&backend.db.episodes(episode.show_id).unwrap_or_default()).map_or(FINISHED, |e| e.number);
+    let episodes = backend.db.episodes(episode.show_id).unwrap_or_default();
+    if backend.now_playing().is_some_and(|p| plays_next(&episodes, p.episode_id, episode.id)) {
+        return (0, rank, episode.number);
+    }
+    let next = next_episode(&episodes).map_or(FINISHED, |e| e.number);
     (bucket(episode.number, next, ahead(backend)), rank, episode.number)
 }
 
@@ -500,6 +506,9 @@ pub fn waiting<'a>(backend: &Backend, kind: &str, library: &'a [(Show, Vec<Episo
     let idle = backend.idle_for().is_none_or(|d| d >= IDLE_AFTER);
     let asked = backend.jobs.asked.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let stale = backend.jobs.stale.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    // The episode playing and the one after it: the player is about to need their subtitles.
+    let playing = backend.now_playing().map(|p| p.episode_id);
+    let wanted_now = |episodes: &[Episode], e: &Episode| playing.is_some_and(|p| plays_next(episodes, p, e.id));
     let mut found: Vec<((u8, usize, i64), &Show, &Episode, usize)> = Vec::new();
     for (rank, (show, episodes)) in library.iter().enumerate() {
         let count = episodes.len();
@@ -523,7 +532,7 @@ pub fn waiting<'a>(backend: &Backend, kind: &str, library: &'a [(Show, Vec<Episo
             if !*here.get_or_insert_with(|| Path::new(&show.folder).is_dir()) {
                 break;
             }
-            let asked = matches!(kind, "media" | "probe") && asked.contains(&e.id);
+            let asked = (matches!(kind, "media" | "probe") && asked.contains(&e.id)) || (kind == "subs" && wanted_now(episodes, e));
             let bucket = if asked { 0 } else { bucket(e.number, next, ahead) };
             // Only episodes near the next are got ready, but for a copy got ready
             // again for another audio track (follow_audio): it's there already,
@@ -568,21 +577,23 @@ fn update_task(slot: &Mutex<Option<Task>>, label: Option<&str>, progress: f64) {
 /// the subtitles of the episode playing and of the one after it, which the
 /// player is about to need.
 fn after_the_player(backend: &Backend, rip: &Path, wanted: Option<&Episode>) {
-    if backend.jobs.drive(rip).seek_free {
-        return;
-    }
-    let drive = |path: &Path| path.ancestors().last().map(Path::to_path_buf);
-    let waits = || {
-        let Some(playing) = backend.now_playing() else { return false };
-        let Some(open) = backend.db.episode(playing.episode_id).ok().flatten() else { return false };
-        if drive(Path::new(&open.play_path)) != drive(rip) {
-            return false;
-        }
-        !wanted.is_some_and(|e| plays_next(&backend.db.episodes(open.show_id).unwrap_or_default(), open.id, e.id))
-    };
-    while waits() {
+    while player_has_the_drive(backend, rip, wanted) {
         std::thread::sleep(Duration::from_secs(2));
     }
+}
+
+/// Whether reading `rip` now waits for the player (see `after_the_player`).
+fn player_has_the_drive(backend: &Backend, rip: &Path, wanted: Option<&Episode>) -> bool {
+    if backend.jobs.drive(rip).seek_free {
+        return false;
+    }
+    let drive = |path: &Path| path.ancestors().last().map(Path::to_path_buf);
+    let Some(playing) = backend.now_playing() else { return false };
+    let Some(open) = backend.db.episode(playing.episode_id).ok().flatten() else { return false };
+    if drive(Path::new(&open.play_path)) != drive(rip) {
+        return false;
+    }
+    !wanted.is_some_and(|e| plays_next(&backend.db.episodes(open.show_id).unwrap_or_default(), open.id, e.id))
 }
 
 /// Whether `episode` is the one playing or the one that plays after it, among its show's `episodes`.
@@ -2402,7 +2413,12 @@ fn find_subtitles(backend: &Backend, slot: &Mutex<Option<Task>>, ffmpeg: &Path, 
         None => media::probe(ffprobe, rip)?,
     };
     let reading = || {
-        after_the_player(backend, rip, Some(episode));
+        // Waiting for the player gives up the place in the drive's queue meanwhile, so the
+        // episodes it doesn't wait for (the one playing, the one after it) read in the meantime.
+        if player_has_the_drive(backend, rip, Some(episode)) {
+            drop(queued.take());
+            after_the_player(backend, rip, Some(episode));
+        }
         let turn = match queued.take() {
             Some(waiting) => waiting.take(),
             None => drive.take(place),
@@ -2629,6 +2645,30 @@ mod tests {
         assert!(!plays_next(&episodes, 2, 1) && !plays_next(&episodes, 2, 4));
         // The last episode has none after it.
         assert!(plays_next(&episodes, 4, 4) && !plays_next(&episodes, 4, 1));
+    }
+
+    #[test]
+    fn the_subtitles_of_the_episode_playing_and_the_one_after_it_come_first() {
+        let dir = std::env::temp_dir().join(format!("telly-subs-first-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = std::sync::Arc::new(Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap());
+        let add = |title: &str| {
+            let episodes = (1..=3).map(|number| crate::db::NewEpisode { number, path: format!("{title} {number}.mkv"), size: 1, duration: 1400.0 }).collect();
+            let folder = dir.join(title);
+            std::fs::create_dir_all(&folder).unwrap();
+            backend.db.add_show(&crate::db::NewShow { folder: folder.to_string_lossy().into_owned(), title: title.into(), episodes, ..Default::default() }).unwrap()
+        };
+        let (a, b) = (add("A"), add("B"));
+        let (a, b) = (backend.db.episodes(a).unwrap(), backend.db.episodes(b).unwrap());
+        // A's first episode is open in the player, part-way.
+        backend.call("tick", serde_json::json!({ "id": a[0].id, "position": 100.0, "playing": false, "rate": 1.0, "subtitles": true, "lines": [], "since": 0 })).unwrap();
+        let library = library(&backend);
+        let subs: Vec<i64> = waiting(&backend, "subs", &library).into_iter().map(|(_, e, _)| e.id).collect();
+        assert_eq!(subs[..3], [a[0].id, a[1].id, b[0].id], "the one playing, the one after it, then B's next");
+        // And in a drive's queue, the one after it comes before B's next.
+        assert!(place(&backend, &a[1]) < place(&backend, &b[0]));
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     fn ep(number: i64, watched: bool, position: f64, played: i64) -> Episode {

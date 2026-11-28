@@ -50,6 +50,16 @@ export function mediaUrl(path: string): string {
 
 export function errorText(e: unknown): string {
   if (e instanceof Error) return e.message;
+  // What the phone's own commands (TellyPlugin.kt) fail with comes as { message, code }, not as text.
+  if (typeof e === "object" && e !== null) {
+    const message = (e as { message?: unknown }).message;
+    if (typeof message === "string" && message) return message;
+    try {
+      return JSON.stringify(e);
+    } catch {
+      // As it is, then.
+    }
+  }
   return String(e);
 }
 

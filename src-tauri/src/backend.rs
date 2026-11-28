@@ -534,7 +534,8 @@ fn read_range(path: &Path, range: Option<&str>) -> Result<Served> {
     let wanted = range.and_then(|r| r.trim().strip_prefix("bytes=")).and_then(|r| {
         let (a, b) = r.split_once('-')?;
         let start: u64 = a.trim().parse().ok()?;
-        let end: Option<u64> = b.trim().parse().ok();
+        // An end before the start says nothing: it's read as the rest, as "bytes=100-" is.
+        let end: Option<u64> = b.trim().parse().ok().filter(|end| *end >= start);
         Some((start, end))
     });
     match wanted {
@@ -2459,6 +2460,9 @@ mod tests {
         assert_eq!(s.range, Some((90, 99, 100)));
         let s = read_range(&path, None).unwrap();
         assert_eq!(s.bytes.len(), 100);
+        // An end before its start is no end, not a read of everything there is.
+        let s = read_range(&path, Some("bytes=50-10")).unwrap();
+        assert_eq!(s.range, Some((50, 99, 100)));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

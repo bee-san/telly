@@ -904,6 +904,8 @@
       view.audioTrack = v.audioTrack;
       view.listedAudio = v.listedAudio;
       view.src = v.src;
+      // Later episodes follow the new track, and Telly's copies of them are got ready again: the next may not be ready now.
+      view.next = v.next;
       changed();
     } catch (e) {
       toast({ key: "audio", state: "failed", title: "Couldn’t change audio", text: errorText(e) });

@@ -811,6 +811,10 @@ pub fn read_rip_and(ffmpeg: &Path, path: &Path, probe: &Probe, sheet: Option<&Pa
     let ran = command(ffmpeg).args(args).output_within(WHOLE_RIP);
     let written: Vec<Option<Vec<u8>>> = (0..out.len()).map(|i| std::fs::read(folder.join(i.to_string())).ok()).collect();
     let _ = std::fs::remove_dir_all(&folder);
+    // Stopped for taking too long, or never started: no pictures are half kept either.
+    if let (Err(_), Some(partial)) = (&ran, &partial) {
+        let _ = std::fs::remove_file(partial);
+    }
     let ran = ran.context("starting ffmpeg")?;
     if !ran.status.success() {
         if let Some(partial) = &partial {

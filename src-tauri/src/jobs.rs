@@ -953,11 +953,12 @@ fn part_path(output: &Path) -> PathBuf {
     output.with_extension(format!("{}.part", std::process::id()))
 }
 
-/// Copies being made when Telly last closed, before the work starts again.
+/// Copies, and seek bars' pictures, being made when Telly last closed, before the work starts again.
 pub fn clear_parts(backend: &Backend) {
     for show in std::fs::read_dir(backend.media_dir()).into_iter().flatten().flatten() {
         for file in std::fs::read_dir(show.path()).into_iter().flatten().flatten() {
-            if file.path().extension().is_some_and(|e| e == "part") {
+            // A copy half made, or the seek bar's pictures half made (<episode>.jpg.reading).
+            if file.path().extension().is_some_and(|e| e == "part" || e == "reading") {
                 let _ = std::fs::remove_file(file.path());
             }
         }
@@ -2818,6 +2819,24 @@ mod tests {
         let _ = std::fs::remove_file(timing_path(&backend, episode.id));
         keep_timing(&backend, &episode, &timing(sync::Calibration::NOISY));
         assert!(kept_timing(&backend, &episode).is_none());
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn half_made_copies_and_pictures_go_when_telly_starts() {
+        let dir = std::env::temp_dir().join(format!("telly-clear-parts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let show = backend.media_dir().join("1");
+        std::fs::create_dir_all(&show).unwrap();
+        for name in ["2.mp4", "2.jpg", "3.mp4.part", "3.jpg.reading"] {
+            std::fs::write(show.join(name), b"x").unwrap();
+        }
+        clear_parts(&backend);
+        let mut left: Vec<String> = std::fs::read_dir(&show).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(left, ["2.jpg", "2.mp4"]);
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

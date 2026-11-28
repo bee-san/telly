@@ -281,7 +281,7 @@
       const hourly = "Telly looks every hour, and downloads each new episode into this show’s folder.";
       if (!r.following) toast({ key: "follow", state: "done", title: "Not following any more", text: "New episodes won’t download themselves." });
       else if (r.error) toast({ key: "follow", state: "failed", title: "Following, but your search site couldn’t be searched", text: `${r.error} Telly looks again in an hour.` });
-      else if (!r.looked?.like) toast({ key: "follow", state: "info", title: "Nothing to follow yet", text: "None of this show’s rips has its episode number in its name, so Telly can’t tell which release to follow." });
+      else if (!r.looked?.like) toast({ key: "follow", state: "info", title: "Nothing to follow yet", text: "None of this show’s rips is named for its release and episode, as [Group] Show - 05 is, so Telly can’t tell which release to follow." });
       else if (r.looked.started.length) toast({ key: "follow", state: "done", title: `Downloading ${r.looked.started.length > 1 ? "episodes" : "Episode"} ${r.looked.started.join(", ")}`, text: `The same release as ${r.looked.like}. ${hourly}` });
       else toast({ key: "follow", state: "done", title: "Following", text: `Nothing after ${r.looked.like} is out yet. ${hourly}` });
     } catch (e) {

@@ -124,6 +124,13 @@ pub(crate) fn shape(name: &str) -> Option<Shape> {
     Some(Shape { tags, words, number })
 }
 
+/// Whether `name` says which release it's of, beside its episode's number: the group it opens
+/// with, or a title. "Episode 05.mkv" says neither, and following it would search for "episode".
+fn names_a_release(name: &str, shape: &Shape) -> bool {
+    let group = name.trim_start().starts_with('[') && !shape.tags.is_empty();
+    group || shape.words.iter().any(|w| !w.ends_with('#') && !matches!(w.as_str(), "episode" | "ep"))
+}
+
 /// What to search nyaa for to find more of a release: its group, when its name opens with one, and its title.
 fn query(name: &str, shape: &Shape) -> String {
     let group = if name.trim_start().starts_with('[') { shape.tags.first() } else { None };
@@ -186,7 +193,7 @@ fn latest(backend: &Backend, show: i64) -> Result<Option<(String, Shape)>> {
     // A release of several episodes in one (a batch) isn't named as its episodes are.
     let downloaded = Some(backend.db.setting_str(&like_setting(show))).filter(|title| !nyaa::several_episodes(title));
     // Of two for the same episode, the release's title is the one to go by.
-    let named = files.chain(downloaded).filter_map(|name| Some((shape(&name)?, name)));
+    let named = files.chain(downloaded).filter_map(|name| Some((shape(&name)?, name))).filter(|(shape, name)| names_a_release(name, shape));
     Ok(named.max_by_key(|(shape, _)| shape.number).map(|(shape, name)| (name, shape)))
 }
 
@@ -410,6 +417,17 @@ mod tests {
             "Sousou no Frieren S01E06 A Privileged Wish 1080p CR WEB-DL AAC2.0 H 264-VARYG",
         ];
         assert_eq!(numbers(like, 5, &found), [(6, 98), (7, 100)]);
+    }
+
+    #[test]
+    fn a_name_with_only_its_number_says_no_release_to_follow() {
+        // Searched for, these find anything numbered alike: "episode", or nothing at all.
+        for name in ["Episode 05.mkv", "05.mkv", "EP05.mkv", "第05話.mkv", "Episode 05 [1080p].mkv"] {
+            assert!(shape(name).is_none_or(|s| !names_a_release(name, &s)), "{name}");
+        }
+        for name in ["[Group] Show - 05 [1080p].mkv", "Show - 05.mkv", "[Group] 05 [1080p].mkv", "Show S01E05 1080p.mkv"] {
+            assert!(names_a_release(name, &shape(name).unwrap()), "{name}");
+        }
     }
 
     #[test]

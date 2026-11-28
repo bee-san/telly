@@ -313,6 +313,13 @@ impl Jobs {
         }
     }
 
+    /// Stops the conversion if it's of `episode_id` (converted again: Convert this episode).
+    pub fn cancel_episode(&self, episode_id: i64) {
+        if self.media.lock().is_ok_and(|t| t.as_ref().is_some_and(|t| t.episode_id == episode_id)) {
+            self.cancel_media.store(true, Ordering::SeqCst);
+        }
+    }
+
     /// Stops the conversion if it's for `show_id` (being removed).
     pub fn cancel_show(&self, show_id: i64) {
         if self.media.lock().is_ok_and(|t| t.as_ref().is_some_and(|t| t.show_id == show_id)) {
@@ -1162,6 +1169,11 @@ fn convert_video(backend: &Backend, ffmpeg: &Path, encoder: &str, show: &Show, e
     }
     // The seek bar's pictures of the copy, so the player needn't make them when it first plays.
     let _ = media::make_sheet(ffmpeg, &output, probe.duration, &sheet_path(backend, show.id, episode.id));
+    // Stopped as it finished (converted again, or its show removed): this copy isn't the one wanted.
+    if backend.jobs.cancel_media.load(Ordering::SeqCst) {
+        let _ = std::fs::remove_file(&output);
+        return Err(anyhow!("cancelled"));
+    }
     backend.db.media_ready(episode.id, &output.to_string_lossy(), 0, audio as i64)?;
     Ok(())
 }
@@ -2819,6 +2831,24 @@ mod tests {
         let _ = std::fs::remove_file(timing_path(&backend, episode.id));
         keep_timing(&backend, &episode, &timing(sync::Calibration::NOISY));
         assert!(kept_timing(&backend, &episode).is_none());
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn converting_an_episode_again_stops_its_conversion_and_no_other() {
+        let dir = std::env::temp_dir().join(format!("telly-convert-again-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Arc::new(Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap());
+        let episodes = (1..=2).map(|n| crate::db::NewEpisode { number: n, path: format!("{n}.mkv"), size: 1, duration: 1400.0 }).collect();
+        let show_id = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let (show, eps) = (backend.db.show(show_id).unwrap().unwrap(), backend.db.episodes(show_id).unwrap());
+        // Episode 1 is being converted when Convert this episode is pressed for episode 2, then for 1.
+        set_task(&backend.jobs.media, Some(task(&show, &eps[0], "Converting")));
+        backend.call("retryMedia", serde_json::json!({ "id": eps[1].id, "force": true })).unwrap();
+        assert!(!backend.jobs.cancel_media.load(Ordering::SeqCst));
+        backend.call("retryMedia", serde_json::json!({ "id": eps[0].id, "force": true })).unwrap();
+        assert!(backend.jobs.cancel_media.load(Ordering::SeqCst));
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
     }

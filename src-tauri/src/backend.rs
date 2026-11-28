@@ -1515,6 +1515,8 @@ impl Backend {
                 if arg::<Option<bool>>(&args, "force")?.unwrap_or(false) {
                     self.db.set_setting(&format!("convert.force.{id}"), &Value::Bool(true))?;
                 }
+                // Being converted already: that conversion stops, and this one is what's kept.
+                self.jobs.cancel_episode(id);
                 let episode = self.episode_or_err(id)?;
                 let _ = std::fs::remove_file(jobs::copy_path(self, episode.show_id, id));
                 self.db.media_reset(id)?;

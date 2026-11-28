@@ -42,7 +42,10 @@
       const named = await findShows(all, text);
       if (q !== text) return;
       shows = { for: text, list: named };
-      lines = { for: text, found: await found, all };
+      // The lines can take a while: words typed since have their own.
+      const said = await found;
+      if (q !== text) return;
+      lines = { for: text, found: said, all };
     }, 150);
     const far = setTimeout(async () => {
       try {

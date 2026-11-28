@@ -1928,11 +1928,14 @@ mod tests {
         std::fs::create_dir_all(backend.dirs.covers()).unwrap();
         std::fs::write(backend.cover_path(show), b"cover").unwrap();
         let before = crate::stats::overview(&backend).unwrap();
-        assert_eq!((before["days"][0]["uses"].as_i64(), before["days"][0]["episodes"].as_i64()), (Some(200), Some(2)));
+        let played: Vec<String> = serde_json::from_value(before["days"][0]["played"].clone()).unwrap();
+        let uses: i64 = played.iter().map(|k| before["scores"][k][0].as_i64().unwrap()).sum();
+        assert_eq!((uses, before["days"][0]["episodes"].as_i64()), (200, Some(2)));
 
         backend.remove_show(show).unwrap();
         let after = crate::stats::overview(&backend).unwrap();
         assert_eq!(after["days"], before["days"]);
+        assert_eq!(after["scores"], before["scores"]);
         assert_eq!(after["finished"], before["finished"]);
         let card = &after["shows"][show.to_string()];
         assert_eq!((card["title"].as_str(), card["removed"].as_bool()), (Some("Finished Show"), Some(true)));

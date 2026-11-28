@@ -803,6 +803,8 @@ fn take_dictionaries(backend: &Backend, library: &Value) -> Result<()> {
         let encoded = percent_encoding::utf8_percent_encode(name, percent_encoding::NON_ALPHANUMERIC).to_string();
         get_file(backend, &format!("dictionary/{encoded}"), &path, &|_| {})?;
         have.insert(name.to_string(), json!(revision));
+        // Kept as each one comes: one that fails after it doesn't have it sent again.
+        backend.db.set_setting(DICTIONARIES, &Value::Object(have.clone()))?;
     }
     have.retain(|name, _| {
         let kept = listed.iter().any(|d| d["name"] == name.as_str());
@@ -1149,6 +1151,39 @@ mod tests {
         // One no longer in Telly isn't waited for either.
         assert!(can_make(&pc, ids[2] + 100));
         drop(pc);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A PC that sends the dictionaries in `files`, and has none of the others.
+    fn pc_with(files: &'static [(&'static str, &'static [u8])]) -> String {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let address = server.server_addr().to_ip().unwrap().to_string();
+        std::thread::spawn(move || {
+            for request in server.incoming_requests() {
+                let name = request.url().trim_start_matches("/dictionary/").to_string();
+                let name = percent_encoding::percent_decode_str(&name).decode_utf8_lossy().into_owned();
+                let _ = match files.iter().find(|(n, _)| *n == name) {
+                    Some((_, bytes)) => request.respond(tiny_http::Response::from_data(bytes.to_vec())),
+                    None => request.respond(json_response(404, &json!({ "error": format!("{name} isn’t there") }))),
+                };
+            }
+        });
+        address
+    }
+
+    #[test]
+    fn dictionaries_got_before_one_that_fails_are_kept() {
+        let (phone, dir) = library("dictionaries");
+        let address = pc_with(&[("A.zip", b"first"), ("C.zip", b"third")]);
+        phone.db.set_setting(PC, &json!({ "address": address, "token": "t" })).unwrap();
+        let library = json!({ "dictionaries": [
+            { "name": "A.zip", "revision": "1" }, { "name": "B.zip", "revision": "1" }, { "name": "C.zip", "revision": "1" },
+        ] });
+        assert!(take_dictionaries(&phone, &library).is_err());
+        // A came before B failed: it's kept, and not sent again.
+        assert_eq!(dictionaries(&phone), [("A.zip".to_string(), "1".to_string())]);
+        assert_eq!(std::fs::read(dictionaries_dir(&phone).join("A.zip")).unwrap(), b"first");
+        drop(phone);
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -246,6 +246,15 @@ pub fn split(scan: &Scan) -> Vec<Part> {
     parts
 }
 
+/// The folder `parts`' folders are all in, or are: their show's, when they're
+/// one show. Season folders' is the anime's folder they're in; with the
+/// episodes lying loose in the anime's folder among them, that folder itself.
+fn common_folder(parts: &[Part]) -> String {
+    let mut common = parts.first().map(|p| std::path::PathBuf::from(&p.folder)).unwrap_or_default();
+    while !parts.iter().all(|p| Path::new(&p.folder).starts_with(&common)) && common.pop() {}
+    common.to_string_lossy().into_owned()
+}
+
 /// The number a movie's name gives it: "Movie 2", "Film 03".
 fn movie_number(name: &str) -> Option<usize> {
     static R: OnceLock<Regex> = OnceLock::new();
@@ -349,7 +358,7 @@ pub fn assign(parts: Vec<Part>, graph: &Graph, base: &Anime) -> Vec<Part> {
                         whole.files.extend(more.files.iter().cloned());
                     }
                     if seasons.len() - i > 1 {
-                        let folder = Path::new(&whole.folder).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+                        let folder = common_folder(&seasons[i..]);
                         // In folder order, each folder after the one before.
                         let mut files: Vec<ScannedFile> = Vec::new();
                         let mut n = 0;
@@ -389,7 +398,7 @@ pub fn assign(parts: Vec<Part>, graph: &Graph, base: &Anime) -> Vec<Part> {
                         k += 1;
                     }
                     if sum == c && k > i + 1 {
-                        let folder = Path::new(&seasons[i].folder).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+                        let folder = common_folder(&seasons[i..k]);
                         let mut files: Vec<ScannedFile> = Vec::new();
                         let mut number = 0;
                         for p in &seasons[i..k] {
@@ -674,6 +683,22 @@ mod tests {
         let parts = assign(split(&scanned(files)), &graph, &base);
         assert_eq!(parts.iter().map(|p| (p.anime.as_ref().map_or(0, |a| a.id), episodes(p), p.title.as_str())).collect::<Vec<_>>(), [(21, 30, ""), (0, 3, "ONE PIECE specials")]);
         assert_eq!(parts[0].files.iter().filter_map(|f| f.number).collect::<Vec<_>>(), (1..=30).collect::<Vec<_>>());
+        assert_eq!(parts[0].folder, "D:/Anime/Root");
+    }
+
+    #[test]
+    fn episodes_lying_loose_with_season_folders_beside_them_are_one_show_in_the_anime_s_folder() {
+        let mut one_piece = entry(21, "ONE PIECE", "TV", 0, 19991020, &[]);
+        one_piece.anime.episodes = None;
+        let graph = Graph::new(vec![one_piece]);
+        // The first season's episodes loose in the anime's folder, the next ones in season folders numbered from 1.
+        let mut files: Vec<ScannedFile> = (1..=8).map(|n| file(&format!("Show - S01E{n:02}.mkv"), 24.0)).collect();
+        files.extend(season("Season 2", "S02", 10));
+        files.extend(season("Season 3", "S03", 10));
+        let base = graph.entry(21).unwrap().anime.clone();
+        let parts = assign(split(&scanned(files)), &graph, &base);
+        assert_eq!(parts.iter().map(|p| (p.anime.as_ref().map_or(0, |a| a.id), episodes(p))).collect::<Vec<_>>(), [(21, 28)]);
+        // The anime's own folder, not the one it's in (often the library's).
         assert_eq!(parts[0].folder, "D:/Anime/Root");
     }
 

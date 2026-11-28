@@ -787,27 +787,39 @@ fn take_library(backend: &Backend, library: &Value, also: &[i64]) -> Result<()> 
 /// Gets the dictionaries the PC has that the phone hasn't (or has an older
 /// copy of), and lets go of those the PC no longer has.
 fn take_dictionaries(backend: &Backend, library: &Value) -> Result<()> {
+    let listed: Vec<&Value> = library["dictionaries"].as_array().into_iter().flatten().collect();
+    let have = || -> Result<serde_json::Map<String, Value>> { Ok(backend.db.setting(DICTIONARIES)?.and_then(|v| v.as_object().cloned()).unwrap_or_default()) };
+    // Those the PC has that the phone hasn't, or has an older copy of.
+    let new = |have: &serde_json::Map<String, Value>| -> Vec<(String, String)> {
+        listed
+            .iter()
+            .filter_map(|d| Some((d["name"].as_str()?, d["revision"].as_str()?)))
+            .filter(|(name, revision)| !name.contains(['/', '\\']) && !name.contains("..") && have.get(*name).and_then(Value::as_str) != Some(*revision))
+            .map(|(name, revision)| (name.to_string(), revision.to_string()))
+            .collect()
+    };
+    let listed_name = |name: &str| listed.iter().any(|d| d["name"] == name);
+    // With nothing to get or let go of, an install that's running (minutes, for a big dictionary) isn't waited for.
+    let had = have()?;
+    if new(&had).is_empty() && had.keys().all(|name| listed_name(name)) {
+        return Ok(());
+    }
     // Not while one of these files is being installed.
     let _installing = crate::lookups::hold(backend);
     let dir = dictionaries_dir(backend);
     std::fs::create_dir_all(&dir)?;
-    let mut have = backend.db.setting(DICTIONARIES)?.and_then(|v| v.as_object().cloned()).unwrap_or_default();
-    let listed: Vec<&Value> = library["dictionaries"].as_array().into_iter().flatten().collect();
-    for d in &listed {
-        let (Some(name), Some(revision)) = (d["name"].as_str(), d["revision"].as_str()) else { continue };
-        if name.contains(['/', '\\']) || name.contains("..") || have.get(name).and_then(Value::as_str) == Some(revision) {
-            continue;
-        }
-        let path = dir.join(name);
+    let mut have = have()?;
+    for (name, revision) in new(&have) {
+        let path = dir.join(&name);
         let _ = std::fs::remove_file(&path);
-        let encoded = percent_encoding::utf8_percent_encode(name, percent_encoding::NON_ALPHANUMERIC).to_string();
+        let encoded = percent_encoding::utf8_percent_encode(&name, percent_encoding::NON_ALPHANUMERIC).to_string();
         get_file(backend, &format!("dictionary/{encoded}"), &path, &|_| {})?;
-        have.insert(name.to_string(), json!(revision));
+        have.insert(name, json!(revision));
         // Kept as each one comes: one that fails after it doesn't have it sent again.
         backend.db.set_setting(DICTIONARIES, &Value::Object(have.clone()))?;
     }
     have.retain(|name, _| {
-        let kept = listed.iter().any(|d| d["name"] == name.as_str());
+        let kept = listed_name(name);
         if !kept {
             let _ = std::fs::remove_file(dir.join(name));
         }
@@ -1183,6 +1195,31 @@ mod tests {
         // A came before B failed: it's kept, and not sent again.
         assert_eq!(dictionaries(&phone), [("A.zip".to_string(), "1".to_string())]);
         assert_eq!(std::fs::read(dictionaries_dir(&phone).join("A.zip")).unwrap(), b"first");
+        drop(phone);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn getting_episodes_doesnt_wait_for_a_dictionary_being_installed() {
+        let (phone, dir) = library("installing");
+        let phone = Arc::new(phone);
+        phone.db.set_setting(DICTIONARIES, &json!({ "A.zip": "1" })).unwrap();
+        let library = json!({ "dictionaries": [{ "name": "A.zip", "revision": "1" }] });
+        // An install that takes its time, as a big dictionary's does.
+        let (held, installing) = std::sync::mpsc::channel();
+        let install = {
+            let phone = phone.clone();
+            std::thread::spawn(move || {
+                let _one = crate::lookups::hold(&phone);
+                held.send(()).unwrap();
+                std::thread::sleep(Duration::from_secs(3));
+            })
+        };
+        installing.recv().unwrap();
+        let started = std::time::Instant::now();
+        take_dictionaries(&phone, &library).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(1), "it waited for the install");
+        install.join().unwrap();
         drop(phone);
         let _ = std::fs::remove_dir_all(dir);
     }

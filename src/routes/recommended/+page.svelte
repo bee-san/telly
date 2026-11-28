@@ -289,7 +289,7 @@
     <span class="grow"></span>
     <form class="search" role="search" onsubmit={(e) => { e.preventDefault(); search(); }}>
       <Icon name="search" />
-      <input type="search" bind:value={q} placeholder="Search AniList" aria-label="Search AniList for an anime to download" oninput={() => { if (!q.trim()) results = null; }} />
+      <input type="search" bind:value={q} placeholder="Search AniList" aria-label="Search AniList for an anime to download" oninput={() => { if (!q.trim()) clearSearch(); }} />
     </form>
   </div>
 

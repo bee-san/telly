@@ -1630,7 +1630,9 @@
   function skipOutro() {
     const end = view?.ending?.end;
     if (!video || end === undefined || !(duration > 0)) return;
-    if (end < duration - 0.1) {
+    // Something after the credits to see (a scene, the next episode's preview), which the button names: it goes there.
+    // Else the credits run to the end (a logo or a card after them at most), and the end card opens, as Skip endings does.
+    if (after) {
       seekTo(end);
       return;
     }

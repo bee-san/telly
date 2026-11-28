@@ -21,6 +21,8 @@
   let timer: ReturnType<typeof setTimeout> | undefined;
   /** Cards already reported, so each batch is toasted once. */
   let reported = false;
+  /** The page was left: an answer on its way follows nothing more (the next page's URL isn't this one's show). */
+  let closed = false;
 
   const key = (w: PremineWord) => `${w.headword}|${w.reading}`;
   /** Whether premining's list is this page's: this show's, or this anime's. */
@@ -57,12 +59,15 @@
           names = place ? { title: place.title, native: place.native } : null;
           setWindowTitle(`Premine ${place?.title ?? ""} — Telly`);
         }
-        await start();
+        if (!closed) await start();
       } catch (e) {
         error = errorText(e);
       }
     })();
-    return () => clearTimeout(timer);
+    return () => {
+      closed = true;
+      clearTimeout(timer);
+    };
   });
 
   async function start() {
@@ -79,6 +84,7 @@
 
   function follow() {
     clearTimeout(timer);
+    if (closed) return;
     // Another show's list or cards were being made: now they're done, this show's turn.
     if (status && !status.working && !mine(status)) return void start();
     if (!status?.working) return report();

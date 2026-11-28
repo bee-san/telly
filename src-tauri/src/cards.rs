@@ -161,6 +161,19 @@ pub fn match_line<'a>(lines: &'a [Line], sentence: &str, position: f64) -> Optio
         .map(|(_, l)| l)
 }
 
+/// Where a card's line starts as it plays: the line of its sentence within
+/// its clip, which may start at the line before (padding "prev") or further
+/// out (500 ms); else where the clip starts, with the usual padding.
+fn line_start(backend: &Backend, job: &MineJob) -> f64 {
+    let sentence = squash(&job.sentence);
+    played_lines(backend, job.episode_id)
+        .iter()
+        .filter(|l| !l.sign && l.start >= job.start - 0.01 && l.start < job.end && squash(&l.text) == sentence)
+        .map(|l| l.start)
+        .next_back()
+        .unwrap_or(job.start + 0.25)
+}
+
 /// Your nudge to an episode's subtitles (Z and X), in seconds.
 pub fn nudge(backend: &Backend, episode_id: i64) -> f64 {
     backend.db.episode(episode_id).ok().flatten().map_or(0.0, |e| e.subs_nudge_ms as f64 / 1000.0)
@@ -382,7 +395,7 @@ fn finish(backend: &Backend, job: &MineJob) -> Result<()> {
         update.insert(f.audio.clone(), Value::String(format!("[sound:{name}]")));
     }
     if empty(&f.info) {
-        update.insert(f.info.clone(), Value::String(format!("{} · E{:02} · {}", show.title, episode.number, clock(job.start + 0.25))));
+        update.insert(f.info.clone(), Value::String(format!("{} · E{:02} · {}", show.title, episode.number, clock(line_start(backend, job)))));
     }
     if !update.is_empty() {
         anki::update_fields(&url, job.note_id, &update)?;
@@ -422,6 +435,26 @@ mod tests {
         assert!(match_line(&lines, "全然違う文", 745.0).is_none());
         // Said far from the playhead (a transcript line minutes back): that line, not the one playing.
         assert_eq!(match_line(&lines, "明日の試験、絶対に合格してみせる。", 1400.0).unwrap().start, 1000.0);
+    }
+
+    #[test]
+    fn a_card_s_time_is_its_line_s_whatever_the_clip_s_padding() {
+        let dir = std::env::temp_dir().join(format!("telly-card-time-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backend = Backend::open(crate::backend::Dirs { local: dir.clone(), roaming: dir.clone() }).unwrap();
+        let episodes = vec![crate::db::NewEpisode { number: 1, path: "1.mkv".into(), size: 1, duration: 1400.0 }];
+        let show = backend.db.add_show(&crate::db::NewShow { folder: "Show".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let id = backend.db.episodes(show).unwrap()[0].id;
+        let lines = vec![line(744.0, "一"), line(751.5, "二")];
+        jobs::write_lines(&backend, id, &lines).unwrap();
+        let job = |(start, end): (f64, f64)| MineJob {
+            id: 1, note_id: 1, episode_id: id, start, end, sentence: "二".into(), state: String::new(), detail: String::new(), tries: 0, created_at: 0, updated_at: 0,
+        };
+        // With the line before (12:24), the clip starts at 12:23.75, and the card's line is still at 12:31.
+        assert_eq!(line_start(&backend, &job(clip_bounds(&lines, &lines[1], "prev"))), 751.5);
+        assert_eq!(line_start(&backend, &job(clip_bounds(&lines, &lines[1], "500"))), 751.5);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

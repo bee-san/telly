@@ -1080,7 +1080,9 @@ pub fn card_plan(backend: &Backend, episode_id: i64, start: f64, end: f64, text:
         return Err(anyhow!("This episode isn’t on the phone"));
     }
     let lines = crate::cards::played_lines(backend, episode_id);
-    let line = crate::subs::Line { start, end, text: text.to_string(), ruby: vec![], speaker: String::new(), sign: false };
+    // The line's times in the file, as the player has them: with your nudge (Z and X), where it's heard.
+    let nudge = crate::cards::nudge(backend, episode_id);
+    let line = crate::subs::Line { start: start + nudge, end: end + nudge, text: text.to_string(), ruby: vec![], speaker: String::new(), sign: false };
     let (from, to) = crate::cards::clip_bounds(&lines, &line, &backend.db.setting_str("clip.padding"));
     let from = from.max(0.0);
     let length = (to - from).clamp(0.3, crate::clip::MAX_SECONDS);
@@ -1107,7 +1109,7 @@ pub fn card_plan(backend: &Backend, episode_id: i64, start: f64, end: f64, text:
             "audio": field("anki.field.audio", "SentenceAudio"),
             "info": field("anki.field.info", "MiscInfo"),
         },
-        "info": format!("{} · E{:02} · {}", show.title, episode.number, crate::util::clock(from + 0.25)),
+        "info": format!("{} · E{:02} · {}", show.title, episode.number, crate::util::clock(line.start)),
     }))
 }
 
@@ -1265,6 +1267,25 @@ mod tests {
         let older = token(pair(&pc, &json!({ "code": "123456", "name": "Telly on your phone" })).unwrap());
         assert!(!paired(&pc, Some(&old)) && paired(&pc, Some(&older)) && paired(&pc, Some(&pixel)));
         drop(pc);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_card_on_the_phone_is_cut_where_its_line_is_heard() {
+        let (phone, dir) = library("card-nudge");
+        let episodes = vec![NewEpisode { number: 5, path: "/rips/5.mkv".into(), size: 10, duration: 1400.0 }];
+        let show = phone.db.add_show(&NewShow { folder: "/rips".into(), title: "Show".into(), episodes, ..Default::default() }).unwrap();
+        let id = phone.db.episodes(show).unwrap()[0].id;
+        phone.db.set_phone_copy(id, Some("/phone/5.mp4")).unwrap();
+        let line = |start: f64, text: &str| crate::subs::Line { start, end: start + 2.0, text: text.into(), ruby: vec![], speaker: String::new(), sign: false };
+        jobs::write_lines(&phone, id, &[line(100.0, "前"), line(130.0, "今")]).unwrap();
+        // Its subtitles nudged 2 s later: the line at 130 s in the file is heard at 132 s.
+        phone.db.set_nudge(id, 2000).unwrap();
+        let plan = card_plan(&phone, id, 130.0, 132.0, "今").unwrap();
+        let args: Vec<String> = serde_json::from_value(plan["pictureArgs"].clone()).unwrap();
+        assert_eq!(args[args.iter().position(|a| a == "-ss").unwrap() + 1], "131.750");
+        assert!(plan["info"].as_str().unwrap().ends_with("E05 · 2:12"), "{}", plan["info"]);
+        drop(phone);
         let _ = std::fs::remove_dir_all(dir);
     }
 

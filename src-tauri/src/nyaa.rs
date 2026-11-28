@@ -143,6 +143,9 @@ pub struct Wanted {
     /// What groups that count on from earlier episodes add to its episodes' numbers: the
     /// episodes of the earlier parts of its own season, and those of every earlier season.
     pub offsets: Vec<i64>,
+    /// What a release named as the first season is adds, numbered on from its first episode:
+    /// every earlier season's episodes, when AniList says how many.
+    pub absolute: Option<i64>,
     /// Its season, by its place along the sequels from the first.
     pub season: i64,
     /// The first season's title, for a later season: what groups that count on from it call it.
@@ -152,7 +155,7 @@ pub struct Wanted {
 impl Wanted {
     /// An anime nothing more is known of than how many of its episodes are out.
     pub fn alone(out: Option<i64>) -> Wanted {
-        Wanted { out, offsets: Vec::new(), season: 1, first: None }
+        Wanted { out, offsets: Vec::new(), absolute: None, season: 1, first: None }
     }
 }
 
@@ -166,15 +169,16 @@ pub fn wanted(graph: &Graph, id: i64, out: Option<i64>) -> Wanted {
     }
     let named = graph.entry(id).map_or(1, |e| e.anime.season());
     let parts = earlier.iter().take_while(|e| e.anime.season() == named).count();
+    let episodes = |before: &[&Entry]| before.iter().map(|e| e.anime.episodes).sum::<Option<i64>>().filter(|n| *n > 0);
+    let absolute = episodes(&earlier[..]);
     let mut offsets = Vec::new();
-    for before in [&earlier[..parts], &earlier[..]] {
-        let episodes: Option<i64> = before.iter().map(|e| e.anime.episodes).sum();
-        if let Some(n) = episodes.filter(|n| *n > 0 && !offsets.contains(n)) {
+    for n in [episodes(&earlier[..parts]), absolute].into_iter().flatten() {
+        if !offsets.contains(&n) {
             offsets.push(n);
         }
     }
     let first = earlier.last().map(|e| e.anime.romaji.clone()).filter(|t| !t.is_empty());
-    Wanted { out, offsets, season: earlier.len() as i64 + 1, first }
+    Wanted { out, offsets, absolute, season: earlier.len() as i64 + 1, first }
 }
 
 /// Up to `most` pages of what nyaa finds for `query`, the most shared first.
@@ -242,6 +246,11 @@ fn episode_of(n: i64, direct: bool, wanted: &Wanted) -> Option<i64> {
     let past_earlier = wanted.out.is_none() && wanted.offsets.iter().any(|&o| n > o);
     if direct && fits(n) && !past_earlier {
         return Some(n);
+    }
+    // Named as the first season is, it counts on from that one's first episode: the earlier
+    // parts of this one's season are in what comes off, not on their own.
+    if !direct {
+        return wanted.absolute.map(|o| n - o).filter(|&m| fits(m));
     }
     wanted.offsets.iter().map(|&o| n - o).find(|&m| fits(m))
 }
@@ -705,7 +714,7 @@ mod tests {
         // no one shares, and the second season isn't the one asked for.
         assert_eq!(picked(&found, "Show", &Wanted::alone(Some(3))), Some((vec![11, 12, 14], vec![], false)));
         // Asked for, the second season is.
-        let second = Wanted { out: Some(3), offsets: vec![3], season: 2, first: Some("Show".into()) };
+        let second = Wanted { out: Some(3), offsets: vec![3], absolute: Some(3), season: 2, first: Some("Show".into()) };
         assert_eq!(picked(&found, "Show 2nd Season", &second), Some((vec![41, 42, 43], vec![], false)));
         // Without AniList's count, the set that goes furthest without a gap.
         assert_eq!(picked(&found, "Show", &Wanted::alone(None)), Some((vec![11, 12, 14], vec![], false)));
@@ -767,7 +776,7 @@ mod tests {
             (9, "[Group] Show 3rd Season - 02 [1080p]", 999),
         ];
         // The second season, after three episodes: SubsPlease's 4 and 5, under the first season's name.
-        let second = Wanted { out: Some(2), offsets: vec![3], season: 2, first: Some("Show".into()) };
+        let second = Wanted { out: Some(2), offsets: vec![3], absolute: Some(3), season: 2, first: Some("Show".into()) };
         assert_eq!(picked(&found, "Show 2nd Season", &second), Some((vec![4, 5], vec![], false)));
         // Erai-raws' S2, named as the second season, is too, but SubsPlease's is shared more.
         assert_eq!(picked(&found[5..], "Show 2nd Season", &second), Some((vec![6, 7], vec![], false)));
@@ -785,9 +794,26 @@ mod tests {
             entry(4, "Show 2nd Season Part 2", "TV", 11, 20230101, &[("PREQUEL", 3)]),
         ]);
         assert_eq!(wanted(&graph, 1, Some(12)), Wanted::alone(Some(12)));
-        assert_eq!(wanted(&graph, 3, Some(13)), Wanted { out: Some(13), offsets: vec![12], season: 2, first: Some("Show".into()) });
+        assert_eq!(wanted(&graph, 3, Some(13)), Wanted { out: Some(13), offsets: vec![12], absolute: Some(12), season: 2, first: Some("Show".into()) });
         // Part 2 counts on from Part 1 (13) or from the first episode (25); the film isn't counted.
-        assert_eq!(wanted(&graph, 4, Some(5)), Wanted { out: Some(5), offsets: vec![13, 25], season: 3, first: Some("Show".into()) });
+        assert_eq!(wanted(&graph, 4, Some(5)), Wanted { out: Some(5), offsets: vec![13, 25], absolute: Some(25), season: 3, first: Some("Show".into()) });
+    }
+
+    #[test]
+    fn a_release_named_as_the_first_season_counts_from_its_first_episode() {
+        use crate::series::tests::entry;
+        let graph = Graph::new([
+            entry(1, "Show", "TV", 12, 20200101, &[("SEQUEL", 3)]),
+            entry(3, "Show 2nd Season", "TV", 13, 20220101, &[("PREQUEL", 1), ("SEQUEL", 4)]),
+            entry(4, "Show 2nd Season Part 2", "TV", 11, 20230101, &[("PREQUEL", 3)]),
+        ]);
+        let part_two = wanted(&graph, 4, Some(5));
+        // "Show - 17", numbered from the first season's first episode, is Part 1's fifth: none of Part 2's.
+        assert_eq!(episode_of(17, false, &part_two), None);
+        assert_eq!(episode_of(26, false, &part_two), Some(1));
+        // Named as the second season, numbered on through it, Part 2's first is its 14th.
+        assert_eq!(episode_of(14, true, &part_two), Some(1));
+        assert_eq!(episode_of(3, true, &part_two), Some(3));
     }
 
     #[test]
